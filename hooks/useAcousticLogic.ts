@@ -1,7 +1,7 @@
 
 import { useState, useMemo } from 'react';
 import { 
-  Scenario, Page, SolutionTab, ResultTab, AcousticParams, DesignState, EquipmentItem, SolutionResult, Equipment, HistoryItem
+  Scenario, Page, SolutionTab, ResultTab, AcousticParams, DesignState, EquipmentItem, SolutionResult, Equipment, HistoryItem, EquipmentCategory, User
 } from '../types';
 import { DEFAULT_PARAMS, MIC_TYPES, MOCK_EQUIPMENTS, MOCK_HISTORY } from '../constants';
 import { processAcousticCommand } from '../services/geminiService';
@@ -19,8 +19,31 @@ export const useAcousticLogic = () => {
   const [previewHistoryItem, setPreviewHistoryItem] = useState<HistoryItem | null>(null);
 
   const [equipments, setEquipments] = useState<Equipment[]>(MOCK_EQUIPMENTS);
-  const [equipmentSearchQuery, setEquipmentSearchQuery] = useState("");
   
+  // 当前登录用户 (Mock)
+  const [currentUser] = useState<User>({
+    id: 'admin-1',
+    name: '张经理',
+    role: '系统管理员',
+    email: 'zhang@acoustic.com',
+    lastActive: '当前在线',
+    status: '活跃'
+  });
+
+  // 资源管理过滤器
+  const [equipmentTypeFilter, setEquipmentTypeFilter] = useState<EquipmentCategory | 'ALL'>('ALL');
+  const [equipmentNameFilter, setEquipmentNameFilter] = useState("");
+  
+  // 用户管理状态
+  const [users, setUsers] = useState<User[]>([
+    { id: '1', name: '张经理', role: '系统管理员', email: 'zhang@acoustic.com', lastActive: '2024-05-24 10:20', status: '活跃' },
+    { id: '2', name: '李工', role: '资深工程师', email: 'li@acoustic.com', lastActive: '2024-05-23 15:45', status: '活跃' },
+    { id: '3', name: '王小美', role: '设计助理', email: 'wang@acoustic.com', lastActive: '2024-05-22 09:10', status: '禁用' },
+    { id: '4', name: '赵客', role: '访客', email: 'zhao@guest.com', lastActive: '2024-05-20 18:30', status: '活跃' },
+  ]);
+  const [userRoleFilter, setUserRoleFilter] = useState<string>('ALL');
+  const [userNameFilter, setUserNameFilter] = useState("");
+
   const [history, setHistory] = useState<HistoryItem[]>(MOCK_HISTORY);
 
   const defaultProjectName = `声学项目_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}_01`;
@@ -176,21 +199,50 @@ export const useAcousticLogic = () => {
 
   const closeHistoryPreview = () => setPreviewHistoryItem(null);
 
+  // 优化的过滤逻辑
   const filteredEquipments = useMemo(() => {
-    const query = equipmentSearchQuery.toLowerCase();
-    return equipments.filter(e => 
-      e.model.toLowerCase().includes(query) || 
-      e.brand.toLowerCase().includes(query) || 
-      e.category.toLowerCase().includes(query)
-    );
-  }, [equipments, equipmentSearchQuery]);
+    return equipments.filter(e => {
+      const matchType = equipmentTypeFilter === 'ALL' || e.category === equipmentTypeFilter;
+      const query = equipmentNameFilter.toLowerCase();
+      const matchName = e.brand.toLowerCase().includes(query) || e.model.toLowerCase().includes(query);
+      return matchType && matchName;
+    });
+  }, [equipments, equipmentTypeFilter, equipmentNameFilter]);
 
   const addEquipment = (eq: Equipment) => setEquipments(prev => [...prev, eq]);
   const updateEquipment = (eq: Equipment) => setEquipments(prev => prev.map(item => item.id === eq.id ? eq : item));
-  const deleteEquipment = (id: string) => setEquipments(prev => prev.filter(item => item.id !== id));
+  const deleteEquipment = (id: string) => {
+    if (confirm('确认删除该设备资源吗？')) {
+      setEquipments(prev => prev.filter(item => item.id !== id));
+    }
+  };
+
+  // 用户过滤逻辑
+  const filteredUsers = useMemo(() => {
+    return users.filter(u => {
+      const matchRole = userRoleFilter === 'ALL' || u.role === userRoleFilter;
+      const query = userNameFilter.toLowerCase();
+      const matchName = u.name.toLowerCase().includes(query) || u.email.toLowerCase().includes(query);
+      return matchRole && matchName;
+    });
+  }, [users, userRoleFilter, userNameFilter]);
+
+  const addUser = (user: User) => setUsers(prev => [...prev, user]);
+  const updateUser = (user: User) => setUsers(prev => prev.map(u => u.id === user.id ? user : u));
+  const deleteUser = (id: string) => {
+    if (confirm('确认删除该用户吗？此操作不可逆。')) {
+      setUsers(prev => prev.filter(u => u.id !== id));
+    }
+  };
 
   const updateHistory = (item: any) => setHistory(prev => prev.map(h => h.id === item.id ? item : h));
   const deleteHistory = (id: string) => setHistory(prev => prev.filter(h => h.id !== id));
+
+  const handleLogout = () => {
+    if (confirm('确定要退出系统吗？')) {
+      window.location.reload();
+    }
+  };
 
   return {
     currentPage, setCurrentPage,
@@ -203,13 +255,20 @@ export const useAcousticLogic = () => {
     editingItem, setEditingItem,
     previewHistoryItem, setPreviewHistoryItem,
     equipments: filteredEquipments, 
-    equipmentSearchQuery, setEquipmentSearchQuery,
+    equipmentTypeFilter, setEquipmentTypeFilter,
+    equipmentNameFilter, setEquipmentNameFilter,
+    users: filteredUsers,
+    userRoleFilter, setUserRoleFilter,
+    userNameFilter, setUserNameFilter,
     history,
+    currentUser,
     handleParamChange, handleMicChange, addMic, removeMic,
     startDesign, handleSendMessage, deleteItem, saveEdit, handleGenerateReports,
     handleUpdateProjectName,
     handleDownload, closeHistoryPreview,
     addEquipment, updateEquipment, deleteEquipment,
-    updateHistory, deleteHistory
+    addUser, updateUser, deleteUser,
+    updateHistory, deleteHistory,
+    handleLogout
   };
 };

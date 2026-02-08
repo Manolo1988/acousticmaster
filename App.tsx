@@ -1,6 +1,6 @@
 
 import React, { useRef, useEffect, useState } from 'react';
-import { Scenario, Page, SolutionTab, ResultTab } from './types';
+import { Scenario, Page, SolutionTab, ResultTab, EquipmentCategory, Equipment, User } from './types';
 import { MIC_TYPES, SCENARIO_THEMES, VERIFY_THEME } from './constants';
 import Visualization from './components/Visualization';
 import { useAcousticLogic } from './hooks/useAcousticLogic';
@@ -12,14 +12,24 @@ const App: React.FC = () => {
   const [activeResultView, setActiveResultView] = useState<ResultView>('TABLE');
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  const [editingEq, setEditingEq] = useState<any>(null);
+  const [editingEq, setEditingEq] = useState<Equipment | null>(null);
   const [isAddingEq, setIsAddingEq] = useState(false);
   const [editingHistory, setEditingHistory] = useState<any>(null);
   
-  // 新增：生成报告对话框状态
+  // 用户管理弹窗状态
+  const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [isAddingUser, setIsAddingUser] = useState(false);
+
+  // 用户个人资料下拉框状态
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const profileRef = useRef<HTMLDivElement>(null);
+
   const [showReportDialog, setShowReportDialog] = useState(false);
-  // 新增：项目名称编辑状态
   const [isEditingProjectName, setIsEditingProjectName] = useState(false);
+
+  // 获取当前方案
+  const activeResult = logic.designState.results[logic.designState.activeResultIndex];
+  const hasGeneratedReport = !!activeResult?.wordLink;
 
   // 获取当前主题颜色配置
   const theme = logic.currentSolutionTab === SolutionTab.VERIFICATION 
@@ -34,10 +44,26 @@ const App: React.FC = () => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logic.designState.chatHistory, logic.isChatOpen]);
 
-  // --- 子组件渲染 ---
+  // 当方案切换时，如果当前视图是方案预览且未生成，则切回到数据清单
+  useEffect(() => {
+    if (activeResultView === 'WORD' && !hasGeneratedReport) {
+      setActiveResultView('TABLE');
+    }
+  }, [logic.designState.activeResultIndex, hasGeneratedReport]);
+
+  // 处理点击外部关闭下拉框
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (profileRef.current && !profileRef.current.contains(event.target as Node)) {
+        setIsProfileOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const renderTopNav = () => (
-    <header className="bg-white border-b h-11 px-5 flex items-center justify-between z-50 shrink-0 shadow-sm">
+    <header className="bg-white border-b h-11 px-5 flex items-center justify-between z-50 shrink-0 shadow-sm relative">
       <div className="flex items-center space-x-6">
         <div className="text-base font-black tracking-tighter uppercase text-slate-900">
           声学<span className={themeText}>大师</span>
@@ -46,14 +72,75 @@ const App: React.FC = () => {
           {(Object.values(Page) as Page[]).map(p => (
             <button key={p} onClick={() => logic.setCurrentPage(p)} 
               className={`text-[11px] font-bold h-full relative px-1 transition-all flex items-center ${logic.currentPage === p ? `${themeText} border-b-2 ${themeBorder}` : 'text-slate-400 hover:text-slate-900'}`}>
-              {p === Page.SOLUTION ? '方案中心' : p === Page.MANAGEMENT ? '资源管理' : '历史设计'}
+              {p === Page.SOLUTION ? '方案中心' : p === Page.MANAGEMENT ? '资源管理' : p === Page.HISTORY ? '历史设计' : '用户管理'}
             </button>
           ))}
         </nav>
       </div>
-      <button className="w-7 h-7 rounded-full bg-slate-50 flex items-center justify-center text-slate-400 hover:bg-slate-100 border transition-all">
-        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
-      </button>
+
+      <div className="flex items-center space-x-4">
+        {/* 用户头像与下拉菜单 */}
+        <div className="relative" ref={profileRef}>
+          <button 
+            onClick={() => setIsProfileOpen(!isProfileOpen)}
+            className={`flex items-center space-x-2 group p-0.5 pr-2 rounded-full border transition-all ${isProfileOpen ? 'bg-slate-50 border-slate-200' : 'border-transparent hover:bg-slate-50'}`}
+          >
+            <div className={`w-7 h-7 rounded-full ${themeBg} text-white flex items-center justify-center font-black text-[10px] shadow-sm relative`}>
+              {logic.currentUser.name[0]}
+              <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full border-2 border-white"></span>
+            </div>
+            <span className="text-[11px] font-bold text-slate-600 group-hover:text-slate-900">{logic.currentUser.name}</span>
+            <svg className={`w-3 h-3 text-slate-300 transition-transform ${isProfileOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 9l-7 7-7-7"></path></svg>
+          </button>
+
+          {/* 下拉菜单 */}
+          {isProfileOpen && (
+            <div className="absolute right-0 mt-2 w-64 bg-white rounded-2xl shadow-2xl border border-slate-100 overflow-hidden animate-in fade-in zoom-in-95 slide-in-from-top-2 duration-200">
+              {/* 用户信息头部 */}
+              <div className="p-4 bg-slate-50/80 border-b border-slate-100">
+                <div className="flex items-center space-x-3">
+                  <div className={`w-10 h-10 rounded-full ${themeBg} text-white flex items-center justify-center font-black text-xs shadow-lg`}>
+                    {logic.currentUser.name[0]}
+                  </div>
+                  <div>
+                    <div className="text-xs font-black text-slate-900">{logic.currentUser.name}</div>
+                    <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">{logic.currentUser.role}</div>
+                    <div className="text-[10px] text-slate-400 mt-1 truncate max-w-[140px]">{logic.currentUser.email}</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 菜单列表 */}
+              <div className="p-2 space-y-1">
+                <button className="w-full flex items-center space-x-3 px-3 py-2 rounded-xl text-[11px] font-bold text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-all">
+                  <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
+                  <span>个人资料</span>
+                </button>
+                <button className="w-full flex items-center space-x-3 px-3 py-2 rounded-xl text-[11px] font-bold text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-all">
+                  <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                  <span>账户设置</span>
+                </button>
+                <div className="h-px bg-slate-100 mx-2 my-1"></div>
+                <button className="w-full flex items-center space-x-3 px-3 py-2 rounded-xl text-[11px] font-bold text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-all">
+                  <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                  <span>帮助中心</span>
+                </button>
+              </div>
+
+              {/* 退出登录按钮 */}
+              <div className="p-2 border-t border-slate-100 bg-slate-50/50">
+                <button 
+                  onClick={() => { setIsProfileOpen(false); logic.handleLogout(); }}
+                  className="w-full flex items-center space-x-3 px-3 py-2 rounded-xl text-[11px] font-black text-red-500 hover:bg-red-50 transition-all uppercase tracking-widest"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                  <span>退出登录</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </header>
   );
 
@@ -170,7 +257,6 @@ const App: React.FC = () => {
             <div className="flex items-center space-x-3">
               <div className="flex items-baseline space-x-2">
                 <h2 className="text-xl font-black text-slate-900 tracking-tighter uppercase leading-none shrink-0">设计看板</h2>
-                {/* 项目名称展示与编辑 */}
                 <div className="flex items-center group relative cursor-pointer" onClick={() => setIsEditingProjectName(true)}>
                   {isEditingProjectName ? (
                     <input 
@@ -194,583 +280,635 @@ const App: React.FC = () => {
               </div>
             </div>
             <div className="flex items-center space-x-3">
-              <div className="flex bg-slate-100 p-0.5 rounded-md border border-slate-200">
-                {[{id:ResultTab.PLAN, l:'方案明细'},{id:ResultTab.SIMULATION, l:'声学仿真'}].map(t => (
-                  <button key={t.id} onClick={() => logic.setCurrentResultTab(t.id)} className={`px-3 py-1 rounded-sm text-[10px] font-bold transition-all ${logic.currentResultTab === t.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>{t.l}</button>
-                ))}
-              </div>
-              
-              {logic.currentResultTab === ResultTab.PLAN && (
-                <div className="flex items-center space-x-2">
-                   {activeResultView === 'TABLE' ? (
+              <div className="flex items-center space-x-2">
+                 {/* 动态导出按钮逻辑 */}
+                 {logic.currentResultTab === ResultTab.PLAN ? (
+                   <>
+                     {hasGeneratedReport && (
+                       <div className="flex items-center space-x-2 animate-in fade-in slide-in-from-right-2 duration-300">
+                          {activeResultView === 'TABLE' ? (
+                            <button onClick={() => logic.handleDownload('EXCEL')} className="flex items-center space-x-2 px-3 h-8 rounded-md font-bold text-[9px] uppercase border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition-all shadow-sm">
+                              <svg className="w-3.5 h-3.5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                              <span>导出清单 (Excel)</span>
+                            </button>
+                          ) : (
+                            <button onClick={() => logic.handleDownload('WORD')} className="flex items-center space-x-2 px-3 h-8 rounded-md font-bold text-[9px] uppercase border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition-all shadow-sm">
+                              <svg className="w-3.5 h-3.5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
+                              <span>导出方案 (Word)</span>
+                            </button>
+                          )}
+                       </div>
+                     )}
                      <button 
-                       onClick={() => logic.handleDownload('EXCEL')}
-                       className="flex items-center space-x-2 px-3 h-8 rounded-md font-bold text-[9px] uppercase border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition-all shadow-sm"
+                       onClick={() => setShowReportDialog(true)} 
+                       disabled={logic.isGeneratingDocs} 
+                       className={`flex items-center space-x-2 px-4 h-8 rounded-md font-black text-[10px] uppercase transition-all shadow-md active:scale-95 ${logic.isGeneratingDocs ? 'bg-slate-100 text-slate-300 cursor-not-allowed' : `${themeBg} text-white hover:brightness-110`}`}
                      >
-                       <svg className="w-3.5 h-3.5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-                       <span>导出清单 (Excel)</span>
+                        {logic.isGeneratingDocs ? (
+                          <>
+                            <div className="w-3 h-3 border-2 border-slate-300 border-t-white rounded-full animate-spin"></div>
+                            <span>生成中...</span>
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                            <span>生成正式报告</span>
+                          </>
+                        )}
                      </button>
-                   ) : (
-                     <button 
-                       onClick={() => logic.handleDownload('WORD')}
-                       className="flex items-center space-x-2 px-3 h-8 rounded-md font-bold text-[9px] uppercase border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition-all shadow-sm"
-                     >
-                       <svg className="w-3.5 h-3.5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
-                       <span>导出方案 (Word)</span>
-                     </button>
-                   )}
-                   
+                   </>
+                 ) : (
                    <button 
-                     onClick={() => setShowReportDialog(true)} 
-                     disabled={logic.isGeneratingDocs} 
-                     className={`flex items-center space-x-2 px-4 h-8 rounded-md font-black text-[10px] uppercase transition-all shadow-md active:scale-95 ${logic.isGeneratingDocs ? 'bg-slate-100 text-slate-300 cursor-not-allowed' : `${themeBg} text-white hover:brightness-110`}`}
+                      onClick={() => logic.handleDownload('PNG')}
+                      className="flex items-center space-x-2 px-4 h-8 rounded-md font-black text-[10px] uppercase border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 shadow-sm active:scale-95 transition-all animate-in fade-in slide-in-from-right-2 duration-300"
                    >
-                      {logic.isGeneratingDocs ? (
-                        <>
-                          <div className="w-3 h-3 border-2 border-slate-300 border-t-white rounded-full animate-spin"></div>
-                          <span>生成中...</span>
-                        </>
-                      ) : (
-                        <>
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                          <span>生成正式报告</span>
-                        </>
-                      )}
+                      <svg className="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                      <span>下载仿真图 (PNG)</span>
                    </button>
-                </div>
-              )}
-              {logic.currentResultTab === ResultTab.SIMULATION && (
-                <button 
-                   onClick={() => logic.handleDownload('PNG')}
-                   className="flex items-center space-x-2 px-4 h-8 rounded-md font-black text-[10px] uppercase border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 shadow-sm active:scale-95 transition-all"
-                >
-                   <svg className="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
-                   <span>下载仿真图 (PNG)</span>
-                </button>
-              )}
+                 )}
+              </div>
             </div>
           </div>
 
-          {logic.currentResultTab === ResultTab.PLAN && (
-            <div className="space-y-3 flex-1 flex flex-col">
-              <div className="flex justify-between items-center shrink-0">
-                <div className="flex space-x-1">
-                  {logic.designState.results.map((res, idx) => (
-                    <button key={res.id} onClick={() => { logic.setDesignState(prev => ({ ...prev, activeResultIndex: idx })); setActiveResultView('TABLE'); }}
-                      className={`px-3 py-1.5 rounded-md text-[10px] font-black transition-all ${logic.designState.activeResultIndex === idx ? `bg-slate-900 text-white shadow-md` : 'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}>
-                      {res.title}
-                    </button>
-                  ))}
-                </div>
-                <div className="bg-slate-50 p-0.5 rounded-md border border-slate-200 flex items-center h-8">
-                   <button onClick={() => setActiveResultView('TABLE')} className={`px-3 h-7 rounded-sm text-[10px] font-bold transition-all ${activeResultView === 'TABLE' ? `bg-white ${themeText} shadow-sm` : 'text-slate-400'}`}>数据清单</button>
-                   <button onClick={() => setActiveResultView('WORD')} className={`px-3 h-7 rounded-sm text-[10px] font-bold transition-all ${activeResultView === 'WORD' ? `bg-white ${themeText} shadow-sm` : 'text-slate-400'}`}>方案预览</button>
-                </div>
+          <div className="space-y-3 flex-1 flex flex-col">
+            <div className="flex justify-between items-center shrink-0">
+              <div className="flex space-x-1">
+                {logic.designState.results.map((res, idx) => (
+                  <button key={res.id} onClick={() => { logic.setDesignState(prev => ({ ...prev, activeResultIndex: idx })); }}
+                    className={`px-3 py-1.5 rounded-md text-[10px] font-black transition-all ${logic.designState.activeResultIndex === idx ? `bg-slate-900 text-white shadow-md` : 'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}>
+                    {res.title}
+                  </button>
+                ))}
               </div>
+              <div className="bg-slate-50 p-0.5 rounded-md border border-slate-200 flex items-center h-8">
+                 {/* 切换放置在每个方案之下，体现它是针对当前方案的属性 */}
+                 <button onClick={() => logic.setCurrentResultTab(ResultTab.PLAN)} className={`px-3 h-7 rounded-sm text-[10px] font-bold transition-all ${logic.currentResultTab === ResultTab.PLAN ? `bg-white ${themeText} shadow-sm` : 'text-slate-400'}`}>方案明细</button>
+                 <button onClick={() => logic.setCurrentResultTab(ResultTab.SIMULATION)} className={`px-3 h-7 rounded-sm text-[10px] font-bold transition-all ${logic.currentResultTab === ResultTab.SIMULATION ? `bg-white ${themeText} shadow-sm` : 'text-slate-400'}`}>声学仿真</button>
+              </div>
+            </div>
 
-              <div className="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden flex flex-col relative flex-1">
-                {activeResultView === 'TABLE' ? (
-                  <div className="flex-1 overflow-auto">
-                    <table className="w-full text-left text-[11px]">
-                      <thead className="sticky top-0 bg-slate-50 z-10 border-b">
-                        <tr>
-                          <th className="px-5 py-2.5 font-bold text-slate-400 uppercase tracking-tighter">设备分类</th>
-                          <th className="px-5 py-2.5 font-bold text-slate-400 uppercase tracking-tighter">产品名称</th>
-                          <th className="px-5 py-2.5 font-bold text-slate-400 uppercase tracking-tighter">型号规格</th>
-                          <th className="px-5 py-2.5 font-bold text-slate-400 uppercase tracking-tighter text-center">数量</th>
-                          <th className="px-5 py-2.5 text-right pr-5 font-bold text-slate-400 uppercase tracking-tighter">管理操作</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {logic.designState.results[logic.designState.activeResultIndex]?.items.map((item, idx) => (
-                          <tr key={item.id} className="hover:bg-slate-50/50 transition-all group">
-                            <td className="px-5 py-2.5 text-slate-500 font-medium">{item.type}</td>
-                            <td className="px-5 py-2.5 font-bold text-slate-900">{item.name}</td>
-                            <td className="px-5 py-2.5 text-slate-400 font-mono text-[10px]">{item.model}</td>
-                            <td className={`px-5 py-2.5 font-black text-center ${themeText}`}>{item.quantity}</td>
-                            <td className="px-5 py-2.5 text-right space-x-3 pr-5">
-                              <button onClick={() => logic.setEditingItem({ resIdx: logic.designState.activeResultIndex, itemIdx: idx, item: { ...item } })} className={`${themeText} font-bold hover:underline`}>编辑</button>
-                              <button onClick={() => logic.deleteItem(logic.designState.activeResultIndex, idx)} className="text-slate-300 hover:text-red-500 font-bold">删除</button>
-                            </td>
+            {logic.currentResultTab === ResultTab.PLAN ? (
+              <div className="flex-1 flex flex-col space-y-3">
+                <div className="flex justify-end">
+                   <div className="bg-slate-100/50 p-0.5 rounded-md border border-slate-200 flex items-center h-8">
+                      <button onClick={() => setActiveResultView('TABLE')} className={`px-3 h-7 rounded-sm text-[10px] font-bold transition-all ${activeResultView === 'TABLE' ? `bg-white ${themeText} shadow-sm` : 'text-slate-400'}`}>数据清单</button>
+                      {/* 方案预览仅在生成后显示 */}
+                      {hasGeneratedReport && (
+                        <button onClick={() => setActiveResultView('WORD')} className={`px-3 h-7 rounded-sm text-[10px] font-bold transition-all animate-in zoom-in-95 duration-200 ${activeResultView === 'WORD' ? `bg-white ${themeText} shadow-sm` : 'text-slate-400'}`}>方案预览</button>
+                      )}
+                   </div>
+                </div>
+
+                <div className="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden flex flex-col relative flex-1">
+                  {activeResultView === 'TABLE' ? (
+                    <div className="flex-1 overflow-auto">
+                      <table className="w-full text-left text-[11px]">
+                        <thead className="sticky top-0 bg-slate-50 z-10 border-b">
+                          <tr>
+                            <th className="px-5 py-2.5 font-bold text-slate-400 uppercase tracking-tighter">设备分类</th>
+                            <th className="px-5 py-2.5 font-bold text-slate-400 uppercase tracking-tighter">产品名称</th>
+                            <th className="px-5 py-2.5 font-bold text-slate-400 uppercase tracking-tighter">型号规格</th>
+                            <th className="px-5 py-2.5 font-bold text-slate-400 uppercase tracking-tighter text-center">数量</th>
+                            <th className="px-5 py-2.5 text-right pr-5 font-bold text-slate-400 uppercase tracking-tighter">管理操作</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <div className="flex-1 p-6 overflow-y-auto bg-slate-50/30">
-                     <div className="max-w-2xl mx-auto bg-white shadow-xl border border-slate-100 rounded-lg p-10 space-y-6">
-                        <h1 className="text-2xl font-black text-slate-900 tracking-tight uppercase border-b-2 border-slate-900 pb-2">声学系统设计方案</h1>
-                        <p className={`text-[10px] border-l-4 ${themeBorder} pl-4 text-slate-500 leading-relaxed font-bold uppercase`}>基于建筑声学计算与电声仿真。文档包含详细的技术拓扑、声场压力图及分项设备清单。</p>
-                        <div className="aspect-[1/1.41] bg-slate-50 border border-dashed border-slate-200 rounded flex flex-col items-center justify-center text-slate-300 font-black text-[12px] uppercase tracking-[0.5em] space-y-4">
-                           <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center text-slate-200">
-                             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                           </div>
-                           <span>方案说明书预览</span>
-                        </div>
-                     </div>
-                  </div>
-                )}
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {activeResult?.items.map((item, idx) => (
+                            <tr key={item.id} className="hover:bg-slate-50/50 transition-all group">
+                              <td className="px-5 py-2.5 text-slate-500 font-medium">{item.type}</td>
+                              <td className="px-5 py-2.5 font-bold text-slate-900">{item.name}</td>
+                              <td className="px-5 py-2.5 text-slate-400 font-mono text-[10px]">{item.model}</td>
+                              <td className={`px-5 py-2.5 font-black text-center ${themeText}`}>{item.quantity}</td>
+                              <td className="px-5 py-2.5 text-right space-x-3 pr-5">
+                                <button onClick={() => logic.setEditingItem({ resIdx: logic.designState.activeResultIndex, itemIdx: idx, item: { ...item } })} className={`${themeText} font-bold hover:underline`}>编辑</button>
+                                <button onClick={() => logic.deleteItem(logic.designState.activeResultIndex, idx)} className="text-slate-300 hover:text-red-500 font-bold">删除</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="flex-1 p-6 overflow-y-auto bg-slate-50/30">
+                       <div className="max-w-2xl mx-auto bg-white shadow-xl border border-slate-100 rounded-lg p-10 space-y-6 animate-in fade-in zoom-in-95 duration-300">
+                          <h1 className="text-2xl font-black text-slate-900 tracking-tight uppercase border-b-2 border-slate-900 pb-2">声学系统设计方案 - {activeResult?.title}</h1>
+                          <p className={`text-[10px] border-l-4 ${themeBorder} pl-4 text-slate-500 leading-relaxed font-bold uppercase`}>该方案文档已根据选定设备及仿真结果自动合成。您可以点击右上角按钮进行导出。</p>
+                          <div className="aspect-[1/1.41] bg-slate-50 border border-dashed border-slate-200 rounded flex flex-col items-center justify-center text-slate-300 font-black text-[12px] uppercase tracking-[0.5em] space-y-4">
+                             <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center text-slate-200">
+                               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                             </div>
+                             <span>正式说明书正文区</span>
+                          </div>
+                       </div>
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
-
-          {logic.currentResultTab === ResultTab.SIMULATION && (
-            <div className="flex-1 bg-slate-50 rounded-lg border border-slate-200 overflow-hidden relative shadow-inner min-h-[350px]">
-               <Visualization params={logic.designState.params} scenario={logic.designState.scenario} blueprint={logic.designState.blueprint} />
-            </div>
-          )}
+            ) : (
+              <div className="flex-1 bg-slate-50 rounded-lg border border-slate-200 overflow-hidden relative shadow-inner min-h-[350px]">
+                 {/* 每个方案传入自己的 items */}
+                 <Visualization 
+                    params={logic.designState.params} 
+                    scenario={logic.designState.scenario} 
+                    blueprint={logic.designState.blueprint}
+                    items={activeResult?.items}
+                 />
+              </div>
+            )}
+          </div>
         </div>
       )}
 
       {/* 生成文档选择对话框 */}
       {showReportDialog && (
         <div className="fixed inset-0 z-[300] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-5">
-           <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl p-6 space-y-5 animate-in zoom-in-95 duration-200">
+           <div className="bg-white w-full max-sm rounded-2xl shadow-2xl p-6 space-y-5 animate-in zoom-in-95 duration-200">
               <div className="flex items-center justify-between border-b pb-3">
-                 <h3 className="text-sm font-black text-slate-900 uppercase tracking-tight">生成报告范围</h3>
+                 <h3 className="text-sm font-black text-slate-900 uppercase tracking-tight">生成正式报告</h3>
                  <button onClick={() => setShowReportDialog(false)} className="text-slate-300 hover:text-slate-900 transition-colors">✕</button>
               </div>
-              <p className="text-[11px] text-slate-500 font-medium">请选择您需要生成并下载文档的方案范围。系统将自动汇总配置并转换成正式 Word 文件。</p>
+              <p className="text-[11px] text-slate-500 font-medium">请选择需要转换成正式方案文档的范围：</p>
               <div className="grid grid-cols-1 gap-3">
                  <button 
                     onClick={() => { logic.handleGenerateReports('CURRENT'); setShowReportDialog(false); }}
                     className="flex flex-col items-start p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:border-blue-400 hover:shadow-md transition-all group"
                  >
-                    <span className="text-[11px] font-black text-slate-900 group-hover:text-blue-600">仅当前方案</span>
-                    <span className="text-[9px] text-slate-400 mt-1">仅对当前选中的 [{logic.designState.results[logic.designState.activeResultIndex]?.title}] 进行文档导出。</span>
+                    <span className="text-[11px] font-black text-slate-900 group-hover:text-blue-600">方案：{activeResult?.title} (仅当前)</span>
+                    <span className="text-[9px] text-slate-400 mt-1">仅针对当前选中的推荐方案生成正式文档并开启预览/下载。</span>
                  </button>
                  <button 
                     onClick={() => { logic.handleGenerateReports('ALL'); setShowReportDialog(false); }}
                     className="flex flex-col items-start p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:border-blue-400 hover:shadow-md transition-all group"
                  >
-                    <span className="text-[11px] font-black text-slate-900 group-hover:text-blue-600">全部推荐方案</span>
-                    <span className="text-[9px] text-slate-400 mt-1">汇总并导出本次设计生成的所有 {logic.designState.results.length} 个备选方案。</span>
+                    <span className="text-[11px] font-black text-slate-900 group-hover:text-blue-600">所有推荐方案 (共 {logic.designState.results.length} 个)</span>
+                    <span className="text-[9px] text-slate-400 mt-1">对本次设计出的所有备选方案同时生成正式文档并开启预览/下载。</span>
                  </button>
               </div>
            </div>
         </div>
       )}
-    </div>
-  );
-
-  const renderVerificationView = () => (
-    <div className="flex-1 flex overflow-hidden bg-white">
-      <div className="w-[290px] bg-emerald-50/30 border-r border-slate-200 p-6 flex flex-col items-center shrink-0">
-        <div className="w-full mb-6 text-center">
-          <h2 className="text-xl font-black text-slate-900 mb-0.5 tracking-tight">核验工作站</h2>
-          <p className="text-emerald-600 text-[8px] font-black tracking-[0.3em] uppercase underline decoration-emerald-200 underline-offset-4">Audit Workspace</p>
-        </div>
-
-        <div className="w-full space-y-3">
-           <div className="border-2 border-dashed border-slate-200 rounded-xl p-6 text-center flex flex-col items-center justify-center space-y-1 cursor-pointer hover:border-emerald-400 transition-all bg-white group shadow-sm">
-              <span className="text-[11px] font-bold text-slate-400 group-hover:text-emerald-600 transition-colors">上传方案图纸</span>
-           </div>
-           <div className="border-2 border-dashed border-slate-200 rounded-xl p-6 text-center flex flex-col items-center justify-center space-y-1 cursor-pointer hover:border-emerald-400 transition-all bg-white group shadow-sm">
-              <span className="text-[11px] font-bold text-slate-400 group-hover:text-emerald-600 transition-colors">上传待审清单</span>
-           </div>
-           <button className="w-full py-2.5 bg-emerald-600 text-white rounded-lg font-bold text-[13px] shadow-lg shadow-emerald-100 hover:bg-emerald-700 transition-all mt-4 uppercase tracking-widest">
-              开始自动化审计
-           </button>
-        </div>
-      </div>
-
-      <div className="flex-1 flex flex-col items-center justify-center bg-white relative">
-         <div className="flex flex-col items-center space-y-4 opacity-10">
-            <svg className="w-24 h-24 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="0.5" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z"></path></svg>
-            <h3 className="text-xl font-black text-slate-900 tracking-[1em] uppercase ml-[1em]">实验室就绪中</h3>
-         </div>
-      </div>
     </div>
   );
 
   const renderManagementView = () => (
-    <div className="flex-1 p-5 bg-slate-50 overflow-y-auto">
-       <div className="flex items-center space-x-3 mb-5 sticky top-0 bg-slate-50/80 backdrop-blur pb-3 z-10">
-          <div className="flex-1 relative">
-             <input 
-               type="text" 
-               placeholder="通过型号、品牌或分类关键词搜索设备资源..." 
-               value={logic.equipmentSearchQuery}
-               onChange={e => logic.setEquipmentSearchQuery(e.target.value)}
-               className="w-full bg-white border border-slate-200 rounded-lg px-5 py-2 text-[11px] font-bold outline-none focus:ring-1 focus:ring-blue-100 shadow-sm"
-             />
-             <svg className="w-3.5 h-3.5 absolute right-4 top-1/2 -translate-y-1/2 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
-          </div>
-          <button 
-            onClick={() => setIsAddingEq(true)}
-            className="px-5 py-2 bg-slate-900 text-white rounded-lg font-bold shadow hover:bg-black transition-all text-[11px] uppercase tracking-widest"
+    <div className="flex-1 flex flex-col p-6 overflow-hidden bg-white">
+      <div className="shrink-0 mb-6">
+        <h2 className="text-2xl font-black text-slate-900 tracking-tight uppercase">资源库管理</h2>
+        <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">精细化管理系统内置及用户自定义的声学设备资源</p>
+      </div>
+
+      <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 mb-6 flex flex-wrap items-end gap-4 shrink-0">
+        <div className="space-y-1.5 flex-1 min-w-[200px]">
+          <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">设备类型过滤</label>
+          <select 
+            value={logic.equipmentTypeFilter}
+            onChange={e => logic.setEquipmentTypeFilter(e.target.value as any)}
+            className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2 text-[12px] font-bold outline-none focus:ring-2 focus:ring-blue-500/10 transition-all"
           >
-            + 新增资源库项
-          </button>
-       </div>
+            <option value="ALL">全部类型</option>
+            <option value="音箱">音箱</option>
+            <option value="功放">功放</option>
+            <option value="话筒">话筒</option>
+            <option value="矩阵">矩阵</option>
+            <option value="中控">中控</option>
+            <option value="视频会议">视频会议</option>
+            <option value="录播">录播</option>
+          </select>
+        </div>
+        <div className="space-y-1.5 flex-[2] min-w-[300px]">
+          <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">搜索名称/品牌/型号</label>
+          <div className="relative">
+            <input 
+              type="text" 
+              placeholder="输入关键词..." 
+              value={logic.equipmentNameFilter}
+              onChange={e => logic.setEquipmentNameFilter(e.target.value)}
+              className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2 pl-10 text-[12px] font-bold outline-none focus:ring-2 focus:ring-blue-500/10 transition-all"
+            />
+            <svg className="w-4 h-4 absolute left-3.5 top-2.5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+          </div>
+        </div>
+        <button 
+          onClick={() => setIsAddingEq(true)}
+          className="bg-slate-900 text-white px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-black transition-all shadow-lg active:scale-95"
+        >
+          + 录入新设备
+        </button>
+      </div>
 
-       <div className="bg-white rounded-lg border border-slate-200 overflow-hidden shadow-sm">
-          {logic.equipments.map((eq, i) => (
-            <div key={eq.id} className={`p-4 flex items-center justify-between group hover:bg-slate-50 transition-all ${i !== logic.equipments.length - 1 ? 'border-b border-slate-100' : ''}`}>
-               <div className="flex items-center space-x-4">
-                  <div className="w-10 h-10 bg-slate-50 rounded flex items-center justify-center font-black text-sm text-slate-300 group-hover:bg-slate-900 group-hover:text-white transition-all uppercase">{eq.category[0]}</div>
-                  <div>
-                    <h4 className="text-[12px] font-black text-slate-800 tracking-tight">{eq.brand} · {eq.model}</h4>
-                    <p className="text-[10px] text-slate-400 font-medium truncate max-w-[400px] mt-0.5">{eq.specs}</p>
-                  </div>
-               </div>
-               <div className="flex items-center space-x-3">
-                  <button onClick={() => setEditingEq(eq)} className="text-[10px] px-3 py-1.5 rounded bg-slate-50 text-slate-600 font-bold hover:bg-slate-900 hover:text-white transition-all border border-transparent">编辑</button>
-                  <button onClick={() => logic.deleteEquipment(eq.id)} className="text-[10px] px-3 py-1.5 rounded bg-slate-50 text-slate-600 font-bold hover:bg-red-600 hover:text-white transition-all border border-transparent">删除</button>
-               </div>
-            </div>
-          ))}
-          {logic.equipments.length === 0 && <div className="p-12 text-center text-slate-300 text-[11px] font-bold uppercase tracking-widest italic">没有找到符合条件的资源</div>}
-       </div>
+      <div className="flex-1 bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm flex flex-col">
+        <div className="flex-1 overflow-auto scrollbar-hide">
+          <table className="w-full text-left text-[11px]">
+            <thead className="sticky top-0 bg-slate-50 border-b z-10">
+              <tr>
+                <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest w-32">设备类型</th>
+                <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">品牌 & 型号</th>
+                <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">技术规格说明</th>
+                <th className="px-6 py-4 text-right pr-6 font-black text-slate-400 uppercase tracking-widest w-40">管理操作</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {logic.equipments.map(eq => (
+                <tr key={eq.id} className="hover:bg-slate-50/50 transition-colors group">
+                  <td className="px-6 py-4">
+                    <span className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-tighter ${
+                      eq.category === '音箱' ? 'bg-blue-50 text-blue-600 border border-blue-100' : 
+                      eq.category === '话筒' ? 'bg-purple-50 text-purple-600 border border-purple-100' :
+                      eq.category === '功放' ? 'bg-amber-50 text-amber-600 border border-amber-100' :
+                      'bg-slate-50 text-slate-500 border border-slate-100'
+                    }`}>{eq.category}</span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className="font-black text-slate-900 text-[12px]">{eq.brand}</div>
+                    <div className="font-bold text-slate-400 text-[10px] mt-0.5">{eq.model}</div>
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className="text-slate-500 font-medium line-clamp-2 max-w-md">{eq.specs}</div>
+                  </td>
+                  <td className="px-6 py-4 text-right pr-6 space-x-3">
+                    <button 
+                      onClick={() => setEditingEq(eq)}
+                      className="text-blue-600 font-black hover:underline uppercase tracking-widest text-[9px]"
+                    >
+                      修改
+                    </button>
+                    <button 
+                      onClick={() => logic.deleteEquipment(eq.id)}
+                      className="text-red-400 font-black hover:text-red-600 transition-colors uppercase tracking-widest text-[9px]"
+                    >
+                      删除
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
 
-       {/* 设备详情模态框 */}
-       {(editingEq || isAddingEq) && (
-         <div className="fixed inset-0 z-[100] bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-5">
-            <div className="bg-white w-full max-w-sm rounded-xl p-6 space-y-4 shadow-2xl animate-in zoom-in-95 duration-200">
-               <h3 className="text-base font-black text-slate-900 uppercase tracking-tight border-b pb-2">{isAddingEq ? '录入新资源' : '修改资源档案'}</h3>
-               <div className="space-y-3">
-                  <div className="grid grid-cols-2 gap-3">
-                     <div className="space-y-1">
-                        <label className="text-[9px] font-black text-slate-300 ml-1 block uppercase">品牌名</label>
-                        <input id="eq-brand" defaultValue={isAddingEq ? "" : editingEq.brand} className="w-full p-2.5 bg-slate-50 rounded border border-slate-100 text-[11px] outline-none font-bold focus:bg-white" />
-                     </div>
-                     <div className="space-y-1">
-                        <label className="text-[9px] font-black text-slate-300 ml-1 block uppercase">型号名称</label>
-                        <input id="eq-model" defaultValue={isAddingEq ? "" : editingEq.model} className="w-full p-2.5 bg-slate-50 rounded border border-slate-100 text-[11px] outline-none font-bold focus:bg-white" />
-                     </div>
-                  </div>
-                  <div className="space-y-1">
-                     <label className="text-[9px] font-black text-slate-300 ml-1 block uppercase">技术规范参数</label>
-                     <textarea id="eq-specs" defaultValue={isAddingEq ? "" : editingEq.specs} className="w-full p-2.5 bg-slate-50 rounded border border-slate-100 text-[11px] outline-none font-medium min-h-[90px] resize-none focus:bg-white" />
-                  </div>
-               </div>
-               <div className="flex space-x-2 pt-2">
-                  <button onClick={() => { setEditingEq(null); setIsAddingEq(false); }} className="flex-1 py-2.5 bg-slate-100 rounded-lg font-bold text-slate-400 text-[10px] uppercase transition-colors hover:bg-slate-200">取消</button>
-                  <button onClick={() => {
-                    const b = (document.getElementById('eq-brand') as HTMLInputElement).value;
-                    const m = (document.getElementById('eq-model') as HTMLInputElement).value;
-                    const s = (document.getElementById('eq-specs') as HTMLTextAreaElement).value;
-                    if (isAddingEq) logic.addEquipment({ id: Date.now().toString(), category: '音箱', brand: b, model: m, specs: s });
-                    else logic.updateEquipment({ ...editingEq, brand: b, model: m, specs: s });
-                    setEditingEq(null); setIsAddingEq(false);
-                  }} className="flex-1 py-2.5 bg-slate-900 text-white rounded-lg font-bold text-[10px] uppercase shadow-lg hover:brightness-125 transition-all">确认录入</button>
-               </div>
-            </div>
-         </div>
-       )}
+      {(editingEq || isAddingEq) && (
+        <div className="fixed inset-0 z-[500] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-5">
+           <div className="bg-white w-full max-lg rounded-3xl shadow-2xl p-8 space-y-6 animate-in zoom-in-95 duration-200">
+              <div className="flex items-center justify-between border-b pb-4">
+                 <h3 className="text-lg font-black text-slate-900 uppercase tracking-tight">
+                   {isAddingEq ? '录入新设备资源' : `编辑设备：${editingEq?.model}`}
+                 </h3>
+                 <button onClick={() => { setEditingEq(null); setIsAddingEq(false); }} className="text-slate-300 hover:text-slate-900 transition-colors">✕</button>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-4">
+                 <div className="space-y-1.5">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">设备类型</label>
+                    <select id="modal-category" defaultValue={isAddingEq ? '音箱' : editingEq?.category} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none">
+                      {['音箱', '功放', '话筒', '矩阵', '中控', '视频会议', '录播'].map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                    </select>
+                 </div>
+                 <div className="space-y-1.5">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">品牌名称</label>
+                    <input id="modal-brand" defaultValue={isAddingEq ? "" : editingEq?.brand} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" />
+                 </div>
+                 <div className="col-span-2 space-y-1.5">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">型号规格</label>
+                    <input id="modal-model" defaultValue={isAddingEq ? "" : editingEq?.model} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" />
+                 </div>
+                 <div className="col-span-2 space-y-1.5">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">技术指标描述</label>
+                    <textarea id="modal-specs" defaultValue={isAddingEq ? "" : editingEq?.specs} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-[12px] font-medium h-24 resize-none" />
+                 </div>
+              </div>
+
+              <div className="flex space-x-3 pt-4">
+                 <button onClick={() => { setEditingEq(null); setIsAddingEq(false); }} className="flex-1 py-3.5 rounded-2xl border border-slate-200 text-slate-400 font-black text-[11px] uppercase tracking-widest">取消操作</button>
+                 <button onClick={() => {
+                   const cat = (document.getElementById('modal-category') as HTMLSelectElement).value as EquipmentCategory;
+                   const brand = (document.getElementById('modal-brand') as HTMLInputElement).value;
+                   const model = (document.getElementById('modal-model') as HTMLInputElement).value;
+                   const specs = (document.getElementById('modal-specs') as HTMLTextAreaElement).value;
+                   if (isAddingEq) logic.addEquipment({ id: Date.now().toString(), category: cat, brand, model, specs });
+                   else if (editingEq) logic.updateEquipment({ ...editingEq, category: cat, brand, model, specs });
+                   setEditingEq(null); setIsAddingEq(false);
+                 }} className="flex-1 py-3.5 bg-slate-900 text-white rounded-2xl font-black text-[11px] uppercase shadow-xl">确认保存</button>
+              </div>
+           </div>
+        </div>
+      )}
     </div>
   );
 
   const renderHistoryView = () => (
-    <div className="flex-1 p-5 bg-slate-50 overflow-y-auto">
-       <div className="flex items-baseline justify-between mb-5">
-          <div className="flex items-baseline space-x-3">
-            <h2 className="text-xl font-black text-slate-900 tracking-tight underline decoration-2 underline-offset-4">历史设计档案</h2>
-            <span className="text-slate-300 text-[9px] font-bold uppercase tracking-widest">Design Archive</span>
-          </div>
-       </div>
-       <div className="bg-white rounded-lg border border-slate-200 overflow-hidden shadow-sm">
-          {logic.history.map((h, i) => (
-            <div key={h.id} className={`p-4 flex items-center justify-between hover:bg-slate-50 transition-all group ${i !== logic.history.length - 1 ? 'border-b border-slate-100' : ''}`}>
-               <div className="flex items-center space-x-4">
-                  <div className={`w-2 h-2 rounded-full ${h.status === '已完成' ? 'bg-emerald-500 shadow-[0_0_5px_rgba(16,185,129,0.3)]' : 'bg-amber-500 shadow-[0_0_5px_rgba(245,158,11,0.3)]'}`}></div>
-                  <div>
-                    <h4 className="text-[12px] font-black text-slate-800 leading-tight group-hover:text-blue-600 transition-colors">{h.name}</h4>
-                    <p className="text-[9px] text-slate-400 mt-0.5 uppercase font-bold tracking-wider">{h.date} · {h.type}</p>
-                  </div>
-               </div>
-               <div className="flex items-center space-x-4">
-                  <span className={`text-[9px] font-black uppercase tracking-widest ${h.status === '已完成' ? 'text-emerald-500/50' : 'text-amber-500/50'}`}>{h.status}</span>
-                  <div className="flex space-x-2">
-                     <button 
-                        onClick={() => logic.setPreviewHistoryItem(h)}
-                        title="预览历史方案"
-                        className="p-2 rounded bg-slate-50 text-slate-400 hover:text-emerald-600 shadow-sm transition-all hover:bg-white border border-transparent hover:border-slate-100"
-                     >
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
-                     </button>
-                     <button onClick={() => setEditingHistory(h)} className="p-2 rounded bg-slate-50 text-slate-400 hover:text-blue-600 shadow-sm transition-all hover:bg-white border border-transparent hover:border-slate-100">
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
-                     </button>
-                     <button onClick={() => logic.deleteHistory(h.id)} className="p-2 rounded bg-slate-50 text-slate-400 hover:text-red-600 shadow-sm transition-all hover:bg-white border border-transparent hover:border-slate-100">
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                     </button>
-                  </div>
-               </div>
-            </div>
-          ))}
-          {logic.history.length === 0 && <div className="p-12 text-center text-slate-300 text-[11px] font-bold uppercase tracking-widest italic">暂无历史设计归档</div>}
-       </div>
+    <div className="flex-1 flex flex-col p-6 overflow-y-auto bg-white">
+      <div className="mb-8">
+        <h2 className="text-2xl font-black text-slate-900 tracking-tight uppercase">历史设计档案</h2>
+        <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">回顾及重新载入之前的设计成果</p>
+      </div>
 
-       {editingHistory && (
-         <div className="fixed inset-0 z-[100] bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-5">
-            <div className="bg-white w-full max-w-sm rounded-xl p-6 space-y-4 shadow-2xl animate-in zoom-in-95">
-               <h3 className="text-sm font-black text-slate-900 uppercase tracking-widest border-b pb-2">项目更名</h3>
-               <div className="space-y-1">
-                 <label className="text-[9px] font-black text-slate-300 ml-1 block uppercase">项目新名称</label>
-                 <input 
-                   value={editingHistory.name} 
-                   onChange={e => setEditingHistory({...editingHistory, name: e.target.value})} 
-                   className="w-full p-2.5 bg-slate-50 rounded border border-slate-200 outline-none font-bold text-[12px] focus:ring-1 focus:ring-blue-100" 
-                 />
-               </div>
-               <div className="flex space-x-2 pt-2">
-                  <button onClick={() => setEditingHistory(null)} className="flex-1 py-2.5 bg-slate-100 rounded font-bold text-[10px] text-slate-400 uppercase tracking-widest transition-colors hover:bg-slate-200">取消</button>
-                  <button onClick={() => { logic.updateHistory(editingHistory); setEditingHistory(null); }} className="flex-1 py-2.5 bg-slate-900 text-white rounded font-bold text-[10px] uppercase tracking-widest shadow-md hover:brightness-125 transition-all">确认重命名</button>
-               </div>
-            </div>
-         </div>
-       )}
+      <div className="bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-sm">
+        <table className="w-full text-left text-[11px]">
+          <thead className="bg-slate-50 border-b">
+            <tr>
+              <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">项目名称</th>
+              <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">设计时间</th>
+              <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">场景类型</th>
+              <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">状态</th>
+              <th className="px-6 py-4 text-right pr-6 font-black text-slate-400 uppercase tracking-widest">操作</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {logic.history.map(h => (
+              <tr key={h.id} className="hover:bg-slate-50 transition-colors group">
+                <td className="px-6 py-4 font-black text-slate-900">{h.name}</td>
+                <td className="px-6 py-4 text-slate-400 font-mono">{h.date}</td>
+                <td className="px-6 py-4">
+                  <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${
+                    h.scenario === Scenario.MEETING_ROOM ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'
+                  }`}>{h.scenario === Scenario.MEETING_ROOM ? '会议室' : '报告厅'}</span>
+                </td>
+                <td className="px-6 py-4">
+                  <div className="flex items-center space-x-1.5">
+                    <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></div>
+                    <span className="text-emerald-600 font-bold">{h.status}</span>
+                  </div>
+                </td>
+                <td className="px-6 py-4 text-right pr-6 space-x-4">
+                  <button onClick={() => logic.setPreviewHistoryItem(h)} className="text-blue-600 font-black hover:underline uppercase tracking-widest text-[9px]">详情预览</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 
-  // --- 历史预览详情子页面 (Overlay) ---
   const renderHistoryPreview = () => {
-    if (!logic.previewHistoryItem) return null;
-    const h = logic.previewHistoryItem;
+    const item = logic.previewHistoryItem!;
     return (
-      <div className="fixed inset-0 z-[200] bg-slate-900/60 backdrop-blur-md flex flex-col p-5 sm:p-10 animate-in fade-in zoom-in-95 duration-300">
-        <div className="bg-white w-full h-full max-w-6xl mx-auto rounded-2xl shadow-2xl flex flex-col overflow-hidden">
-          <header className="px-6 py-4 border-b bg-slate-50 flex items-center justify-between shrink-0">
-             <div className="flex items-center space-x-3">
-                <div className="bg-slate-900 text-white p-2 rounded-lg">
-                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                </div>
-                <div>
-                   <h2 className="text-lg font-black text-slate-900 uppercase tracking-tight">{h.name}</h2>
-                   <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{h.date} · 历史方案归档预览</p>
-                </div>
-             </div>
-             <button onClick={logic.closeHistoryPreview} className="w-10 h-10 rounded-full hover:bg-slate-200 flex items-center justify-center text-slate-400 transition-colors">
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>
-             </button>
-          </header>
-          
-          <div className="flex-1 flex overflow-hidden">
-            <aside className="w-72 border-r bg-slate-50/50 p-6 overflow-y-auto space-y-6 shrink-0">
-               <section>
-                  <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 pb-1 border-b">场景参数</h3>
-                  <div className="space-y-3">
-                     <div className="flex justify-between items-center">
-                        <span className="text-[10px] font-bold text-slate-500">空间类型</span>
-                        <span className="text-[10px] font-black text-slate-900">{h.scenario === Scenario.MEETING_ROOM ? '会议室' : '报告厅'}</span>
-                     </div>
-                     <div className="flex justify-between items-center">
-                        <span className="text-[10px] font-bold text-slate-500">尺寸 (L×W)</span>
-                        <span className="text-[10px] font-black text-slate-900">{h.params.length}m × {h.params.width}m</span>
-                     </div>
-                     <div className="flex justify-between items-center">
-                        <span className="text-[10px] font-bold text-slate-500">安装高度</span>
-                        <span className="text-[10px] font-black text-slate-900">{h.params.height}m</span>
-                     </div>
-                  </div>
-               </section>
-               <section>
-                  <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 pb-1 border-b">话筒配置</h3>
-                  <div className="space-y-2">
-                     {h.params.mics.map(m => (
-                        <div key={m.id} className="flex justify-between items-center bg-white p-2 rounded border border-slate-100 shadow-sm">
-                           <span className="text-[10px] font-bold text-slate-700">{m.type}</span>
-                           <span className="text-[10px] font-black text-blue-600">×{m.count}</span>
-                        </div>
-                     ))}
-                  </div>
-               </section>
-               {h.params.extraRequirements && (
-                  <section>
-                     <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 pb-1 border-b">其他说明</h3>
-                     <p className="text-[10px] text-slate-600 font-medium leading-relaxed italic">"{h.params.extraRequirements}"</p>
-                  </section>
-               )}
-            </aside>
-            
-            <main className="flex-1 flex flex-col overflow-hidden bg-white">
-               <div className="p-6 border-b flex items-center justify-between shrink-0">
-                  <div className="flex space-x-1">
-                     {h.results.map((res, idx) => (
-                        <div key={res.id} className="px-4 py-2 bg-slate-900 text-white rounded-md text-[11px] font-black shadow-lg">
-                           {res.title}
-                        </div>
-                     ))}
-                  </div>
-                  <div className="flex space-x-2">
-                     <button onClick={() => logic.handleDownload('EXCEL')} className="px-3 h-8 rounded border border-slate-200 text-[10px] font-bold text-slate-600 hover:bg-slate-50 transition-all flex items-center space-x-1">
-                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-                        <span>导出清单</span>
-                     </button>
-                     <button onClick={() => logic.handleDownload('WORD')} className="px-3 h-8 rounded border border-slate-200 text-[10px] font-bold text-slate-600 hover:bg-slate-50 transition-all flex items-center space-x-1">
-                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
-                        <span>导出方案</span>
-                     </button>
-                  </div>
-               </div>
-               
-               <div className="flex-1 overflow-y-auto p-6 space-y-8">
-                  <section className="bg-slate-50/50 rounded-xl border border-slate-100 p-6 shadow-inner">
-                     <h4 className="text-[12px] font-black text-slate-900 uppercase tracking-tighter mb-4 border-l-4 border-slate-900 pl-3">设备清单详情</h4>
-                     <table className="w-full text-left text-[11px]">
-                        <thead>
-                           <tr className="text-slate-400 uppercase font-black tracking-widest text-[9px]">
-                              <th className="pb-3 px-2">类型</th>
-                              <th className="pb-3 px-2">设备名称</th>
-                              <th className="pb-3 px-2 text-center">数量</th>
-                           </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                           {h.results[0]?.items.map(item => (
-                              <tr key={item.id}>
-                                 <td className="py-2.5 px-2 text-slate-500">{item.type}</td>
-                                 <td className="py-2.5 px-2 font-bold text-slate-900">{item.name} <span className="text-[9px] font-mono font-normal opacity-50 ml-1">{item.model}</span></td>
-                                 <td className="py-2.5 px-2 text-center font-black text-slate-900">×{item.quantity}</td>
-                              </tr>
-                           ))}
-                        </tbody>
-                     </table>
-                  </section>
-                  
-                  <section>
-                     <h4 className="text-[12px] font-black text-slate-900 uppercase tracking-tighter mb-4 border-l-4 border-slate-900 pl-3">声学仿真预测</h4>
-                     <div className="aspect-video bg-slate-50 rounded-xl border border-dashed border-slate-200 flex items-center justify-center overflow-hidden">
-                        <Visualization params={h.params} scenario={h.scenario} blueprint={null} />
-                     </div>
-                  </section>
-               </div>
-            </main>
+      <div className="flex-1 flex flex-col p-6 overflow-y-auto bg-white animate-in slide-in-from-right-4 duration-300">
+        <div className="flex items-center space-x-4 mb-6">
+          <button onClick={logic.closeHistoryPreview} className="w-10 h-10 rounded-full border border-slate-200 flex items-center justify-center text-slate-400 hover:text-slate-900 hover:bg-slate-50 transition-all">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7"></path></svg>
+          </button>
+          <div>
+            <h2 className="text-2xl font-black text-slate-900 tracking-tight uppercase">{item.name}</h2>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">设计归档于 {item.date}</p>
           </div>
         </div>
+        <button 
+           onClick={() => {
+             logic.setDesignState(prev => ({
+               ...prev,
+               projectName: `${item.name}_复件`,
+               scenario: item.scenario,
+               params: item.params,
+               results: item.results,
+               isDesigned: true
+             }));
+             logic.setCurrentPage(Page.SOLUTION);
+             logic.setPreviewHistoryItem(null);
+           }}
+           className="px-6 py-3 bg-slate-900 text-white rounded-xl font-black text-[11px] uppercase tracking-widest mb-6"
+        >
+          重新载入此设计
+        </button>
       </div>
     );
   };
 
-  // --- 主渲染逻辑 ---
+  const renderUserManagementView = () => (
+    <div className="flex-1 flex flex-col p-6 overflow-hidden bg-white">
+      <div className="shrink-0 mb-6">
+        <h2 className="text-2xl font-black text-slate-900 tracking-tight uppercase">用户管理中心</h2>
+        <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">管理系统成员权限、账户状态及安全策略</p>
+      </div>
 
-  return (
-    <div className="flex flex-col h-screen overflow-hidden bg-white relative">
-      {renderTopNav()}
-
-      {logic.currentPage === Page.SOLUTION && (
-        <div className="bg-white border-b h-9 flex items-center px-5 shrink-0 shadow-sm relative z-40">
-          <div className="flex space-x-5 h-full">
-            {[{id: SolutionTab.DESIGN, l: '方案设计'}, {id: SolutionTab.VERIFICATION, l: '方案验证'}].map(tab => (
-              <button key={tab.id} onClick={() => logic.setCurrentSolutionTab(tab.id)} 
-                className={`text-[11px] font-bold h-full relative flex items-center transition-all px-1 ${logic.currentSolutionTab === tab.id ? `${themeText} border-b-2 ${themeBorder}` : 'text-slate-300 hover:text-slate-500'}`}>
-                {tab.l}
-              </button>
-            ))}
+      {/* 过滤器 */}
+      <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 mb-6 flex flex-wrap items-end gap-4 shrink-0">
+        <div className="space-y-1.5 flex-1 min-w-[200px]">
+          <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">按角色过滤</label>
+          <select 
+            value={logic.userRoleFilter}
+            onChange={e => logic.setUserRoleFilter(e.target.value)}
+            className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2 text-[12px] font-bold outline-none"
+          >
+            <option value="ALL">所有角色</option>
+            <option value="系统管理员">系统管理员</option>
+            <option value="资深工程师">资深工程师</option>
+            <option value="设计助理">设计助理</option>
+            <option value="访客">访客</option>
+          </select>
+        </div>
+        <div className="space-y-1.5 flex-[2] min-w-[300px]">
+          <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">搜索姓名或邮箱</label>
+          <div className="relative">
+            <input 
+              type="text" 
+              placeholder="请输入关键词..." 
+              value={logic.userNameFilter}
+              onChange={e => logic.setUserNameFilter(e.target.value)}
+              className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2 pl-10 text-[12px] font-bold outline-none focus:ring-2 focus:ring-blue-500/10"
+            />
+            <svg className="w-4 h-4 absolute left-3.5 top-2.5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
           </div>
         </div>
-      )}
-
-      <main className="flex-1 flex overflow-hidden">
-        {logic.currentPage === Page.SOLUTION ? (
-          <div className="flex-1 flex overflow-hidden">
-            {logic.currentSolutionTab === SolutionTab.DESIGN && renderSolutionSidebar()}
-            {logic.currentSolutionTab === SolutionTab.DESIGN ? renderSolutionView() : renderVerificationView()}
-          </div>
-        ) : logic.currentPage === Page.MANAGEMENT ? renderManagementView() : renderHistoryView()}
-      </main>
-
-      {/* 渲染子页面：历史预览 */}
-      {renderHistoryPreview()}
-
-      {/* AI 对话助手入口 */}
-      <div className="fixed bottom-5 right-5 z-[60] flex flex-col items-end space-y-2.5">
-        {!logic.isChatOpen && (
-           <div className="bg-white px-3 py-1.5 rounded-lg shadow-2xl border border-slate-100 animate-in fade-in slide-in-from-bottom-2 duration-300">
-             <p className="text-[10px] font-black text-slate-700 uppercase tracking-tight">需要声学辅助? ✨</p>
-           </div>
-        )}
-        <button onClick={() => logic.setIsChatOpen(!logic.isChatOpen)} className={`w-12 h-12 rounded-xl flex items-center justify-center shadow-2xl transition-all duration-300 transform hover:scale-110 active:scale-95 ${logic.isChatOpen ? 'bg-slate-900 text-white rotate-90' : `${themeBg} text-white`}`}>
-          {logic.isChatOpen ? <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M6 18L18 6M6 6l12 12"></path></svg> : <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg>}
+        <button 
+          onClick={() => setIsAddingUser(true)}
+          className="bg-slate-900 text-white px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-black transition-all shadow-lg active:scale-95"
+        >
+          + 新增成员
         </button>
       </div>
 
-      {/* AI 对话抽屉栏 */}
-      <div className={`fixed inset-y-0 right-0 w-[340px] bg-white border-l border-slate-100 shadow-2xl z-[70] transition-all duration-300 transform ${logic.isChatOpen ? 'translate-x-0' : 'translate-x-full'}`}>
-        <div className="flex flex-col h-full bg-slate-50/10">
-          <header className="px-5 py-3 border-b bg-white flex items-center justify-between shadow-sm shrink-0">
-            <div className="flex items-center space-x-2">
-              <div className={`w-7 h-7 rounded bg-slate-900 flex items-center justify-center text-white text-base`}>✨</div>
-              <div><h3 className="text-[12px] font-black text-slate-900 uppercase">声学助手</h3><p className="text-[8px] font-bold text-slate-300 uppercase tracking-widest leading-none">AI Assistant</p></div>
-            </div>
-            <button onClick={() => logic.setIsChatOpen(false)} className="text-slate-300 hover:text-slate-900 text-lg transition-colors">✕</button>
-          </header>
-          <div className="flex-1 overflow-y-auto p-5 space-y-4 scrollbar-hide">
-            {logic.designState.chatHistory.map((msg, i) => (
-              <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'} animate-in fade-in slide-in-from-bottom-1`}>
-                <div className={`max-w-[95%] p-3.5 rounded-xl text-[11px] leading-relaxed shadow-sm ${msg.role === 'ai' ? 'bg-white border border-slate-100 text-slate-600' : `${themeBg} text-white font-medium`}`}>{msg.text}</div>
-              </div>
-            ))}
-            <div ref={chatEndRef} />
-          </div>
-          <div className="p-4 border-t bg-white shrink-0 shadow-[0_-2px_10px_rgba(0,0,0,0.02)]">
-             <div className="relative">
-                <textarea 
-                  value={logic.chatInputValue} 
-                  onChange={e => logic.setChatInputValue(e.target.value)} 
-                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); logic.handleSendMessage(); }}} 
-                  className="w-full bg-slate-50 border border-slate-100 rounded-lg p-3 pr-10 text-[11px] outline-none min-h-[80px] resize-none focus:bg-white focus:ring-1 focus:ring-slate-200 transition-all shadow-inner font-medium" 
-                  placeholder="请输入您的设计偏好或修改意见..." 
-                />
-                <button onClick={logic.handleSendMessage} disabled={!logic.chatInputValue.trim() || logic.isProcessingAi} className={`absolute right-1.5 bottom-1.5 w-7 h-7 rounded bg-slate-900 text-white flex items-center justify-center transition-all shadow-md ${!logic.chatInputValue.trim() || logic.isProcessingAi ? 'opacity-20 cursor-not-allowed' : 'hover:scale-105 active:scale-95 hover:brightness-125'}`}>
-                   {logic.isProcessingAi ? '...' : '→'}
-                </button>
-             </div>
-          </div>
+      {/* 用户列表表格 */}
+      <div className="flex-1 bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm flex flex-col">
+        <div className="flex-1 overflow-auto scrollbar-hide">
+          <table className="w-full text-left text-[11px]">
+            <thead className="sticky top-0 bg-slate-50 border-b z-10">
+              <tr>
+                <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">姓名 & 邮箱</th>
+                <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">角色权限</th>
+                <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">最后活跃</th>
+                <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">状态</th>
+                <th className="px-6 py-4 text-right pr-6 font-black text-slate-400 uppercase tracking-widest w-40">管理操作</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {logic.users.map(u => (
+                <tr key={u.id} className="hover:bg-slate-50/50 transition-colors group">
+                  <td className="px-6 py-4">
+                    <div className="flex items-center space-x-3">
+                      <div className={`w-8 h-8 rounded-full ${themeBg} text-white flex items-center justify-center font-black text-[10px]`}>{u.name[0]}</div>
+                      <div>
+                        <div className="font-black text-slate-900 text-[12px]">{u.name}</div>
+                        <div className="font-bold text-slate-400 text-[10px]">{u.email}</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-6 py-4">
+                    <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-tighter border ${
+                      u.role === '系统管理员' ? 'border-red-200 bg-red-50 text-red-600' :
+                      u.role === '资深工程师' ? 'border-blue-200 bg-blue-50 text-blue-600' :
+                      u.role === '设计助理' ? 'border-emerald-200 bg-emerald-50 text-emerald-600' :
+                      'border-slate-200 bg-slate-50 text-slate-400'
+                    }`}>{u.role}</span>
+                  </td>
+                  <td className="px-6 py-4 text-slate-400 font-mono text-[10px]">{u.lastActive}</td>
+                  <td className="px-6 py-4">
+                    <div className="flex items-center space-x-1.5">
+                      <div className={`w-1.5 h-1.5 rounded-full ${u.status === '活跃' ? 'bg-emerald-500 shadow-[0_0_5px_rgba(16,185,129,0.3)]' : 'bg-slate-300'}`}></div>
+                      <span className={`text-[10px] font-bold ${u.status === '活跃' ? 'text-emerald-600' : 'text-slate-400'}`}>{u.status}</span>
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 text-right pr-6 space-x-3 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button onClick={() => setEditingUser(u)} className="text-blue-600 font-black hover:underline uppercase tracking-widest text-[9px]">编辑</button>
+                    <button onClick={() => logic.deleteUser(u.id)} className="text-red-400 font-black hover:text-red-600 transition-colors uppercase tracking-widest text-[9px]">删除</button>
+                  </td>
+                </tr>
+              ))}
+              {logic.users.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="py-20 text-center text-slate-300 font-black uppercase italic">未发现相关用户信息</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 
-      {/* 设备配置调整模态框 */}
-      {logic.editingItem && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-5 bg-slate-900/40 backdrop-blur-sm">
-          <div className="bg-white w-full max-w-xs rounded-xl p-6 space-y-5 shadow-2xl animate-in zoom-in-95 duration-200">
-            <h3 className="text-sm font-black text-slate-900 uppercase tracking-tight border-b pb-2">调整清单项配置</h3>
-            <div className="space-y-3">
-              <div className="space-y-1">
-                 <label className="text-[9px] font-black text-slate-300 ml-1 block uppercase tracking-widest">产品规格名</label>
-                 <input value={logic.editingItem.item.name} onChange={e => logic.setEditingItem({...logic.editingItem!, item: {...logic.editingItem!.item, name: e.target.value}})} className="w-full bg-slate-50 border border-slate-100 rounded px-3 py-2 text-[12px] font-bold outline-none focus:bg-white" />
+      {/* 用户编辑/新增弹窗 */}
+      {(editingUser || isAddingUser) && (
+        <div className="fixed inset-0 z-[500] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-5">
+           <div className="bg-white w-full max-md rounded-3xl shadow-2xl p-8 space-y-6 animate-in zoom-in-95 duration-200">
+              <div className="flex items-center justify-between border-b pb-4">
+                 <h3 className="text-lg font-black text-slate-900 uppercase tracking-tight">
+                   {isAddingUser ? '新增平台成员' : `编辑用户资料：${editingUser?.name}`}
+                 </h3>
+                 <button onClick={() => { setEditingUser(null); setIsAddingUser(false); }} className="text-slate-300 hover:text-slate-900 transition-colors">✕</button>
               </div>
-              <div className="flex items-center space-x-1.5 bg-slate-50 p-1.5 rounded-lg border border-slate-100">
-                 <button onClick={() => logic.setEditingItem({...logic.editingItem!, item: {...logic.editingItem!.item, quantity: Math.max(1, logic.editingItem!.item.quantity-1)}})} className="w-8 h-8 bg-white rounded border border-slate-200 text-slate-400 font-black shadow-sm transition-all hover:text-red-500">-</button>
-                 <input readOnly value={logic.editingItem.item.quantity} className={`flex-1 text-center font-black text-base ${themeText} bg-transparent`} />
-                 <button onClick={() => logic.setEditingItem({...logic.editingItem!, item: {...logic.editingItem!.item, quantity: logic.editingItem!.item.quantity+1}})} className="w-8 h-8 bg-white rounded border border-slate-200 text-slate-400 font-black shadow-sm transition-all hover:text-blue-600">+</button>
+              
+              <div className="space-y-4">
+                 <div className="space-y-1.5">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">真实姓名</label>
+                    <input id="user-name" defaultValue={isAddingUser ? "" : editingUser?.name} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" placeholder="如：张三" />
+                 </div>
+                 <div className="space-y-1.5">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">电子邮箱</label>
+                    <input id="user-email" defaultValue={isAddingUser ? "" : editingUser?.email} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" placeholder="如：zhangsan@acoustic.com" />
+                 </div>
+                 <div className="grid grid-cols-2 gap-4">
+                   <div className="space-y-1.5">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">角色权限</label>
+                      <select id="user-role" defaultValue={isAddingUser ? '设计助理' : editingUser?.role} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none">
+                        <option value="系统管理员">系统管理员</option>
+                        <option value="资深工程师">资深工程师</option>
+                        <option value="设计助理">设计助理</option>
+                        <option value="访客">访客</option>
+                      </select>
+                   </div>
+                   <div className="space-y-1.5">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">账户状态</label>
+                      <select id="user-status" defaultValue={isAddingUser ? '活跃' : editingUser?.status} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none">
+                        <option value="活跃">活跃 (Active)</option>
+                        <option value="禁用">禁用 (Disabled)</option>
+                      </select>
+                   </div>
+                 </div>
               </div>
-            </div>
-            <div className="flex space-x-2 pt-2">
-              <button onClick={() => logic.setEditingItem(null)} className="flex-1 py-2.5 bg-slate-100 rounded font-bold text-[10px] text-slate-400 uppercase tracking-widest transition-colors hover:bg-slate-200">取消</button>
-              <button onClick={logic.saveEdit} className={`flex-1 py-2.5 ${themeBg} text-white rounded font-bold text-[10px] uppercase tracking-widest shadow-lg hover:brightness-110 transition-all`}>保存更改</button>
-            </div>
-          </div>
-        </div>
-      )}
 
-      {/* 生成文档选择对话框 */}
-      {showReportDialog && (
-        <div className="fixed inset-0 z-[300] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-5">
-           <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl p-6 space-y-5 animate-in zoom-in-95 duration-200">
-              <div className="flex items-center justify-between border-b pb-3">
-                 <h3 className="text-sm font-black text-slate-900 uppercase tracking-tight">生成报告范围</h3>
-                 <button onClick={() => setShowReportDialog(false)} className="text-slate-300 hover:text-slate-900 transition-colors">✕</button>
-              </div>
-              <p className="text-[11px] text-slate-500 font-medium">请选择您需要生成并下载文档的方案范围。系统将自动汇总配置并转换成正式 Word 文件。</p>
-              <div className="grid grid-cols-1 gap-3">
-                 <button 
-                    onClick={() => { logic.handleGenerateReports('CURRENT'); setShowReportDialog(false); }}
-                    className="flex flex-col items-start p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:border-blue-400 hover:shadow-md transition-all group"
-                 >
-                    <span className="text-[11px] font-black text-slate-900 group-hover:text-blue-600">仅当前方案</span>
-                    <span className="text-[9px] text-slate-400 mt-1">仅对当前选中的 [{logic.designState.results[logic.designState.activeResultIndex]?.title}] 进行文档导出。</span>
-                 </button>
-                 <button 
-                    onClick={() => { logic.handleGenerateReports('ALL'); setShowReportDialog(false); }}
-                    className="flex flex-col items-start p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:border-blue-400 hover:shadow-md transition-all group"
-                 >
-                    <span className="text-[11px] font-black text-slate-900 group-hover:text-blue-600">全部推荐方案</span>
-                    <span className="text-[9px] text-slate-400 mt-1">汇总并导出本次设计生成的所有 {logic.designState.results.length} 个备选方案。</span>
-                 </button>
+              <div className="flex space-x-3 pt-4">
+                 <button onClick={() => { setEditingUser(null); setIsAddingUser(false); }} className="flex-1 py-3.5 rounded-2xl border border-slate-200 text-slate-400 font-black text-[11px] uppercase tracking-widest hover:bg-slate-50 transition-all">取消</button>
+                 <button onClick={() => {
+                   const name = (document.getElementById('user-name') as HTMLInputElement).value;
+                   const email = (document.getElementById('user-email') as HTMLInputElement).value;
+                   const role = (document.getElementById('user-role') as HTMLSelectElement).value as any;
+                   const status = (document.getElementById('user-status') as HTMLSelectElement).value as any;
+                   
+                   if (isAddingUser) logic.addUser({ id: Date.now().toString(), name, email, role, status, lastActive: '从未登录' });
+                   else if (editingUser) logic.updateUser({ ...editingUser, name, email, role, status });
+                   setEditingUser(null); setIsAddingUser(false);
+                 }} className="flex-1 py-3.5 bg-slate-900 text-white rounded-2xl font-black text-[11px] uppercase shadow-xl hover:bg-black transition-all">保存设置</button>
               </div>
            </div>
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div className={`flex flex-col h-screen ${theme.lightBg} overflow-hidden text-slate-900 font-sans`}>
+      {renderTopNav()}
+      <main className="flex-1 flex overflow-hidden">
+        {logic.currentPage === Page.SOLUTION && (
+          <>
+            {renderSolutionSidebar()}
+            {renderSolutionView()}
+          </>
+        )}
+        {logic.currentPage === Page.MANAGEMENT && renderManagementView()}
+        {logic.currentPage === Page.HISTORY && (logic.previewHistoryItem ? renderHistoryPreview() : renderHistoryView())}
+        {logic.currentPage === Page.USERS && renderUserManagementView()}
+      </main>
+
+      {/* Chat AI Overlay */}
+      <div className="fixed bottom-6 right-6 z-[200]">
+        {!logic.isChatOpen ? (
+          <button 
+            onClick={() => logic.setIsChatOpen(true)}
+            className={`w-14 h-14 rounded-full ${themeBg} text-white shadow-2xl flex items-center justify-center hover:scale-110 active:scale-95 transition-all group`}
+          >
+            <svg className="w-6 h-6 group-hover:rotate-12 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path></svg>
+          </button>
+        ) : (
+          <div className="w-[380px] h-[520px] bg-white rounded-3xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden animate-in slide-in-from-bottom-10 fade-in duration-300">
+            <div className={`p-4 ${themeBg} text-white flex items-center justify-between`}>
+              <h4 className="text-xs font-black uppercase tracking-widest">声学助理 AI</h4>
+              <button onClick={() => logic.setIsChatOpen(false)} className="text-white/60 hover:text-white transition-colors">✕</button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50 scrollbar-hide">
+              {logic.designState.chatHistory.map((chat, idx) => (
+                <div key={idx} className={`flex ${chat.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[85%] p-3 rounded-2xl text-[12px] leading-relaxed shadow-sm ${
+                    chat.role === 'user' ? `${themeBg} text-white rounded-tr-none` : 'bg-white text-slate-700 border border-slate-100 rounded-tl-none'
+                  }`}>
+                    {chat.text}
+                  </div>
+                </div>
+              ))}
+              <div ref={chatEndRef} />
+            </div>
+            <div className="p-4 bg-white border-t border-slate-100 flex items-center space-x-2">
+              <input 
+                type="text" 
+                value={logic.chatInputValue}
+                onChange={e => logic.setChatInputValue(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && logic.handleSendMessage()}
+                placeholder="描述您的需求..."
+                className="flex-1 bg-slate-100 border-none rounded-full px-4 py-2 text-xs outline-none focus:ring-2 focus:ring-blue-500/20"
+              />
+              <button onClick={logic.handleSendMessage} className={`w-8 h-8 rounded-full flex items-center justify-center ${themeBg} text-white`}>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 12h14M12 5l7 7-7 7"></path></svg>
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Editing Item Dialog */}
+      {logic.editingItem && (
+        <div className="fixed inset-0 z-[400] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-white w-full max-md rounded-3xl shadow-2xl overflow-hidden">
+            <div className={`px-6 py-4 ${themeBg} text-white flex items-center justify-between`}>
+              <h3 className="text-sm font-black uppercase tracking-widest">编辑设备属性</h3>
+              <button onClick={() => logic.setEditingItem(null)} className="text-white/60 hover:text-white transition-colors">✕</button>
+            </div>
+            <div className="p-6 space-y-4">
+              <input type="text" value={logic.editingItem.item.name} onChange={e => logic.setEditingItem({ ...logic.editingItem!, item: { ...logic.editingItem!.item, name: e.target.value } })} className="w-full bg-slate-50 border border-slate-100 rounded-xl px-4 py-2.5 text-xs font-bold outline-none" />
+              <input type="number" value={logic.editingItem.item.quantity} onChange={e => logic.setEditingItem({ ...logic.editingItem!, item: { ...logic.editingItem!.item, quantity: parseInt(e.target.value) || 0 } })} className="w-full bg-slate-50 border border-slate-100 rounded-xl px-4 py-2.5 text-xs font-bold outline-none" />
+            </div>
+            <div className="p-6 bg-slate-50 border-t border-slate-100 flex space-x-3">
+              <button onClick={() => logic.setEditingItem(null)} className="flex-1 py-3 rounded-xl border border-slate-200 text-[11px] font-black uppercase tracking-widest text-slate-500">取消</button>
+              <button onClick={logic.saveEdit} className={`flex-1 py-3 rounded-xl ${themeBg} text-white shadow-lg text-[11px] font-black uppercase tracking-widest hover:brightness-110`}>保存更改</button>
+            </div>
+          </div>
         </div>
       )}
     </div>

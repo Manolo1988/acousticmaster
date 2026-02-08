@@ -7,7 +7,8 @@ export enum Scenario {
 export enum Page {
   SOLUTION = 'SOLUTION',
   MANAGEMENT = 'MANAGEMENT',
-  HISTORY = 'HISTORY'
+  HISTORY = 'HISTORY',
+  USERS = 'USERS'
 }
 
 export enum SolutionTab {
@@ -96,4 +97,13 @@ export interface Equipment {
   brand: string;
   model: string;
   specs: string;
+}
+
+export interface User {
+  id: string;
+  name: string;
+  role: '系统管理员' | '资深工程师' | '设计助理' | '访客';
+  email: string;
+  lastActive: string;
+  status: '活跃' | '禁用';
 }

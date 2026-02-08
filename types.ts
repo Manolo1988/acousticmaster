@@ -71,3 +71,18 @@ export interface Equipment {
   model: string;
   specs: string;
 }
+// types.ts 增加
+export interface EquipmentRow {
+  type: string;        // 类型
+  productName: string; // 产品名称
+  model: string;       // 型号
+  count: number;       // 数量
+}
+
+export interface DifySolution {
+  id: string;
+  name: string;        // 如 "方案1"
+  rows: EquipmentRow[];
+  wordLink: string;    // Word 下载链接
+  excelLink: string;   // Excel 下载链接
+}

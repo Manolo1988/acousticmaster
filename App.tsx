@@ -63,26 +63,76 @@ const App: React.FC = () => {
     setDesignState(prev => ({ ...prev, params: { ...prev.params, mics: prev.params.mics.filter(m => m.id !== id) } }));
   };
 
-  const startDesign = () => {
-    console.log("%c[Action] 点击开始设计按钮", "background: #6366f1; color: white; padding: 2px 4px; border-radius: 4px", {
-      params: designState.params,
-      extra: designState.params.extraRequirements
+  const startDesign = async () => {
+    // 1. 打印日志，方便你在控制台检查发出的完整参数
+    console.log("%c[Action] 发送完整参数至 Dify", "background: #6366f1; color: white; padding: 2px 4px; border-radius: 4px", {
+      scenario: designState.scenario,
+      ...designState.params
     });
-    setIsProcessingAi(true);
-    setTimeout(() => {
-      setDesignState(prev => ({ 
-        ...prev, 
-        isDesigned: true,
-        chatHistory: [...prev.chatHistory, {
-          role: 'ai',
-          text: '方案初步设计已完成。已根据房间尺寸和您的额外要求优化了音箱布局和声压分布。',
-          timestamp: new Date()
-        }]
-      }));
-      setIsProcessingAi(false);
-      setCurrentResultTab(ResultTab.PLAN);
-    }, 1200);
-  };
+      setIsProcessingAi(true);
+  
+      // 1. 准备基础参数（所有场景共有）
+      const baseInputs = {
+        scenario: designState.scenario === Scenario.MEETING_ROOM ? "会议室" : "报告厅",
+        length: designState.params.length,
+        width: designState.params.width,
+        height: designState.params.height,
+        hasCentralControl: designState.params.hasCentralControl,
+        hasMatrix: designState.params.hasMatrix,
+        hasVideoConf: designState.params.hasVideoConf,
+        hasRecording: designState.params.hasRecording,
+        mics_detail: designState.params.mics.map(m => `${m.type}: ${m.count}个`).join(', '),
+        extra_requirements: designState.params.extraRequirements || "无"
+      };
+  
+      // 2. 如果是报告厅，追加特定的舞台参数
+      const finalInputs = designState.scenario === Scenario.LECTURE_HALL 
+        ? {
+            ...baseInputs,
+            stageToNearAudience: designState.params.stageToNearAudience,
+            stageToFarAudience: designState.params.stageToFarAudience,
+            stageWidth: designState.params.stageWidth,
+            stageDepth: designState.params.stageDepth,
+          }
+        : baseInputs;
+  
+      try {
+        const response = await fetch('http://localhost/v1/workflows/run', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer app-k2AjjK1JPO62q6sXZag2QLaS'
+          },
+          body: JSON.stringify({
+            inputs: finalInputs, // 发送根据场景组合后的参数
+            response_mode: "blocking",
+            user: "mac_user"
+          })
+        });
+  
+        const result = await response.json();
+        
+        if (result?.data?.outputs) {
+          // 这里的 .area 需对应你 Dify 节点的输出变量名
+          const aiAdvice = result.data.outputs.area || result.data.outputs.text;
+  
+          setDesignState(prev => ({ 
+            ...prev, 
+            isDesigned: true,
+            chatHistory: [...prev.chatHistory, {
+              role: 'ai',
+              text: aiAdvice,
+              timestamp: new Date()
+            }]
+          }));
+          setCurrentResultTab(ResultTab.PLAN);
+        }
+      } catch (error) {
+        console.error("请求失败:", error);
+      } finally {
+        setIsProcessingAi(false);
+      }
+    };
 
   const handleAiSend = async () => {
     if (!aiInput.trim()) return;

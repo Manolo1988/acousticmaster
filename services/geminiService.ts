@@ -1,13 +1,23 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+// Initialize with process.env.API_KEY directly as required by guidelines
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 export const processAcousticCommand = async (command: string) => {
+  const prompt = `分析以下关于声学方案的需求描述，并提取参数: "${command}"`;
+  
+  // 打印发出的原始消息
+  console.log("%c[AI Request Send]", "color: #6366f1; font-weight: bold", {
+    originalCommand: command,
+    fullPrompt: prompt
+  });
+
   try {
+    // Using gemini-3-pro-preview for complex parameter extraction task
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `分析以下关于声学方案的需求描述，并提取参数: "${command}"`,
+      model: "gemini-3-pro-preview",
+      contents: prompt,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -17,6 +27,10 @@ export const processAcousticCommand = async (command: string) => {
             length: { type: Type.NUMBER },
             width: { type: Type.NUMBER },
             height: { type: Type.NUMBER },
+            stageToNearAudience: { type: Type.NUMBER },
+            stageToFarAudience: { type: Type.NUMBER },
+            stageWidth: { type: Type.NUMBER },
+            stageDepth: { type: Type.NUMBER },
             hasCentralControl: { type: Type.BOOLEAN },
             hasMatrix: { type: Type.BOOLEAN },
             hasVideoConf: { type: Type.BOOLEAN },
@@ -36,9 +50,15 @@ export const processAcousticCommand = async (command: string) => {
       }
     });
 
-    return JSON.parse(response.text || '{}');
+    // Directly accessing .text property of GenerateContentResponse
+    const result = JSON.parse(response.text || '{}');
+    
+    // 打印 AI 返回的结构化数据
+    console.log("%c[AI Response Received]", "color: #10b981; font-weight: bold", result);
+    
+    return result;
   } catch (error) {
-    console.error("Gemini Error:", error);
+    console.error("%c[AI Error]", "color: #ef4444; font-weight: bold", error);
     return null;
   }
 };

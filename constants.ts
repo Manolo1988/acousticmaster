@@ -1,5 +1,5 @@
 
-import { Scenario, AcousticParams, Equipment } from './types';
+import { Scenario, AcousticParams, Equipment, HistoryItem } from './types';
 
 export const MIC_TYPES = [
   '手持无线话筒',
@@ -22,41 +22,26 @@ export const DEFAULT_PARAMS: AcousticParams = {
   hasVideoConf: false,
   hasRecording: false,
   mics: [{ id: '1', type: '手持无线话筒', count: 2 }],
-  extraRequirements: '' // 初始化为空
+  extraRequirements: ''
 };
 
 export const SCENARIO_THEMES = {
   [Scenario.MEETING_ROOM]: {
-    bg: 'bg-slate-50',
-    sidebar: 'bg-white/95',
-    chatBg: 'bg-blue-50/20',
-    primary: 'bg-blue-600',
-    text: 'text-blue-600',
-    accent: 'blue',
-    border: 'border-blue-200',
-    glass: 'backdrop-blur-xl bg-white/60 border-blue-100 shadow-sm'
+    color: 'blue-600',
+    lightBg: 'bg-slate-50',
+    chatBg: 'bg-blue-50/20'
   },
   [Scenario.LECTURE_HALL]: {
-    bg: 'bg-stone-50',
-    sidebar: 'bg-white/95',
-    chatBg: 'bg-purple-50/20',
-    primary: 'bg-purple-600',
-    text: 'text-purple-600',
-    accent: 'purple',
-    border: 'border-purple-200',
-    glass: 'backdrop-blur-xl bg-white/60 border-purple-100 shadow-sm'
+    color: 'purple-600',
+    lightBg: 'bg-stone-50',
+    chatBg: 'bg-purple-50/20'
   }
 };
 
 export const VERIFY_THEME = {
-  bg: 'bg-emerald-50',
-  sidebar: 'bg-white/95',
-  chatBg: 'bg-emerald-50/30',
-  primary: 'bg-emerald-600',
-  text: 'text-emerald-600',
-  accent: 'emerald',
-  border: 'border-emerald-200',
-  glass: 'backdrop-blur-xl bg-white/60 border-emerald-100 shadow-sm'
+  color: 'emerald-600',
+  lightBg: 'bg-emerald-50',
+  chatBg: 'bg-emerald-50/30'
 };
 
 export const MOCK_EQUIPMENTS: Equipment[] = [
@@ -67,8 +52,30 @@ export const MOCK_EQUIPMENTS: Equipment[] = [
   { id: '5', category: '中控', brand: '快思聪 (Crestron)', model: 'CP4-R', specs: 'Control System with 4-series' },
 ];
 
-export const MOCK_HISTORY = [
-  { id: 'h1', type: 'DESIGN', name: '阿里巴巴总部5号会议室', date: '2024-05-20', status: '已完成' },
-  { id: 'h2', type: 'VERIFICATION', name: '上海大剧院方案核验', date: '2024-05-18', status: '已完成' },
-  { id: 'h3', type: 'DESIGN', name: '某高校报告厅声学改造', date: '2024-05-15', status: '草稿' },
+const MOCK_RESULT_1 = [
+  { id: 'r1-1', type: '音箱', name: '同轴吸顶扬声器', model: 'SX60', quantity: 4 },
+  { id: 'r1-2', type: '功放', name: '数字功放', model: 'SD300', quantity: 2 },
+];
+
+export const MOCK_HISTORY: HistoryItem[] = [
+  { 
+    id: 'h1', 
+    type: '方案设计', 
+    name: '阿里巴巴总部5号会议室', 
+    date: '2024-05-20', 
+    status: '已完成',
+    scenario: Scenario.MEETING_ROOM,
+    params: { ...DEFAULT_PARAMS, length: 10, width: 6 },
+    results: [{ id: 'res-h1', title: '推荐方案 1', items: MOCK_RESULT_1, wordLink: '#', excelLink: '#' }]
+  },
+  { 
+    id: 'h2', 
+    type: '方案设计', 
+    name: '某高校报告厅声学改造', 
+    date: '2024-05-15', 
+    status: '已完成',
+    scenario: Scenario.LECTURE_HALL,
+    params: { ...DEFAULT_PARAMS, length: 25, width: 18, stageWidth: 12, stageDepth: 6 },
+    results: [{ id: 'res-h2', title: '推荐方案 1', items: MOCK_RESULT_1 }]
+  },
 ];

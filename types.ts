@@ -21,11 +21,6 @@ export enum ResultTab {
   REPORT = 'REPORT'
 }
 
-export enum VerificationResultTab {
-  REPORT = 'REPORT',
-  MAP_3D = 'MAP_3D'
-}
-
 export interface MicConfig {
   id: string;
   type: string;
@@ -45,7 +40,24 @@ export interface AcousticParams {
   hasVideoConf: boolean;
   hasRecording: boolean;
   mics: MicConfig[];
-  extraRequirements: string; // 新增字段
+  extraRequirements: string;
+}
+
+export interface EquipmentItem {
+  id: string;
+  type: string;      // 类型
+  name: string;      // 产品名称
+  model: string;     // 型号
+  quantity: number;  // 数量
+}
+
+export interface SolutionResult {
+  id: string;
+  title: string;
+  items: EquipmentItem[];
+  wordLink?: string;
+  excelLink?: string;
+  isGenerating?: boolean;
 }
 
 export interface ChatMessage {
@@ -55,11 +67,25 @@ export interface ChatMessage {
 }
 
 export interface DesignState {
+  projectName: string;
   scenario: Scenario;
   params: AcousticParams;
   blueprint: string | null;
   isDesigned: boolean;
   chatHistory: ChatMessage[];
+  results: SolutionResult[];
+  activeResultIndex: number;
+}
+
+export interface HistoryItem {
+  id: string;
+  type: string;
+  name: string;
+  date: string;
+  status: string;
+  scenario: Scenario;
+  params: AcousticParams;
+  results: SolutionResult[];
 }
 
 export type EquipmentCategory = '音箱' | '功放' | '中控' | '矩阵' | '视频会议' | '录播' | '话筒';
@@ -70,19 +96,4 @@ export interface Equipment {
   brand: string;
   model: string;
   specs: string;
-}
-// types.ts 增加
-export interface EquipmentRow {
-  type: string;        // 类型
-  productName: string; // 产品名称
-  model: string;       // 型号
-  count: number;       // 数量
-}
-
-export interface DifySolution {
-  id: string;
-  name: string;        // 如 "方案1"
-  rows: EquipmentRow[];
-  wordLink: string;    // Word 下载链接
-  excelLink: string;   // Excel 下载链接
 }

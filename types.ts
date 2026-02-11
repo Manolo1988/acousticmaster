@@ -6,6 +6,7 @@ export enum Scenario {
 
 export enum Page {
   SOLUTION = 'SOLUTION',
+  VERIFICATION = 'VERIFICATION',
   MANAGEMENT = 'MANAGEMENT',
   HISTORY = 'HISTORY',
   USERS = 'USERS'
@@ -106,4 +107,40 @@ export interface User {
   email: string;
   lastActive: string;
   status: '活跃' | '禁用';
+}
+
+export enum TableType {
+  SPEAKER = '音箱',
+  LINE_ARRAY = '线阵列配套',
+  AMPLIFIER = '定阻功放',
+  PERIPHERAL = '周边设备',
+  OTHER = '其他设备'
+}
+export interface DbInventoryItem {
+  id: number; // 数据库 int 类型，解决 string 冲突
+  产品名称: string;
+  型号: string;
+  市场价: number;
+  品牌?: string;
+  类型?: string;
+  // 定阻功放/线阵配套/音箱共有
+  额定功率?: string;
+  额定阻抗?: string;
+  // 音箱/线阵配套共有
+  灵敏度?: string;
+  最大声压级?: string;
+  覆盖角?: string;
+  面高?: number;
+  用途?: string;
+  main_id?: number; // 关联音箱的 ID
+  // 周边设备特有
+  输入通道?: number;
+  输出通道?: number;
+  // 定阻功放特有
+  通道数?: number;
+  // 其他设备特有
+  描述?: string;
+  场景?: string;
+  // 前端辅助标识
+  isChild?: boolean; 
 }

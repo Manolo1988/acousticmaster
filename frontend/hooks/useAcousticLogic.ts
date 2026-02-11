@@ -46,6 +46,100 @@ const formatDifyResult = (result: any): string => {
   return '❌ 方案生成失败，请检查后端日志。';
 };
 
+
+// ========================================
+// 新增：Dify 响应解析器（动态支持任意数量方案）
+// ========================================
+
+const parseTableLines = (tableText: string): EquipmentItem[] => {
+  const items: EquipmentItem[] = [];
+  const lines = tableText
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line && !line.includes('|:-:') && line.includes('|'));
+
+  for (const line of lines) {
+    const cols = line
+      .split('|')
+      .map(col => col.trim())
+      .filter(col => col !== '');
+
+    if (cols.length >= 4) {
+      const [type, name, model, qtyStr] = cols;
+      // 跳过表头行
+      if (['类型', '产品名称', '型号', '数量'].includes(type)) continue;
+
+      const quantity = parseInt(qtyStr, 10) || 1;
+      items.push({
+        id: `${Math.random().toString(36).slice(2)}-${items.length}`,
+        type,
+        name,
+        model,
+        quantity
+      });
+    }
+  }
+  return items;
+};
+
+const parseDifyResponseToResults = (rawText: string): SolutionResult[] => {
+  const resultStartKeyword = '生成完毕，最终结果如下：';
+  const resultStartIndex = rawText.indexOf(resultStartKeyword);
+  if (resultStartIndex === -1) return [];
+
+  let content = rawText.slice(resultStartIndex + resultStartKeyword.length);
+  const docStartIndex = content.indexOf('请耐心等待');
+  if (docStartIndex !== -1) {
+    content = content.slice(0, docStartIndex);
+  }
+
+  // 按 <font size=5> 分割方案（支持任意数量）
+  const blocks = content.split(/<font[^>]*size\s*=\s*["']?5["']?[^>]*>/)
+    .map(b => b.replace(/<\/font>/gi, '').trim())
+    .filter(b => b);
+
+  const results: SolutionResult[] = [];
+  for (const block of blocks) {
+    const firstLineEnd = block.search(/[\n|]/);
+    const title = firstLineEnd > 0 
+      ? block.substring(0, firstLineEnd).trim()
+      : `方案${results.length + 1}`;
+    
+    const tablePart = firstLineEnd > 0 
+      ? block.substring(firstLineEnd).trim()
+      : block;
+
+    const items = parseTableLines(tablePart);
+    if (items.length > 0) {
+      results.push({
+        id: `res-${Date.now()}-${results.length}`,
+        title,
+        items,
+        wordLink: '',
+        excelLink: ''
+      });
+    }
+  }
+
+  // 尝试关联文档链接
+  const docMatches = [...rawText.matchAll(/(方案\s*\S+)\s*(\{.*?"word":\s*".*?".*?\})/g)];
+  for (const match of docMatches) {
+    const titleInDoc = match[1].trim();
+    try {
+      const links = JSON.parse(match[2]);
+      const target = results.find(r => r.title === titleInDoc);
+      if (target) {
+        target.wordLink = links.word || '';
+        target.excelLink = links.excel || '';
+      }
+    } catch (e) { /* 忽略解析错误 */ }
+  }
+
+  return results;
+};
+
+
+
 // ========================================
 // Hook 主体
 // ========================================
@@ -193,74 +287,76 @@ export const useAcousticLogic = () => {
 
 
  // new_startDesign
-  const startDesign = async () => {
-    const acousticIntent = {
-      schema_version: "v1",
-      intent_type: "acoustic_design",
-      inputSignals: {
-        geometry: {
-          length: designState.params.length,
-          width: designState.params.width,
-          height: designState.params.height
-        },
-        scenario: designState.scenario
+const startDesign = async () => {
+  const acousticIntent = {
+    schema_version: "v1",
+    intent_type: "acoustic_design",
+    inputSignals: {
+      geometry: {
+        length: designState.params.length,
+        width: designState.params.width,
+        height: designState.params.height
       },
-      processingSignals: {
-        mics: designState.params.mics,
-        subsystems: {
-          hasCentralControl: designState.params.hasCentralControl,
-          hasMatrix: designState.params.hasMatrix,
-          hasVideoConf: designState.params.hasVideoConf,
-          hasRecording: designState.params.hasRecording
-        }
-      },
-      outputSignals: {
-        target: "acoustic_design_plan"
-      },
-      timestamp: new Date().toISOString()
-    };
-
-    console.log("🎯 Acoustic Intent:", acousticIntent);
-    setIsProcessingAi(true);
-
-    try {
-      const apiResult = await submitDesign(acousticIntent);
-      const aiMessage = apiResult ? formatDifyResult(apiResult) : '❌ 方案生成失败，请检查后端日志。';
-
-      setDesignState(prev => ({ 
-        ...prev, 
-        isDesigned: true,
-        chatHistory: [
-          ...prev.chatHistory,
-          {
-            role: 'ai',
-            text: aiMessage,
-            timestamp: new Date()
-          }
-        ]
-      }));
-
-      setCurrentResultTab(ResultTab.PLAN);
-    } catch (error) {
-      console.error("startDesign 异常:", error);
-      setDesignState(prev => ({
-        ...prev,
-        chatHistory: [
-          ...prev.chatHistory,
-          {
-            role: 'ai',
-            text: '⚠️ 系统异常，请查看控制台日志。',
-            timestamp: new Date()
-          }
-        ]
-      }));
-    } finally {
-      setIsProcessingAi(false);
-    }
+      scenario: designState.scenario
+    },
+    processingSignals: {
+      mics: designState.params.mics,
+      subsystems: {
+        hasCentralControl: designState.params.hasCentralControl,
+        hasMatrix: designState.params.hasMatrix,
+        hasVideoConf: designState.params.hasVideoConf,
+        hasRecording: designState.params.hasRecording
+      }
+    },
+    outputSignals: {
+      target: "acoustic_design_plan"
+    },
+    timestamp: new Date().toISOString()
   };
 
+  console.log("🎯 Acoustic Intent:", acousticIntent);
+  setIsProcessingAi(true);
 
+  try {
+    const apiResult = await submitDesign(acousticIntent);
+    const rawText = apiResult?.raw_answer || '';
 
+    // 🔑 核心新增：解析结构化方案
+    const parsedResults = parseDifyResponseToResults(rawText);
+
+    setDesignState(prev => ({ 
+      ...prev, 
+      isDesigned: true,
+      results: parsedResults, // ← 填充设计看板数据
+      activeResultIndex: 0,
+      chatHistory: [
+        ...prev.chatHistory,
+        {
+          role: 'ai',
+          text: rawText || '❌ 方案生成失败，请检查后端日志。',
+          timestamp: new Date()
+        }
+      ]
+    }));
+
+    setCurrentResultTab(ResultTab.PLAN);
+  } catch (error) {
+    console.error("startDesign 异常:", error);
+    setDesignState(prev => ({
+      ...prev,
+      chatHistory: [
+        ...prev.chatHistory,
+        {
+          role: 'ai',
+          text: '⚠️ 系统异常，请查看控制台日志。',
+          timestamp: new Date()
+        }
+      ]
+    }));
+  } finally {
+    setIsProcessingAi(false);
+  }
+};
 
 
 

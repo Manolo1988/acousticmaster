@@ -1,9 +1,7 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-
-// Initialize with process.env.API_KEY directly as required by guidelines
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
+// 确保读取到 Vite 注入的环境变量
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
 export const processAcousticCommand = async (command: string) => {
   const prompt = `分析以下关于声学方案的需求描述，并提取参数: "${command}"`;
   

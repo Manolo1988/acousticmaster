@@ -8,6 +8,49 @@ import {
 import { DEFAULT_PARAMS, MIC_TYPES, MOCK_HISTORY } from '../constants';
 import { processAcousticCommand } from '../services/geminiService';
 
+
+// 👇 新增：工具函数
+const submitDesign = async (acousticIntent: any) => {
+  try {
+    const intentResponse = await fetch("http://115.231.236.153:3001/api/acoustic-intent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ acousticIntent })
+    });
+
+    if (!intentResponse.ok) {
+      throw new Error(`Intent submission failed: ${intentResponse.status}`);
+    }
+
+    const difyResponse = await fetch("http://115.231.236.153:3001/api/run-dify-chatflow", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" }
+    });
+
+    if (!difyResponse.ok) {
+      throw new Error(`Dify execution failed: ${difyResponse.status}`);
+    }
+
+    const difyResult = await difyResponse.json();
+    return difyResult;
+  } catch (error) {
+    console.error("❌ submitDesign 失败:", error);
+    return null;
+  }
+};
+
+const formatDifyResult = (result: any): string => {
+  if (result?.raw_answer) {
+    return result.raw_answer;
+  }
+  return '❌ 方案生成失败，请检查后端日志。';
+};
+
+// ========================================
+// Hook 主体
+// ========================================
+
+
 export const useAcousticLogic = () => {
   // --- 基础页面与 UI 状态 ---
   const [currentPage, setCurrentPage] = useState<Page>(Page.SOLUTION);
@@ -111,6 +154,8 @@ export const useAcousticLogic = () => {
     setDesignState(prev => ({ ...prev, params: { ...prev.params, mics: prev.params.mics.filter(m => m.id !== id) } }));
   };
 
+
+
   // --- AI 交互与设计逻辑 ---
   const handleSendMessage = async () => {
     if (!chatInputValue.trim() || isProcessingAi) return;
@@ -144,24 +189,81 @@ export const useAcousticLogic = () => {
     setIsProcessingAi(false);
   };
 
-  const startDesign = () => {
-    setIsProcessingAi(true);
-    setTimeout(() => {
-      const mockResults: SolutionResult[] = [
-        {
-          id: 'res-1',
-          title: '推荐方案 1',
-          items: [
-            { id: '1', type: '音箱', name: '同轴吸顶扬声器', model: 'SX60', quantity: 4 },
-            { id: '2', type: '功放', name: '数字功放', model: 'SD300', quantity: 2 },
-          ]
+
+
+
+ // new_startDesign
+  const startDesign = async () => {
+    const acousticIntent = {
+      schema_version: "v1",
+      intent_type: "acoustic_design",
+      inputSignals: {
+        geometry: {
+          length: designState.params.length,
+          width: designState.params.width,
+          height: designState.params.height
+        },
+        scenario: designState.scenario
+      },
+      processingSignals: {
+        mics: designState.params.mics,
+        subsystems: {
+          hasCentralControl: designState.params.hasCentralControl,
+          hasMatrix: designState.params.hasMatrix,
+          hasVideoConf: designState.params.hasVideoConf,
+          hasRecording: designState.params.hasRecording
         }
-      ];
-      setDesignState(prev => ({ ...prev, isDesigned: true, results: mockResults, activeResultIndex: 0 }));
-      setIsProcessingAi(false);
+      },
+      outputSignals: {
+        target: "acoustic_design_plan"
+      },
+      timestamp: new Date().toISOString()
+    };
+
+    console.log("🎯 Acoustic Intent:", acousticIntent);
+    setIsProcessingAi(true);
+
+    try {
+      const apiResult = await submitDesign(acousticIntent);
+      const aiMessage = apiResult ? formatDifyResult(apiResult) : '❌ 方案生成失败，请检查后端日志。';
+
+      setDesignState(prev => ({ 
+        ...prev, 
+        isDesigned: true,
+        chatHistory: [
+          ...prev.chatHistory,
+          {
+            role: 'ai',
+            text: aiMessage,
+            timestamp: new Date()
+          }
+        ]
+      }));
+
       setCurrentResultTab(ResultTab.PLAN);
-    }, 1200);
+    } catch (error) {
+      console.error("startDesign 异常:", error);
+      setDesignState(prev => ({
+        ...prev,
+        chatHistory: [
+          ...prev.chatHistory,
+          {
+            role: 'ai',
+            text: '⚠️ 系统异常，请查看控制台日志。',
+            timestamp: new Date()
+          }
+        ]
+      }));
+    } finally {
+      setIsProcessingAi(false);
+    }
   };
+
+
+
+
+
+
   const saveEdit = () => {
     if (!editingItem) return;
     const newResults = [...designState.results];

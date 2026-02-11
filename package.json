@@ -9,9 +9,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react-dom": "^19.2.4",
     "@google/genai": "^1.39.0",
-    "react": "^19.2.4"
+    "axios": "^1.13.5",
+    "cors": "^2.8.6",
+    "dotenv": "^17.2.4",
+    "express": "^5.2.1",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

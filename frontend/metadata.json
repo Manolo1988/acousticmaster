@@ -1,0 +1,8 @@
+{
+  "name": "acoustic-master",
+  "description": "专业的声学设备设计与验证平台，支持智能参数化设计、AI交互方案生成、声学仿真及自动化报告导出。",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

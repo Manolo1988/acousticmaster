@@ -300,24 +300,57 @@ const startDesign = async () => {
   }
 
   // ✅ 报告厅额外校验
-  if (designState.scenario === Scenario.LECTURE_HALL) {
-    const { stageToNearAudience, stageToFarAudience, stageWidth, stageDepth } = designState.params;
-    if (
-      stageToNearAudience <= 0 ||
-      stageToFarAudience <= 0 ||
-      stageWidth <= 0 ||
-      stageDepth <= 0
-    ) {
-      alert('❌ 报告厅参数：台口至最近、台口至最远、台口宽度、舞台深度必须大于 0');
-      setIsProcessingAi(false);
-      return;
-    }
-    if (stageToNearAudience >= stageToFarAudience) {
-      alert('❌ “台口至最近” 必须小于 “台口至最远”');
-      setIsProcessingAi(false);
-      return;
-    }
+if (designState.scenario === Scenario.LECTURE_HALL) {
+  const {
+    length,
+    width,
+    stageToNearAudience,
+    stageToFarAudience,
+    stageWidth,
+    stageDepth,
+  } = designState.params;
+
+  // 1. 四个报告厅参数必须 > 0
+  if (
+    stageToNearAudience <= 0 ||
+    stageToFarAudience <= 0 ||
+    stageWidth <= 0 ||
+    stageDepth <= 0
+  ) {
+    alert('❌ 报告厅参数：台口至最近、台口至最远、台口宽度、舞台深度必须大于 0');
+    setIsProcessingAi(false);
+    return;
   }
+
+  // 2. 最近距离必须小于最远距离
+  if (stageToNearAudience >= stageToFarAudience) {
+    alert('❌ “台口至最近” 必须小于 “台口至最远”');
+    setIsProcessingAi(false);
+    return;
+  }
+
+  // 3. 台口宽度不能超过房间宽度
+  if (stageWidth > width) {
+    alert('❌ 台口宽度不能大于房间宽度');
+    setIsProcessingAi(false);
+    return;
+  }
+
+  // 4. 舞台深度不能超过房间长度
+  if (stageDepth > length) {
+    alert('❌ 舞台深度不能大于房间长度');
+    setIsProcessingAi(false);
+    return;
+  }
+
+  // 5. 最远观众距离不应明显超过房间对角线（防止误输极大值）
+  const roomDiagonal = Math.sqrt(length * length + width * width);
+  if (stageToFarAudience > roomDiagonal + 10) {
+    alert(`❌ “台口至最远观众距离”过大（${stageToFarAudience}m），建议不超过房间对角线（约 ${roomDiagonal.toFixed(1)}m）`);
+    setIsProcessingAi(false);
+    return;
+  }
+}
 
   // 👇 构造 geometry：基础参数始终存在
   const baseGeometry = {

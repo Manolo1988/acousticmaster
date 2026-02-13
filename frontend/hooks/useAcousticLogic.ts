@@ -288,16 +288,62 @@ export const useAcousticLogic = () => {
 
  // new_startDesign
 const startDesign = async () => {
+  // ✅ 参数校验：基础尺寸必须 > 0
+  if (
+    designState.params.length <= 0 ||
+    designState.params.width <= 0 ||
+    designState.params.height <= 0
+  ) {
+    alert('❌ 房间长、宽、安装高度必须大于 0');
+    setIsProcessingAi(false);
+    return;
+  }
+
+  // ✅ 报告厅额外校验
+  if (designState.scenario === Scenario.LECTURE_HALL) {
+    const { stageToNearAudience, stageToFarAudience, stageWidth, stageDepth } = designState.params;
+    if (
+      stageToNearAudience <= 0 ||
+      stageToFarAudience <= 0 ||
+      stageWidth <= 0 ||
+      stageDepth <= 0
+    ) {
+      alert('❌ 报告厅参数：台口至最近、台口至最远、台口宽度、舞台深度必须大于 0');
+      setIsProcessingAi(false);
+      return;
+    }
+    if (stageToNearAudience >= stageToFarAudience) {
+      alert('❌ “台口至最近” 必须小于 “台口至最远”');
+      setIsProcessingAi(false);
+      return;
+    }
+  }
+
+  // 👇 构造 geometry：基础参数始终存在
+  const baseGeometry = {
+    length: designState.params.length,
+    width: designState.params.width,
+    height: designState.params.height,
+  };
+
+  // 👇 报告厅场景：扩展四个新字段（字段名与 UI 完全一致）
+  const geometry =
+    designState.scenario === Scenario.LECTURE_HALL
+      ? {
+          ...baseGeometry,
+          stageToNearAudience: designState.params.stageToNearAudience,
+          stageToFarAudience: designState.params.stageToFarAudience,
+          stageWidth: designState.params.stageWidth,
+          stageDepth: designState.params.stageDepth,
+        }
+      : baseGeometry;
+
   const acousticIntent = {
     schema_version: "v1",
     intent_type: "acoustic_design",
     inputSignals: {
-      geometry: {
-        length: designState.params.length,
-        width: designState.params.width,
-        height: designState.params.height
-      },
-      scenario: designState.scenario
+      scenario: designState.scenario,
+      geometry, // ✅ 动态结构
     },
     processingSignals: {
       mics: designState.params.mics,
@@ -305,13 +351,13 @@ const startDesign = async () => {
         hasCentralControl: designState.params.hasCentralControl,
         hasMatrix: designState.params.hasMatrix,
         hasVideoConf: designState.params.hasVideoConf,
-        hasRecording: designState.params.hasRecording
-      }
+        hasRecording: designState.params.hasRecording,
+      },
     },
     outputSignals: {
-      target: "acoustic_design_plan"
+      target: "acoustic_design_plan",
     },
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
   };
 
   console.log("🎯 Acoustic Intent:", acousticIntent);
@@ -321,43 +367,42 @@ const startDesign = async () => {
     const apiResult = await submitDesign(acousticIntent);
     const rawText = apiResult?.raw_answer || '';
 
-    // 🔑 核心新增：解析结构化方案
+    // 🔑 解析结构化方案
     const parsedResults = parseDifyResponseToResults(rawText);
 
-    setDesignState(prev => ({ 
-      ...prev, 
+    setDesignState((prev) => ({
+      ...prev,
       isDesigned: true,
-      results: parsedResults, // ← 填充设计看板数据
+      results: parsedResults,
       activeResultIndex: 0,
       chatHistory: [
         ...prev.chatHistory,
         {
           role: 'ai',
           text: rawText || '❌ 方案生成失败，请检查后端日志。',
-          timestamp: new Date()
-        }
-      ]
+          timestamp: new Date(),
+        },
+      ],
     }));
 
     setCurrentResultTab(ResultTab.PLAN);
   } catch (error) {
     console.error("startDesign 异常:", error);
-    setDesignState(prev => ({
+    setDesignState((prev) => ({
       ...prev,
       chatHistory: [
         ...prev.chatHistory,
         {
           role: 'ai',
           text: '⚠️ 系统异常，请查看控制台日志。',
-          timestamp: new Date()
-        }
-      ]
+          timestamp: new Date(),
+        },
+      ],
     }));
   } finally {
     setIsProcessingAi(false);
   }
 };
-
 
 
   const saveEdit = () => {

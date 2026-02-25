@@ -60,6 +60,7 @@ export interface SolutionResult {
   wordLink?: string;
   excelLink?: string;
   isGenerating?: boolean;
+  simulationImage?: string;
 }
 
 export interface ChatMessage {
@@ -100,13 +101,32 @@ export interface Equipment {
   specs: string;
 }
 
+export type UserRole = '管理员' | '普通用户' | '游客';
+
 export interface User {
-  id: string;
-  name: string;
-  role: '系统管理员' | '资深工程师' | '设计助理' | '访客';
-  email: string;
-  lastActive: string;
-  status: '活跃' | '禁用';
+  id: number;
+  username: string;
+  phone: string;
+  company: string;
+  role: UserRole;
+  createdAt?: string;
+}
+
+export interface AuthUser extends User {
+  isGuest: boolean;
+  guestId?: string;
+}
+
+export interface HistoryRecord {
+  id: number;
+  userId?: number | null;
+  guestId?: string | null;
+  username: string;
+  createdAt: string;
+  projectName: string;
+  scenario: Scenario;
+  params: AcousticParams;
+  results: SolutionResult[];
 }
 
 export enum TableType {

@@ -1,6 +1,6 @@
 
 import React, { useRef, useEffect, useState } from 'react';
-import { Scenario, Page, SolutionTab, ResultTab, EquipmentCategory, Equipment, User, TableType } from './types';
+import { Scenario, Page, SolutionTab, ResultTab, User, TableType, DbInventoryItem, HistoryRecord } from './types';
 import { MIC_TYPES, SCENARIO_THEMES, VERIFY_THEME } from './constants';
 import Visualization from './components/Visualization';
 import { useAcousticLogic } from './hooks/useAcousticLogic';
@@ -12,9 +12,11 @@ const App: React.FC = () => {
   const [activeResultView, setActiveResultView] = useState<ResultView>('TABLE');
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  const [editingEq, setEditingEq] = useState<Equipment | null>(null);
+  const [editingEq, setEditingEq] = useState<DbInventoryItem | null>(null);
   const [isAddingEq, setIsAddingEq] = useState(false);
-  const [editingHistory, setEditingHistory] = useState<any>(null);
+  const [editingHistory, setEditingHistory] = useState<HistoryRecord | null>(null);
+  const [isLoginOpen, setIsLoginOpen] = useState(false);
+  const [isProfileDialogOpen, setIsProfileDialogOpen] = useState(false);
 
   // 用户管理弹窗状态
   const [editingUser, setEditingUser] = useState<User | null>(null);
@@ -70,7 +72,12 @@ const App: React.FC = () => {
           声学<span className={themeText}>大师</span>
         </div>
         <nav className="flex space-x-5 h-11">
-          {(Object.values(Page) as Page[]).map(p => (
+          {(Object.values(Page) as Page[]).filter(p => {
+            if (p === Page.MANAGEMENT || p === Page.USERS) {
+              return logic.currentUser.role === '管理员';
+            }
+            return true;
+          }).map(p => (
             <button key={p} onClick={() => logic.setCurrentPage(p)}
               className={`text-[11px] font-bold h-full relative px-1 transition-all flex items-center ${logic.currentPage === p ? `${themeText} border-b-2 ${themeBorder}` : 'text-slate-400 hover:text-slate-900'}`}>
               {p === Page.SOLUTION ? '方案设计' : p === Page.VERIFICATION ? '方案验证' : p === Page.MANAGEMENT ? '资源管理' : p === Page.HISTORY ? '历史设计' : '用户管理'}
@@ -87,10 +94,10 @@ const App: React.FC = () => {
             className={`flex items-center space-x-2 group p-0.5 pr-2 rounded-full border transition-all ${isProfileOpen ? 'bg-slate-50 border-slate-200' : 'border-transparent hover:bg-slate-50'}`}
           >
             <div className={`w-7 h-7 rounded-full ${themeBg} text-white flex items-center justify-center font-black text-[10px] shadow-sm relative`}>
-              {logic.currentUser.name[0]}
+              {logic.currentUser.username[0]}
               <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full border-2 border-white"></span>
             </div>
-            <span className="text-[11px] font-bold text-slate-600 group-hover:text-slate-900">{logic.currentUser.name}</span>
+            <span className="text-[11px] font-bold text-slate-600 group-hover:text-slate-900">{logic.currentUser.username}</span>
             <svg className={`w-3 h-3 text-slate-300 transition-transform ${isProfileOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 9l-7 7-7-7"></path></svg>
           </button>
 
@@ -101,19 +108,19 @@ const App: React.FC = () => {
               <div className="p-4 bg-slate-50/80 border-b border-slate-100">
                 <div className="flex items-center space-x-3">
                   <div className={`w-10 h-10 rounded-full ${themeBg} text-white flex items-center justify-center font-black text-xs shadow-lg`}>
-                    {logic.currentUser.name[0]}
+                    {logic.currentUser.username[0]}
                   </div>
                   <div>
-                    <div className="text-xs font-black text-slate-900">{logic.currentUser.name}</div>
+                    <div className="text-xs font-black text-slate-900">{logic.currentUser.username}</div>
                     <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">{logic.currentUser.role}</div>
-                    <div className="text-[10px] text-slate-400 mt-1 truncate max-w-[140px]">{logic.currentUser.email}</div>
+                    <div className="text-[10px] text-slate-400 mt-1 truncate max-w-[140px]">{logic.currentUser.phone || '未填写电话'}</div>
                   </div>
                 </div>
               </div>
 
               {/* 菜单列表 */}
               <div className="p-2 space-y-1">
-                <button className="w-full flex items-center space-x-3 px-3 py-2 rounded-xl text-[11px] font-bold text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-all">
+                <button onClick={() => { setIsProfileOpen(false); setIsProfileDialogOpen(true); }} className="w-full flex items-center space-x-3 px-3 py-2 rounded-xl text-[11px] font-bold text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-all">
                   <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
                   <span>个人资料</span>
                 </button>
@@ -130,13 +137,23 @@ const App: React.FC = () => {
 
               {/* 退出登录按钮 */}
               <div className="p-2 border-t border-slate-100 bg-slate-50/50">
-                <button
-                  onClick={() => { setIsProfileOpen(false); logic.handleLogout(); }}
-                  className="w-full flex items-center space-x-3 px-3 py-2 rounded-xl text-[11px] font-black text-red-500 hover:bg-red-50 transition-all uppercase tracking-widest"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
-                  <span>退出登录</span>
-                </button>
+                {logic.currentUser.isGuest ? (
+                  <button
+                    onClick={() => { setIsProfileOpen(false); setIsLoginOpen(true); }}
+                    className="w-full flex items-center space-x-3 px-3 py-2 rounded-xl text-[11px] font-black text-blue-600 hover:bg-blue-50 transition-all uppercase tracking-widest"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>
+                    <span>登录系统</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => { setIsProfileOpen(false); logic.handleLogout(); }}
+                    className="w-full flex items-center space-x-3 px-3 py-2 rounded-xl text-[11px] font-black text-red-500 hover:bg-red-50 transition-all uppercase tracking-widest"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                    <span>退出登录</span>
+                  </button>
+                )}
               </div>
             </div>
           )}
@@ -527,8 +544,17 @@ const App: React.FC = () => {
                     </>
                   )}
                   <td className="px-6 py-4 text-right pr-6 space-x-2">
-                    <button className="text-blue-600 font-bold">编辑</button>
-                    <button className="text-red-400 font-bold">删除</button>
+                    <button onClick={() => setEditingEq(item)} className="text-blue-600 font-bold">编辑</button>
+                    <button
+                      onClick={() => {
+                        if (window.confirm('确定要删除该设备吗？')) {
+                          logic.deleteInventoryItem(logic.activeTable, item.id);
+                        }
+                      }}
+                      className="text-red-400 font-bold"
+                    >
+                      删除
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -559,8 +585,8 @@ const App: React.FC = () => {
           <tbody className="divide-y divide-slate-100">
             {logic.history.map(h => (
               <tr key={h.id} className="hover:bg-slate-50 transition-colors group">
-                <td className="px-6 py-4 font-black text-slate-900">{h.name}</td>
-                <td className="px-6 py-4 text-slate-400 font-mono">{h.date}</td>
+                <td className="px-6 py-4 font-black text-slate-900">{h.projectName}</td>
+                <td className="px-6 py-4 text-slate-400 font-mono">{new Date(h.createdAt).toISOString().slice(0, 10)}</td>
                 <td className="px-6 py-4">
                   <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${h.scenario === Scenario.MEETING_ROOM ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'
                     }`}>{h.scenario === Scenario.MEETING_ROOM ? '会议室' : '报告厅'}</span>
@@ -568,14 +594,21 @@ const App: React.FC = () => {
                 <td className="px-6 py-4">
                   <div className="flex items-center space-x-1.5">
                     <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></div>
-                    <span className="text-emerald-600 font-bold">{h.status}</span>
+                    <span className="text-emerald-600 font-bold">已完成</span>
                   </div>
                 </td>
                 <td className="px-6 py-4 text-right pr-6 space-x-4">
                   <button onClick={() => logic.setPreviewHistoryItem(h)} className="text-blue-600 font-black hover:underline uppercase tracking-widest text-[9px]">详情预览</button>
+                  <button onClick={() => setEditingHistory(h)} className="text-slate-500 font-black hover:underline uppercase tracking-widest text-[9px]">编辑</button>
+                  <button onClick={() => logic.deleteHistoryRecord(h.id)} className="text-red-400 font-black hover:text-red-600 transition-colors uppercase tracking-widest text-[9px]">删除</button>
                 </td>
               </tr>
             ))}
+            {logic.history.length === 0 && (
+              <tr>
+                <td colSpan={5} className="py-20 text-center text-slate-300 font-black uppercase italic">暂无历史设计记录</td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -591,15 +624,15 @@ const App: React.FC = () => {
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7"></path></svg>
           </button>
           <div>
-            <h2 className="text-2xl font-black text-slate-900 tracking-tight uppercase">{item.name}</h2>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">设计归档于 {item.date}</p>
+            <h2 className="text-2xl font-black text-slate-900 tracking-tight uppercase">{item.projectName}</h2>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">设计归档于 {new Date(item.createdAt).toISOString().slice(0, 10)}</p>
           </div>
         </div>
         <button
           onClick={() => {
             logic.setDesignState(prev => ({
               ...prev,
-              projectName: `${item.name}_复件`,
+              projectName: `${item.projectName}_复件`,
               scenario: item.scenario,
               params: item.params,
               results: item.results,
@@ -616,7 +649,15 @@ const App: React.FC = () => {
     );
   };
 
-  const renderUserManagementView = () => (
+  const renderUserManagementView = () => {
+    const keyword = logic.userNameFilter.trim().toLowerCase();
+    const filteredUsers = logic.users.filter(u => {
+      const roleMatch = logic.userRoleFilter === 'ALL' || u.role === logic.userRoleFilter;
+      const keywordMatch = !keyword || u.username.toLowerCase().includes(keyword) || u.phone.includes(keyword);
+      return roleMatch && keywordMatch;
+    });
+
+    return (
     <div className="flex-1 flex flex-col p-6 overflow-hidden bg-white">
       <div className="shrink-0 mb-6">
         <h2 className="text-2xl font-black text-slate-900 tracking-tight uppercase">用户管理中心</h2>
@@ -633,14 +674,12 @@ const App: React.FC = () => {
             className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2 text-[12px] font-bold outline-none"
           >
             <option value="ALL">所有角色</option>
-            <option value="系统管理员">系统管理员</option>
-            <option value="资深工程师">资深工程师</option>
-            <option value="设计助理">设计助理</option>
-            <option value="访客">访客</option>
+            <option value="管理员">管理员</option>
+            <option value="普通用户">普通用户</option>
           </select>
         </div>
         <div className="space-y-1.5 flex-[2] min-w-[300px]">
-          <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">搜索姓名或邮箱</label>
+          <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">搜索用户名或电话</label>
           <div className="relative">
             <input
               type="text"
@@ -666,38 +705,28 @@ const App: React.FC = () => {
           <table className="w-full text-left text-[11px]">
             <thead className="sticky top-0 bg-slate-50 border-b z-10">
               <tr>
-                <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">姓名 & 邮箱</th>
+                <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">用户名</th>
+                <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">联系电话</th>
+                <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">公司</th>
                 <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">角色权限</th>
-                <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">最后活跃</th>
-                <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">状态</th>
                 <th className="px-6 py-4 text-right pr-6 font-black text-slate-400 uppercase tracking-widest w-40">管理操作</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {logic.users.map(u => (
+              {filteredUsers.map(u => (
                 <tr key={u.id} className="hover:bg-slate-50/50 transition-colors group">
                   <td className="px-6 py-4">
                     <div className="flex items-center space-x-3">
-                      <div className={`w-8 h-8 rounded-full ${themeBg} text-white flex items-center justify-center font-black text-[10px]`}>{u.name[0]}</div>
+                      <div className={`w-8 h-8 rounded-full ${themeBg} text-white flex items-center justify-center font-black text-[10px]`}>{u.username[0]}</div>
                       <div>
-                        <div className="font-black text-slate-900 text-[12px]">{u.name}</div>
-                        <div className="font-bold text-slate-400 text-[10px]">{u.email}</div>
+                        <div className="font-black text-slate-900 text-[12px]">{u.username}</div>
                       </div>
                     </div>
                   </td>
+                  <td className="px-6 py-4 text-slate-500">{u.phone}</td>
+                  <td className="px-6 py-4 text-slate-500">{u.company}</td>
                   <td className="px-6 py-4">
-                    <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-tighter border ${u.role === '系统管理员' ? 'border-red-200 bg-red-50 text-red-600' :
-                      u.role === '资深工程师' ? 'border-blue-200 bg-blue-50 text-blue-600' :
-                        u.role === '设计助理' ? 'border-emerald-200 bg-emerald-50 text-emerald-600' :
-                          'border-slate-200 bg-slate-50 text-slate-400'
-                      }`}>{u.role}</span>
-                  </td>
-                  <td className="px-6 py-4 text-slate-400 font-mono text-[10px]">{u.lastActive}</td>
-                  <td className="px-6 py-4">
-                    <div className="flex items-center space-x-1.5">
-                      <div className={`w-1.5 h-1.5 rounded-full ${u.status === '活跃' ? 'bg-emerald-500 shadow-[0_0_5px_rgba(16,185,129,0.3)]' : 'bg-slate-300'}`}></div>
-                      <span className={`text-[10px] font-bold ${u.status === '活跃' ? 'text-emerald-600' : 'text-slate-400'}`}>{u.status}</span>
-                    </div>
+                    <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-tighter border ${u.role === '管理员' ? 'border-red-200 bg-red-50 text-red-600' : 'border-blue-200 bg-blue-50 text-blue-600'}`}>{u.role}</span>
                   </td>
                   <td className="px-6 py-4 text-right pr-6 space-x-3 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button onClick={() => setEditingUser(u)} className="text-blue-600 font-black hover:underline uppercase tracking-widest text-[9px]">编辑</button>
@@ -705,7 +734,7 @@ const App: React.FC = () => {
                   </td>
                 </tr>
               ))}
-              {logic.users.length === 0 && (
+              {filteredUsers.length === 0 && (
                 <tr>
                   <td colSpan={5} className="py-20 text-center text-slate-300 font-black uppercase italic">未发现相关用户信息</td>
                 </tr>
@@ -721,50 +750,53 @@ const App: React.FC = () => {
           <div className="bg-white w-full max-md rounded-3xl shadow-2xl p-8 space-y-6 animate-in zoom-in-95 duration-200">
             <div className="flex items-center justify-between border-b pb-4">
               <h3 className="text-lg font-black text-slate-900 uppercase tracking-tight">
-                {isAddingUser ? '新增平台成员' : `编辑用户资料：${editingUser?.name}`}
+                {isAddingUser ? '新增平台成员' : `编辑用户资料：${editingUser?.username}`}
               </h3>
               <button onClick={() => { setEditingUser(null); setIsAddingUser(false); }} className="text-slate-300 hover:text-slate-900 transition-colors">✕</button>
             </div>
 
             <div className="space-y-4">
               <div className="space-y-1.5">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">真实姓名</label>
-                <input id="user-name" defaultValue={isAddingUser ? "" : editingUser?.name} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" placeholder="如：张三" />
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">用户名</label>
+                <input id="user-name" defaultValue={isAddingUser ? "" : editingUser?.username} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" placeholder="如：admin" />
               </div>
               <div className="space-y-1.5">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">电子邮箱</label>
-                <input id="user-email" defaultValue={isAddingUser ? "" : editingUser?.email} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" placeholder="如：zhangsan@acoustic.com" />
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">联系电话</label>
+                <input id="user-phone" defaultValue={isAddingUser ? "" : editingUser?.phone} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" placeholder="如：13700000000" />
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">角色权限</label>
-                  <select id="user-role" defaultValue={isAddingUser ? '设计助理' : editingUser?.role} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none">
-                    <option value="系统管理员">系统管理员</option>
-                    <option value="资深工程师">资深工程师</option>
-                    <option value="设计助理">设计助理</option>
-                    <option value="访客">访客</option>
+                  <select id="user-role" defaultValue={isAddingUser ? '普通用户' : editingUser?.role} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none">
+                    <option value="管理员">管理员</option>
+                    <option value="普通用户">普通用户</option>
                   </select>
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">账户状态</label>
-                  <select id="user-status" defaultValue={isAddingUser ? '活跃' : editingUser?.status} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none">
-                    <option value="活跃">活跃 (Active)</option>
-                    <option value="禁用">禁用 (Disabled)</option>
-                  </select>
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">公司名称</label>
+                  <input id="user-company" defaultValue={isAddingUser ? "" : editingUser?.company} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" placeholder="如：中国计量大学" />
                 </div>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">登录密码</label>
+                <input id="user-password" type="password" defaultValue="" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" placeholder="仅新增或修改时填写" />
               </div>
             </div>
 
             <div className="flex space-x-3 pt-4">
               <button onClick={() => { setEditingUser(null); setIsAddingUser(false); }} className="flex-1 py-3.5 rounded-2xl border border-slate-200 text-slate-400 font-black text-[11px] uppercase tracking-widest hover:bg-slate-50 transition-all">取消</button>
               <button onClick={() => {
-                const name = (document.getElementById('user-name') as HTMLInputElement).value;
-                const email = (document.getElementById('user-email') as HTMLInputElement).value;
+                const username = (document.getElementById('user-name') as HTMLInputElement).value;
+                const phone = (document.getElementById('user-phone') as HTMLInputElement).value;
+                const company = (document.getElementById('user-company') as HTMLInputElement).value;
                 const role = (document.getElementById('user-role') as HTMLSelectElement).value as any;
-                const status = (document.getElementById('user-status') as HTMLSelectElement).value as any;
+                const password = (document.getElementById('user-password') as HTMLInputElement).value;
 
-                if (isAddingUser) logic.addUser({ id: Date.now().toString(), name, email, role, status, lastActive: '从未登录' });
-                else if (editingUser) logic.updateUser({ ...editingUser, name, email, role, status });
+                if (isAddingUser) {
+                  logic.addUser({ username, phone, company, role, password });
+                } else if (editingUser) {
+                  logic.updateUser({ ...editingUser, username, phone, company, role, ...(password ? { password } : {}) });
+                }
                 setEditingUser(null); setIsAddingUser(false);
               }} className="flex-1 py-3.5 bg-slate-900 text-white rounded-2xl font-black text-[11px] uppercase shadow-xl hover:bg-black transition-all">保存设置</button>
             </div>
@@ -772,7 +804,8 @@ const App: React.FC = () => {
         </div>
       )}
     </div>
-  );
+    );
+  };
 
   return (
     <div className={`flex flex-col h-screen ${theme.lightBg} overflow-hidden text-slate-900 font-sans`}>
@@ -873,7 +906,7 @@ const App: React.FC = () => {
                       场景: (document.getElementById('new-scene') as HTMLSelectElement).value,
                     })
                   };
-                  logic.handleSaveEquipment(payload);
+                  logic.handleSaveEquipment(tempType, payload);
                   setIsAddingEq(false);
                 }}
                 className="flex-1 py-3.5 bg-slate-900 text-white rounded-2xl font-black text-[11px] uppercase shadow-xl hover:bg-black transition-all"
@@ -881,6 +914,216 @@ const App: React.FC = () => {
                 确认保存
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {editingEq && (
+        <div className="fixed inset-0 z-[650] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-5">
+          <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl p-8 space-y-6 animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between border-b pb-4">
+              <h3 className="text-lg font-black text-slate-900 uppercase tracking-tight">编辑设备</h3>
+              <button onClick={() => setEditingEq(null)} className="text-slate-300 hover:text-slate-900 transition-colors text-xl font-black">✕</button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <input id="edit-brand" defaultValue={editingEq.品牌} placeholder="品牌" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" />
+                <input id="edit-name" defaultValue={editingEq.产品名称} placeholder="产品名称" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" />
+                <input id="edit-model" defaultValue={editingEq.型号} placeholder="型号" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" />
+                <input id="edit-price" defaultValue={editingEq.市场价} type="number" placeholder="市场价" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" />
+
+                {logic.activeTable === TableType.SPEAKER ? (
+                  <>
+                    <input id="edit-res" defaultValue={editingEq.额定阻抗} placeholder="额定阻抗" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none" />
+                    <input id="edit-pwr" defaultValue={editingEq.额定功率} placeholder="额定功率" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none" />
+                    <input id="edit-sens" defaultValue={editingEq.灵敏度} placeholder="灵敏度" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none" />
+                    <input id="edit-spl" defaultValue={editingEq.最大声压级} placeholder="最大声压级" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none" />
+                    <input id="edit-cov" defaultValue={editingEq.覆盖角} placeholder="覆盖角" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none" />
+                    <input id="edit-usage" defaultValue={editingEq.用途} placeholder="主要用途" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none" />
+                  </>
+                ) : (
+                  <>
+                    <input id="edit-type" defaultValue={editingEq.类型} placeholder="具体子类型" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none" />
+                    <select id="edit-scene" defaultValue={editingEq.场景 || '通用'} className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none">
+                      <option value="通用">适用场景：通用</option>
+                      <option value="会议室">适用场景：会议室</option>
+                      <option value="报告厅">适用场景：报告厅</option>
+                    </select>
+                    <textarea id="edit-desc" defaultValue={editingEq.描述} placeholder="请输入详细描述或备注信息..." className="col-span-2 w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-[12px] h-24 resize-none outline-none focus:bg-white" />
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="flex space-x-3 pt-4 border-t">
+              <button onClick={() => setEditingEq(null)} className="flex-1 py-3.5 rounded-2xl border text-slate-400 font-black text-[11px] uppercase tracking-widest hover:bg-slate-50 transition-all">取消</button>
+              <button
+                onClick={() => {
+                  const payload = {
+                    品牌: (document.getElementById('edit-brand') as HTMLInputElement).value,
+                    产品名称: (document.getElementById('edit-name') as HTMLInputElement).value,
+                    型号: (document.getElementById('edit-model') as HTMLInputElement).value,
+                    市场价: parseFloat((document.getElementById('edit-price') as HTMLInputElement).value) || 0,
+                    ...(logic.activeTable === TableType.SPEAKER ? {
+                      额定阻抗: (document.getElementById('edit-res') as HTMLInputElement).value,
+                      额定功率: (document.getElementById('edit-pwr') as HTMLInputElement).value,
+                      灵敏度: (document.getElementById('edit-sens') as HTMLInputElement).value,
+                      最大声压级: (document.getElementById('edit-spl') as HTMLInputElement).value,
+                      覆盖角: (document.getElementById('edit-cov') as HTMLInputElement).value,
+                      用途: (document.getElementById('edit-usage') as HTMLInputElement).value,
+                    } : {
+                      类型: (document.getElementById('edit-type') as HTMLInputElement).value,
+                      场景: (document.getElementById('edit-scene') as HTMLSelectElement).value,
+                      描述: (document.getElementById('edit-desc') as HTMLTextAreaElement).value,
+                    })
+                  };
+                  logic.updateInventoryItem(logic.activeTable, editingEq.id, payload);
+                  setEditingEq(null);
+                }}
+                className="flex-1 py-3.5 bg-slate-900 text-white rounded-2xl font-black text-[11px] uppercase shadow-xl hover:bg-black transition-all"
+              >
+                保存更新
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingHistory && (
+        <div className="fixed inset-0 z-[655] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-5">
+          <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl p-8 space-y-6 animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between border-b pb-4">
+              <h3 className="text-lg font-black text-slate-900 uppercase tracking-tight">编辑历史设计</h3>
+              <button onClick={() => setEditingHistory(null)} className="text-slate-300 hover:text-slate-900 transition-colors text-xl font-black">✕</button>
+            </div>
+            <div className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">设计名称</label>
+                <input id="history-name" defaultValue={editingHistory.projectName} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">场景类型</label>
+                <select id="history-scenario" defaultValue={editingHistory.scenario} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none">
+                  <option value={Scenario.MEETING_ROOM}>会议室</option>
+                  <option value={Scenario.LECTURE_HALL}>报告厅</option>
+                </select>
+              </div>
+            </div>
+            <div className="flex space-x-3 pt-4 border-t">
+              <button onClick={() => setEditingHistory(null)} className="flex-1 py-3.5 rounded-2xl border text-slate-400 font-black text-[11px] uppercase tracking-widest hover:bg-slate-50 transition-all">取消</button>
+              <button
+                onClick={() => {
+                  const projectName = (document.getElementById('history-name') as HTMLInputElement).value;
+                  const scenario = (document.getElementById('history-scenario') as HTMLSelectElement).value as Scenario;
+                  logic.updateHistoryRecord(editingHistory.id, { projectName, scenario });
+                  setEditingHistory(null);
+                }}
+                className="flex-1 py-3.5 bg-slate-900 text-white rounded-2xl font-black text-[11px] uppercase shadow-xl hover:bg-black transition-all"
+              >
+                保存修改
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isLoginOpen && (
+        <div className="fixed inset-0 z-[660] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-5">
+          <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl p-8 space-y-6 animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between border-b pb-4">
+              <h3 className="text-lg font-black text-slate-900 uppercase tracking-tight">登录系统</h3>
+              <button onClick={() => setIsLoginOpen(false)} className="text-slate-300 hover:text-slate-900 transition-colors text-xl font-black">✕</button>
+            </div>
+            <div className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">用户名</label>
+                <input id="login-username" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" placeholder="请输入用户名" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">密码</label>
+                <input id="login-password" type="password" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" placeholder="请输入密码" />
+              </div>
+            </div>
+            <div className="flex space-x-3 pt-4 border-t">
+              <button onClick={() => setIsLoginOpen(false)} className="flex-1 py-3.5 rounded-2xl border text-slate-400 font-black text-[11px] uppercase tracking-widest hover:bg-slate-50 transition-all">取消</button>
+              <button
+                onClick={async () => {
+                  const username = (document.getElementById('login-username') as HTMLInputElement).value.trim();
+                  const password = (document.getElementById('login-password') as HTMLInputElement).value;
+                  const ok = await logic.login(username, password);
+                  if (!ok) {
+                    alert('登录失败，请检查用户名或密码。');
+                    return;
+                  }
+                  setIsLoginOpen(false);
+                }}
+                className="flex-1 py-3.5 bg-slate-900 text-white rounded-2xl font-black text-[11px] uppercase shadow-xl hover:bg-black transition-all"
+              >
+                立即登录
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isProfileDialogOpen && (
+        <div className="fixed inset-0 z-[670] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-5">
+          <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl p-8 space-y-6 animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between border-b pb-4">
+              <h3 className="text-lg font-black text-slate-900 uppercase tracking-tight">个人资料</h3>
+              <button onClick={() => setIsProfileDialogOpen(false)} className="text-slate-300 hover:text-slate-900 transition-colors text-xl font-black">✕</button>
+            </div>
+            {logic.currentUser.isGuest ? (
+              <div className="space-y-4">
+                <p className="text-[12px] text-slate-500">当前为游客身份，请先登录后查看或修改个人资料。</p>
+                <button
+                  onClick={() => { setIsProfileDialogOpen(false); setIsLoginOpen(true); }}
+                  className="w-full py-3 bg-slate-900 text-white rounded-xl font-black text-[11px] uppercase"
+                >
+                  去登录
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">用户名</label>
+                  <input id="profile-username" defaultValue={logic.currentUser.username} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">联系电话</label>
+                  <input id="profile-phone" defaultValue={logic.currentUser.phone} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">公司名称</label>
+                  <input id="profile-company" defaultValue={logic.currentUser.company} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">修改密码</label>
+                  <input id="profile-password" type="password" defaultValue="" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" placeholder="留空则不修改" />
+                </div>
+                <div className="flex space-x-3 pt-2">
+                  <button onClick={() => setIsProfileDialogOpen(false)} className="flex-1 py-3.5 rounded-2xl border text-slate-400 font-black text-[11px] uppercase tracking-widest hover:bg-slate-50 transition-all">取消</button>
+                  <button
+                    onClick={async () => {
+                      const username = (document.getElementById('profile-username') as HTMLInputElement).value;
+                      const phone = (document.getElementById('profile-phone') as HTMLInputElement).value;
+                      const company = (document.getElementById('profile-company') as HTMLInputElement).value;
+                      const password = (document.getElementById('profile-password') as HTMLInputElement).value;
+                      const ok = await logic.updateProfile({ username, phone, company, ...(password ? { password } : {}) });
+                      if (!ok) {
+                        alert('更新失败，请检查后端日志。');
+                        return;
+                      }
+                      setIsProfileDialogOpen(false);
+                    }}
+                    className="flex-1 py-3.5 bg-slate-900 text-white rounded-2xl font-black text-[11px] uppercase shadow-xl hover:bg-black transition-all"
+                  >
+                    保存资料
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

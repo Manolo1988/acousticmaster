@@ -1,18 +1,32 @@
 import { useState, useMemo, useEffect } from 'react';
 import React from 'react';
-import { 
-  Scenario, Page, SolutionTab, ResultTab, AcousticParams, DesignState, 
-  EquipmentItem, SolutionResult, Equipment, HistoryItem, User,
-  TableType, DbInventoryItem 
+import {
+  Scenario, Page, SolutionTab, ResultTab, AcousticParams, DesignState,
+  EquipmentItem, SolutionResult, User, AuthUser, HistoryRecord,
+  TableType, DbInventoryItem
 } from '../types';
-import { DEFAULT_PARAMS, MIC_TYPES, MOCK_HISTORY } from '../constants';
+import { DEFAULT_PARAMS, MIC_TYPES } from '../constants';
 import { processAcousticCommand } from '../services/geminiService';
+import { v4 as uuidv4 } from 'uuid';
+
+// Type declaration for import.meta.env
+declare global {
+  interface ImportMetaEnv {
+    readonly VITE_API_BASE?: string;
+    // add other env variables here if needed
+  }
+  interface ImportMeta {
+    readonly env: ImportMetaEnv;
+  }
+}
+
+const API_BASE = import.meta.env.VITE_API_BASE || "http://115.231.236.153:3001";
 
 
 // 👇 新增：工具函数
 const submitDesign = async (acousticIntent: any) => {
   try {
-    const intentResponse = await fetch("http://115.231.236.153:3001/api/acoustic-intent", {
+    const intentResponse = await fetch(`${API_BASE}/api/acoustic-intent`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ acousticIntent })
@@ -22,7 +36,7 @@ const submitDesign = async (acousticIntent: any) => {
       throw new Error(`Intent submission failed: ${intentResponse.status}`);
     }
 
-    const difyResponse = await fetch("http://115.231.236.153:3001/api/run-dify-chatflow", {
+    const difyResponse = await fetch(`${API_BASE}/api/run-dify-chatflow`, {
       method: "POST",
       headers: { "Content-Type": "application/json" }
     });
@@ -155,15 +169,24 @@ export const useAcousticLogic = () => {
   const [isProcessingAi, setIsProcessingAi] = useState(false);
   const [isGeneratingDocs, setIsGeneratingDocs] = useState(false);
   const [editingItem, setEditingItem] = useState<{ resIdx: number, itemIdx: number, item: EquipmentItem } | null>(null);
-  const [previewHistoryItem, setPreviewHistoryItem] = useState<HistoryItem | null>(null);
-  const [users, setUsers] = useState<User[]>([]); // 确保初始值为数组
+  const [previewHistoryItem, setPreviewHistoryItem] = useState<HistoryRecord | null>(null);
+  const [users, setUsers] = useState<User[]>([]);
   const [userRoleFilter, setUserRoleFilter] = useState<string>('ALL');  // --- 方案设计核心状态 ---
   const [userNameFilter, setUserNameFilter] = useState("");
   const [searchFilters, setSearchFilters] = useState({ 品牌: '', 用途: '', 场景: '' });
   const [sortConfig, setSortConfig] = useState<{ key: string, direction: 'asc' | 'desc' } | null>(null);
   // --- 资源管理状态 (对应 MySQL 数据库) ---
-  const [activeTable, setActiveTable] = useState<TableType>(TableType.SPEAKER);
+  const [activeTable, setActiveTable] = useState<TableType>(TableType.SPEAKER as TableType);
   const [inventory, setInventory] = useState<DbInventoryItem[]>([]);
+  const [history, setHistory] = useState<HistoryRecord[]>([]);
+  const [currentUser, setCurrentUser] = useState<AuthUser>({
+    id: 0,
+    username: '游客',
+    phone: '',
+    company: '',
+    role: '游客',
+    isGuest: true
+  });
   const defaultProjectName = `声学项目_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}_01`;
   const [designState, setDesignState] = useState<DesignState>({
   
@@ -181,7 +204,7 @@ export const useAcousticLogic = () => {
   const displayInventory = useMemo(() => {
     let result = [...inventory];
     // 处理“音箱”分类：需要将主音箱与“线阵列配套”通过 main_id 关联并染色
-    if (activeTable === TableType.SPEAKER) {
+    if (activeTable === TableType.SPEAKER as TableType) {
       const speakers = inventory.filter(item => !item.main_id || item.main_id === 0);
       const children = inventory.filter(item => item.main_id && item.main_id > 0);
       
@@ -199,7 +222,7 @@ export const useAcousticLogic = () => {
     if (searchFilters.品牌) {
       result = result.filter(item => item.品牌.toLowerCase().includes(searchFilters.品牌.toLowerCase()));
     }
-    if (searchFilters.用途 && activeTable === TableType.SPEAKER) {
+    if (searchFilters.用途 && activeTable === TableType.SPEAKER as TableType) {
       result = result.filter(item => Array.isArray(item.用途) ? item.用途.includes(searchFilters.用途) : item.用途 === searchFilters.用途);
     }
 
@@ -216,6 +239,84 @@ export const useAcousticLogic = () => {
     // 处理其他分类 (功放、周边设备、其他设备等)
     //return inventory.filter(item => item.类型 === activeTable || (activeTable === TableType.OTHER && !item.类型));
   }, [inventory, searchFilters, sortConfig, activeTable]);
+
+  useEffect(() => {
+    const storedUser = localStorage.getItem('acousticUser');
+    const storedGuestId = localStorage.getItem('acousticGuestId');
+    if (storedUser) {
+      try {
+        const parsed = JSON.parse(storedUser) as AuthUser;
+        setCurrentUser(parsed);
+        return;
+      } catch (error) {
+        console.warn('Failed to parse stored user:', error);
+      }
+    }
+    const guestId = storedGuestId || uuidv4();
+    localStorage.setItem('acousticGuestId', guestId);
+    setCurrentUser({
+      id: 0,
+      username: '游客',
+      phone: '',
+      company: '',
+      role: '游客',
+      isGuest: true,
+      guestId
+    });
+  }, []);
+
+  const fetchInventoryByTable = async (table: TableType) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/inventory/${encodeURIComponent(table)}`);
+      if (!response.ok) throw new Error(`Fetch inventory failed: ${response.status}`);
+      const data = await response.json();
+      setInventory(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error("❌ Failed to fetch inventory:", error);
+      setInventory([]);
+    }
+  };
+
+  useEffect(() => {
+    fetchInventoryByTable(activeTable);
+  }, [activeTable]);
+
+  const fetchUsers = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/users`);
+      if (!response.ok) throw new Error(`Fetch users failed: ${response.status}`);
+      const data = await response.json();
+      setUsers(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error('❌ Failed to fetch users:', error);
+      setUsers([]);
+    }
+  };
+
+  const fetchHistory = async (user: AuthUser) => {
+    try {
+      const params = new URLSearchParams();
+      if (!user.isGuest && user.id) params.set('userId', String(user.id));
+      if (user.isGuest && user.guestId) params.set('guestId', user.guestId);
+      const response = await fetch(`${API_BASE}/api/history?${params.toString()}`);
+      if (!response.ok) throw new Error(`Fetch history failed: ${response.status}`);
+      const data = await response.json();
+      setHistory(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error('❌ Failed to fetch history:', error);
+      setHistory([]);
+    }
+  };
+
+  useEffect(() => {
+    fetchHistory(currentUser);
+    if (currentUser.role === '管理员') {
+      fetchUsers();
+    }
+    if (currentPage === Page.MANAGEMENT && currentUser.role !== '管理员') {
+      setCurrentPage(Page.SOLUTION);
+    }
+  }, [currentUser]);
 
   // --- 方案参数处理 ---
   const handleParamChange = (key: keyof AcousticParams | 'scenario', value: any) => {
@@ -419,6 +520,33 @@ if (designState.scenario === Scenario.LECTURE_HALL) {
     }));
 
     setCurrentResultTab(ResultTab.PLAN);
+
+    const historyPayload = {
+      userId: currentUser.isGuest ? null : currentUser.id,
+      guestId: currentUser.isGuest ? currentUser.guestId : null,
+      username: currentUser.username,
+      projectName: designState.projectName,
+      scenario: designState.scenario,
+      params: designState.params,
+      results: parsedResults.map((res) => ({
+        ...res,
+        simulationImage: '',
+        wordLink: res.wordLink || ''
+      }))
+    };
+
+    try {
+      const historyResponse = await fetch(`${API_BASE}/api/history`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(historyPayload)
+      });
+      if (historyResponse.ok) {
+        await fetchHistory(currentUser);
+      }
+    } catch (error) {
+      console.error('❌ Save history failed:', error);
+    }
   } catch (error) {
     console.error("startDesign 异常:", error);
     setDesignState((prev) => ({
@@ -447,7 +575,19 @@ if (designState.scenario === Scenario.LECTURE_HALL) {
   };
 
   const handleLogout = () => {
-    if (confirm('确定要退出系统吗？')) window.location.reload();
+    if (!confirm('确定要退出系统吗？')) return;
+    localStorage.removeItem('acousticUser');
+    const guestId = localStorage.getItem('acousticGuestId') || uuidv4();
+    localStorage.setItem('acousticGuestId', guestId);
+    setCurrentUser({
+      id: 0,
+      username: '游客',
+      phone: '',
+      company: '',
+      role: '游客',
+      isGuest: true,
+      guestId
+    });
   };
 // --- 1. 实现 deleteItem (方案明细中的设备删除) ---
 const deleteItem = (resIdx: number, itemIdx: number) => {
@@ -483,19 +623,84 @@ const handleGenerateReports = (scope: 'CURRENT' | 'ALL') => {
 };
 
 // --- 3. 实现 deleteUser (用户管理中的删除) ---
-const deleteUser = (id: string) => {
-  if (window.confirm("确定要删除该用户吗？此操作不可恢复。")) {
-    setUsers(prev => prev.filter(u => u.id !== id));
+const deleteUser = async (id: number) => {
+  if (!window.confirm("确定要删除该用户吗？此操作不可恢复。")) return;
+  try {
+    const response = await fetch(`${API_BASE}/api/users/${id}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error(`Delete user failed: ${response.status}`);
+    await fetchUsers();
+  } catch (error) {
+    console.error('❌ Delete user failed:', error);
+    alert('删除用户失败，请检查后端日志。');
   }
 };
-// 实现 addUser (用于 image_55065e.png)
-const addUser = (user: User) => {
-  setUsers(prev => [...prev, user]);
+
+const addUser = async (user: Omit<User, 'id'> & { password: string }) => {
+  try {
+    const response = await fetch(`${API_BASE}/api/users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(user)
+    });
+    if (!response.ok) throw new Error(`Create user failed: ${response.status}`);
+    await fetchUsers();
+  } catch (error) {
+    console.error('❌ Create user failed:', error);
+    alert('新增用户失败，请检查后端日志。');
+  }
 };
 
-// 实现 updateUser (用于 image_55065e.png)
-const updateUser = (user: User) => {
-  setUsers(prev => prev.map(u => u.id === user.id ? user : u));
+const updateUser = async (user: User & { password?: string }) => {
+  try {
+    const response = await fetch(`${API_BASE}/api/users/${user.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(user)
+    });
+    if (!response.ok) throw new Error(`Update user failed: ${response.status}`);
+    await fetchUsers();
+  } catch (error) {
+    console.error('❌ Update user failed:', error);
+    alert('更新用户失败，请检查后端日志。');
+  }
+};
+
+const login = async (username: string, password: string) => {
+  try {
+    const response = await fetch(`${API_BASE}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    if (!response.ok) throw new Error(`Login failed: ${response.status}`);
+    const data = await response.json();
+    const user: AuthUser = { ...data, isGuest: false };
+    setCurrentUser(user);
+    localStorage.setItem('acousticUser', JSON.stringify(user));
+    return true;
+  } catch (error) {
+    console.error('❌ Login failed:', error);
+    return false;
+  }
+};
+
+const updateProfile = async (updates: Partial<User> & { password?: string }) => {
+  if (currentUser.isGuest || !currentUser.id) return false;
+  try {
+    const response = await fetch(`${API_BASE}/api/users/${currentUser.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...currentUser, ...updates })
+    });
+    if (!response.ok) throw new Error(`Update profile failed: ${response.status}`);
+    const nextUser = { ...currentUser, ...updates } as AuthUser;
+    setCurrentUser(nextUser);
+    localStorage.setItem('acousticUser', JSON.stringify(nextUser));
+    return true;
+  } catch (error) {
+    console.error('❌ Update profile failed:', error);
+    return false;
+  }
 };
 // --- 4. 实现 handleDownload (文件下载逻辑) ---
 const handleDownload = (type: 'EXCEL' | 'WORD' | 'PNG') => {
@@ -513,23 +718,89 @@ const handleBlueprintUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     reader.readAsDataURL(file);
   }
 };
-const handleSaveEquipment = (item: Partial<DbInventoryItem>) => {
-  const newItem = {
-    ...item,
-    id: Date.now(),
-  } as DbInventoryItem;
-  setInventory(prev => [...prev, newItem]);
-  alert("设备录入成功！");
+const handleSaveEquipment = async (table: TableType, item: Partial<DbInventoryItem>) => {
+  try {
+    const response = await fetch(`${API_BASE}/api/inventory/${encodeURIComponent(table)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(item)
+    });
+    if (!response.ok) {
+      throw new Error(`Create inventory failed: ${response.status}`);
+    }
+    await fetchInventoryByTable(table);
+    alert("设备录入成功！");
+  } catch (error) {
+    console.error("❌ Create inventory failed:", error);
+    alert("设备录入失败，请检查后端日志。");
+  }
 };
 
-const filteredInventory = useMemo(() => {
-  // 根据侧边栏选中的 TableType 过滤数据
-  return inventory.filter(item => {
-    if (activeTable === TableType.SPEAKER) return !item.main_id && !item.描述;
-    if (activeTable === TableType.OTHER) return !!item.描述;
-    return true; // 其他类型逻辑类似
-  });
-}, [inventory, activeTable]);
+const updateInventoryItem = async (table: TableType, id: number, updates: Partial<DbInventoryItem>) => {
+  try {
+    const response = await fetch(`${API_BASE}/api/inventory/${encodeURIComponent(table)}/${id}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates)
+      }
+    );
+    if (!response.ok) {
+      throw new Error(`Update inventory failed: ${response.status}`);
+    }
+    await fetchInventoryByTable(table);
+    alert("设备更新成功！");
+  } catch (error) {
+    console.error("❌ Update inventory failed:", error);
+    alert("设备更新失败，请检查后端日志。");
+  }
+};
+
+const deleteInventoryItem = async (table: TableType, id: number) => {
+  try {
+    const response = await fetch(`${API_BASE}/api/inventory/${encodeURIComponent(table)}/${id}`,
+      {
+        method: "DELETE"
+      }
+    );
+    if (!response.ok) {
+      throw new Error(`Delete inventory failed: ${response.status}`);
+    }
+    await fetchInventoryByTable(table);
+  } catch (error) {
+    console.error("❌ Delete inventory failed:", error);
+    alert("设备删除失败，请检查后端日志。");
+  }
+};
+
+const updateHistoryRecord = async (id: number, updates: Partial<HistoryRecord>) => {
+  try {
+    const response = await fetch(`${API_BASE}/api/history/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates)
+    });
+    if (!response.ok) throw new Error(`Update history failed: ${response.status}`);
+    await fetchHistory(currentUser);
+  } catch (error) {
+    console.error('❌ Update history failed:', error);
+    alert('历史记录更新失败，请检查后端日志。');
+  }
+};
+
+const deleteHistoryRecord = async (id: number) => {
+  if (!window.confirm('确定要删除该历史记录吗？此操作不可恢复。')) return;
+  try {
+    const response = await fetch(`${API_BASE}/api/history/${id}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error(`Delete history failed: ${response.status}`);
+    await fetchHistory(currentUser);
+  } catch (error) {
+    console.error('❌ Delete history failed:', error);
+    alert('历史记录删除失败，请检查后端日志。');
+  }
+};
+
+const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
   return {
     searchFilters, setSearchFilters,
     sortConfig, setSortConfig,
@@ -549,12 +820,19 @@ const filteredInventory = useMemo(() => {
     // 补全 image_54f2c6.png 缺失的方法
     handleGenerateReports,
     handleSaveEquipment,
+    updateInventoryItem,
+    deleteInventoryItem,
+    updateHistoryRecord,
+    deleteHistoryRecord,
     deleteUser,
+    login,
+    updateProfile,
     userRoleFilter,
     setUserRoleFilter,
     setInventory,
-    currentUser: { name: '张经理', role: '系统管理员', email: 'zhang@acoustic.com' },
-    history: MOCK_HISTORY,
+    currentUser,
+    history,
+    setHistory,
     handleParamChange, handleMicChange, addMic, removeMic,
     handleUpdateProjectName, handleSendMessage, startDesign, saveEdit, handleLogout,
     closeHistoryPreview: () => setPreviewHistoryItem(null)

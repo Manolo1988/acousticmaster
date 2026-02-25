@@ -52,7 +52,16 @@ const getPrimaryKey = async (table) => {
 };
 
 const parseJsonField = (value, fallback) => {
-  if (!value) return fallback;
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === "object") return value;
+  if (Buffer.isBuffer(value)) {
+    try {
+      return JSON.parse(value.toString("utf8"));
+    } catch (error) {
+      return fallback;
+    }
+  }
+  if (typeof value !== "string") return fallback;
   try {
     return JSON.parse(value);
   } catch (error) {
@@ -60,11 +69,9 @@ const parseJsonField = (value, fallback) => {
   }
 };
 
-// 全局变量（仅演示用）
 let latestAcousticIntent = null;
 let latestDifyResult = null;
 
-// 保存 Acoustic Intent（和你原来一样）
 app.post("/api/acoustic-intent", (req, res) => {
   const { acousticIntent } = req.body;
   if (!acousticIntent) {
@@ -141,6 +148,43 @@ app.get("/api/inventory/:table", async (req, res) => {
   } catch (error) {
     console.error("❌ Fetch inventory failed:", error.message);
     res.status(500).json({ error: "Failed to fetch inventory" });
+  }
+});
+
+app.get("/api/inventory/:table/detail", async (req, res) => {
+  const table = getSafeTableName(req.params.table);
+  if (!table) return res.status(400).json({ error: "Invalid table name" });
+
+  const { model, name } = req.query;
+  if (!model && !name) {
+    return res.status(400).json({ error: "Missing model or name" });
+  }
+
+  try {
+    const conditions = [];
+    const values = [];
+    if (model) {
+      conditions.push("`型号` = ?");
+      values.push(model);
+    }
+    if (name) {
+      conditions.push("`产品名称` = ?");
+      values.push(name);
+    }
+
+    const [rows] = await pool.query(
+      `SELECT * FROM \`${table}\` WHERE ${conditions.join(" OR ")} LIMIT 1`,
+      values
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Not found" });
+    }
+
+    res.json(rows[0]);
+  } catch (error) {
+    console.error("❌ Fetch inventory detail failed:", error.message);
+    res.status(500).json({ error: "Failed to fetch inventory detail" });
   }
 });
 

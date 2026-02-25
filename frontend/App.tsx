@@ -1,9 +1,17 @@
 
 import React, { useRef, useEffect, useState } from 'react';
-import { Scenario, Page, SolutionTab, ResultTab, User, TableType, DbInventoryItem, HistoryRecord } from './types';
+import { Scenario, Page, SolutionTab, ResultTab, User, TableType, DbInventoryItem, HistoryRecord, EquipmentItem } from './types';
 import { MIC_TYPES, SCENARIO_THEMES, VERIFY_THEME } from './constants';
 import Visualization from './components/Visualization';
 import { useAcousticLogic } from './hooks/useAcousticLogic';
+
+declare global {
+  namespace JSX {
+    interface IntrinsicElements {
+      'lottie-player': any;
+    }
+  }
+}
 
 type ResultView = 'TABLE' | 'WORD';
 
@@ -28,11 +36,13 @@ const App: React.FC = () => {
 
   const [showReportDialog, setShowReportDialog] = useState(false);
   const [isEditingProjectName, setIsEditingProjectName] = useState(false);
+  const [exportDialogType, setExportDialogType] = useState<'EXCEL' | 'WORD' | null>(null);
+  const [detailDialog, setDetailDialog] = useState<{ resIdx: number; itemIdx: number; item: EquipmentItem; detail: DbInventoryItem | null; table: TableType | null } | null>(null);
+  const [replacementId, setReplacementId] = useState<number | ''>('');
 
   const [tempType, setTempType] = useState<TableType>(logic.activeTable);
   // 获取当前方案
   const activeResult = logic.designState.results[logic.designState.activeResultIndex];
-  const hasGeneratedReport = !!activeResult?.wordLink;
 
   // 获取当前主题颜色配置
   const theme = logic.currentSolutionTab === SolutionTab.VERIFICATION
@@ -42,6 +52,42 @@ const App: React.FC = () => {
   const themeText = `text-${theme.color}`;
   const themeBg = `bg-${theme.color}`;
   const themeBorder = `border-${theme.color}`;
+  const isBlueprintLocked = !!logic.designState.blueprint;
+
+  const getItemDetail = (item: EquipmentItem) => logic.getCachedEquipmentDetail(item);
+  const getItemBrand = (item: EquipmentItem) => item.brand || getItemDetail(item)?.品牌 || '';
+  const getItemUnitPrice = (item: EquipmentItem) => {
+    const raw = item.unitPrice ?? getItemDetail(item)?.市场价;
+    return raw ? Number(raw) : 0;
+  };
+
+  const activeTotalPrice = activeResult?.items.reduce((sum, item) => {
+    return sum + getItemUnitPrice(item) * (item.quantity || 0);
+  }, 0) || 0;
+
+  const reportUpToDate = !!(activeResult?.lastReportSignature && activeResult.lastReportSignature === logic.buildItemsSignature(activeResult.items));
+  const hasGeneratedReport = reportUpToDate || !!activeResult?.wordLink;
+  const detailOptions = detailDialog?.table ? logic.getInventoryOptions(detailDialog.table) : [];
+
+  const toggleSort = (key: string) => {
+    logic.setSortConfig(prev => {
+      if (!prev || prev.key !== key) {
+        return { key, direction: 'asc' };
+      }
+      return { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' };
+    });
+  };
+
+  const renderSortArrow = (key: string) => {
+    if (logic.sortConfig?.key !== key) {
+      return <span className="ml-1 text-slate-300">▲▼</span>;
+    }
+    return (
+      <span className="ml-1 text-slate-500">
+        {logic.sortConfig.direction === 'asc' ? '▲' : '▼'}
+      </span>
+    );
+  };
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -53,6 +99,13 @@ const App: React.FC = () => {
       setActiveResultView('TABLE');
     }
   }, [logic.designState.activeResultIndex, hasGeneratedReport]);
+
+  useEffect(() => {
+    if (!activeResult?.items?.length) return;
+    activeResult.items.forEach(item => {
+      logic.fetchEquipmentDetail(item);
+    });
+  }, [logic.designState.activeResultIndex, activeResult?.items]);
 
   // 处理点击外部关闭下拉框
   useEffect(() => {
@@ -164,103 +217,105 @@ const App: React.FC = () => {
 
   const renderSolutionSidebar = () => (
     <div className={`w-[290px] ${theme.lightBg} border-r border-slate-200 overflow-y-auto p-3 flex flex-col space-y-3 scrollbar-hide shrink-0`}>
-      <div className="bg-slate-200/40 p-0.5 rounded-lg flex border border-slate-200 shadow-inner">
-        <button onClick={() => logic.handleParamChange('scenario', Scenario.MEETING_ROOM)}
-          className={`flex-1 py-1 rounded-md text-[11px] font-bold transition-all ${logic.designState.scenario === Scenario.MEETING_ROOM ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}>
-          会议室
-        </button>
-        <button onClick={() => logic.handleParamChange('scenario', Scenario.LECTURE_HALL)}
-          className={`flex-1 py-1 rounded-md text-[11px] font-bold transition-all ${logic.designState.scenario === Scenario.LECTURE_HALL ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-500'}`}>
-          报告厅
-        </button>
-      </div>
+      <div className={isBlueprintLocked ? 'pointer-events-none opacity-60' : ''}>
+        <div className="bg-slate-200/40 p-0.5 rounded-lg flex border border-slate-200 shadow-inner">
+          <button onClick={() => logic.handleParamChange('scenario', Scenario.MEETING_ROOM)}
+            className={`flex-1 py-1 rounded-md text-[11px] font-bold transition-all ${logic.designState.scenario === Scenario.MEETING_ROOM ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}>
+            会议室
+          </button>
+          <button onClick={() => logic.handleParamChange('scenario', Scenario.LECTURE_HALL)}
+            className={`flex-1 py-1 rounded-md text-[11px] font-bold transition-all ${logic.designState.scenario === Scenario.LECTURE_HALL ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-500'}`}>
+            报告厅
+          </button>
+        </div>
 
-      <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2">
-        <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b pb-1">物理参数 (M)</h3>
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">房间长</label>
-            <input type="number" value={logic.designState.params.length} onChange={e => logic.handleParamChange('length', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
-          </div>
-          <div>
-            <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">房间宽</label>
-            <input type="number" value={logic.designState.params.width} onChange={e => logic.handleParamChange('width', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
-          </div>
-          <div className="col-span-2">
-            <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">安装高度</label>
-            <input type="number" value={logic.designState.params.height} onChange={e => logic.handleParamChange('height', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
-          </div>
-
-          {logic.designState.scenario === Scenario.LECTURE_HALL && (
-            <div className="col-span-2 grid grid-cols-2 gap-2 pt-1 border-t border-slate-50">
-              <div>
-                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block leading-tight">台口至最近</label>
-                <input type="number" value={logic.designState.params.stageToNearAudience} onChange={e => logic.handleParamChange('stageToNearAudience', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold outline-none ${themeText}`} />
-              </div>
-              <div>
-                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block leading-tight">台口至最远</label>
-                <input type="number" value={logic.designState.params.stageToFarAudience} onChange={e => logic.handleParamChange('stageToFarAudience', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold outline-none ${themeText}`} />
-              </div>
-              <div>
-                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block leading-tight">台口宽度</label>
-                <input type="number" value={logic.designState.params.stageWidth} onChange={e => logic.handleParamChange('stageWidth', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold outline-none ${themeText}`} />
-              </div>
-              <div>
-                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block leading-tight">舞台深度</label>
-                <input type="number" value={logic.designState.params.stageDepth} onChange={e => logic.handleParamChange('stageDepth', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold outline-none ${themeText}`} />
-              </div>
+        <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2 mt-3">
+          <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b pb-1">物理参数 (M)</h3>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">房间长</label>
+              <input type="number" value={logic.designState.params.length} onChange={e => logic.handleParamChange('length', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
             </div>
-          )}
-        </div>
-      </div>
-
-      <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2">
-        <div className="flex items-center justify-between border-b pb-1">
-          <h3 className={`text-[10px] font-black ${themeText} uppercase tracking-widest`}>话筒配置</h3>
-          <button onClick={logic.addMic} className={`text-[8px] font-black px-1.5 py-0.5 rounded border ${themeText} ${themeBorder} bg-slate-50 hover:bg-white transition-colors`}>+ 添加</button>
-        </div>
-        <div className="space-y-1.5">
-          {logic.designState.params.mics.map(m => (
-            <div key={m.id} className="flex items-center space-x-1.5 group">
-              <select value={m.type} onChange={e => logic.handleParamChange('mics', logic.designState.params.mics.map(mic => mic.id === m.id ? { ...mic, type: e.target.value } : mic))} className="flex-1 bg-slate-50 border border-slate-100 rounded px-1.5 py-1 text-[11px] font-bold outline-none">
-                {MIC_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-              </select>
-              <input type="number" value={m.count} onChange={e => logic.handleMicChange(m.id, parseInt(e.target.value))} className={`w-8 bg-white border border-slate-200 rounded py-1 text-center text-[11px] font-bold ${themeText} outline-none`} />
-              <button onClick={() => logic.removeMic(m.id)} className="text-slate-300 hover:text-red-500 text-[9px] px-0.5">✕</button>
+            <div>
+              <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">房间宽</label>
+              <input type="number" value={logic.designState.params.width} onChange={e => logic.handleParamChange('width', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
             </div>
-          ))}
-        </div>
-      </div>
+            <div className="col-span-2">
+              <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">安装高度</label>
+              <input type="number" value={logic.designState.params.height} onChange={e => logic.handleParamChange('height', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
+            </div>
 
-      <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2">
-        <h3 className="text-[10px] font-black text-slate-400 border-b pb-1 uppercase tracking-widest">配套子系统</h3>
-        <div className="grid grid-cols-2 gap-1.5">
-          {[
-            { id: 'hasCentralControl', l: '中控' }, { id: 'hasMatrix', l: '矩阵' }, { id: 'hasVideoConf', l: '视频' }, { id: 'hasRecording', l: '录播' }
-          ].map(sys => (
-            <label key={sys.id} className="flex items-center space-x-1.5 bg-slate-50/50 p-1.5 rounded border border-slate-100 cursor-pointer hover:bg-white transition-all">
-              <input type="checkbox" checked={(logic.designState.params as any)[sys.id]} onChange={e => logic.handleParamChange(sys.id as any, e.target.checked)} className={`w-3 h-3 rounded accent-${theme.color.split('-')[0]}`} />
-              <span className="text-[10px] font-bold text-slate-600">{sys.l}</span>
-            </label>
-          ))}
+            {logic.designState.scenario === Scenario.LECTURE_HALL && (
+              <div className="col-span-2 grid grid-cols-2 gap-2 pt-1 border-t border-slate-50">
+                <div>
+                  <label className="text-[9px] text-slate-400 font-bold mb-0.5 block leading-tight">台口至最近</label>
+                  <input type="number" value={logic.designState.params.stageToNearAudience} onChange={e => logic.handleParamChange('stageToNearAudience', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold outline-none ${themeText}`} />
+                </div>
+                <div>
+                  <label className="text-[9px] text-slate-400 font-bold mb-0.5 block leading-tight">台口至最远</label>
+                  <input type="number" value={logic.designState.params.stageToFarAudience} onChange={e => logic.handleParamChange('stageToFarAudience', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold outline-none ${themeText}`} />
+                </div>
+                <div>
+                  <label className="text-[9px] text-slate-400 font-bold mb-0.5 block leading-tight">台口宽度</label>
+                  <input type="number" value={logic.designState.params.stageWidth} onChange={e => logic.handleParamChange('stageWidth', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold outline-none ${themeText}`} />
+                </div>
+                <div>
+                  <label className="text-[9px] text-slate-400 font-bold mb-0.5 block leading-tight">舞台深度</label>
+                  <input type="number" value={logic.designState.params.stageDepth} onChange={e => logic.handleParamChange('stageDepth', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold outline-none ${themeText}`} />
+                </div>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
 
-      <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-1.5 flex-1">
-        <h3 className="text-[10px] font-black text-slate-400 border-b pb-1 uppercase tracking-widest">其他需求</h3>
-        <textarea
-          value={logic.designState.params.extraRequirements}
-          onChange={e => logic.handleParamChange('extraRequirements', e.target.value)}
-          placeholder="补充品牌偏好等..."
-          className="w-full bg-slate-50 border border-slate-100 rounded px-2 py-1.5 text-[11px] font-medium outline-none h-20 resize-none focus:bg-white transition-all"
-        />
+        <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2 mt-3">
+          <div className="flex items-center justify-between border-b pb-1">
+            <h3 className={`text-[10px] font-black ${themeText} uppercase tracking-widest`}>话筒配置</h3>
+            <button onClick={logic.addMic} className={`text-[8px] font-black px-1.5 py-0.5 rounded border ${themeText} ${themeBorder} bg-slate-50 hover:bg-white transition-colors`}>+ 添加</button>
+          </div>
+          <div className="space-y-1.5">
+            {logic.designState.params.mics.map(m => (
+              <div key={m.id} className="flex items-center space-x-1.5 group">
+                <select value={m.type} onChange={e => logic.handleParamChange('mics', logic.designState.params.mics.map(mic => mic.id === m.id ? { ...mic, type: e.target.value } : mic))} className="flex-1 bg-slate-50 border border-slate-100 rounded px-1.5 py-1 text-[11px] font-bold outline-none">
+                  {MIC_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+                <input type="number" value={m.count} onChange={e => logic.handleMicChange(m.id, parseInt(e.target.value))} className={`w-8 bg-white border border-slate-200 rounded py-1 text-center text-[11px] font-bold ${themeText} outline-none`} />
+                <button onClick={() => logic.removeMic(m.id)} className="text-slate-300 hover:text-red-500 text-[9px] px-0.5">✕</button>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2 mt-3">
+          <h3 className="text-[10px] font-black text-slate-400 border-b pb-1 uppercase tracking-widest">配套子系统</h3>
+          <div className="grid grid-cols-2 gap-1.5">
+            {[
+              { id: 'hasCentralControl', l: '中控' }, { id: 'hasMatrix', l: '矩阵' }, { id: 'hasVideoConf', l: '视频' }, { id: 'hasRecording', l: '录播' }
+            ].map(sys => (
+              <label key={sys.id} className="flex items-center space-x-1.5 bg-slate-50/50 p-1.5 rounded border border-slate-100 cursor-pointer hover:bg-white transition-all">
+                <input type="checkbox" checked={(logic.designState.params as any)[sys.id]} onChange={e => logic.handleParamChange(sys.id as any, e.target.checked)} className={`w-3 h-3 rounded accent-${theme.color.split('-')[0]}`} />
+                <span className="text-[10px] font-bold text-slate-600">{sys.l}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-1.5 flex-1 mt-3">
+          <h3 className="text-[10px] font-black text-slate-400 border-b pb-1 uppercase tracking-widest">其他需求</h3>
+          <textarea
+            value={logic.designState.params.extraRequirements}
+            onChange={e => logic.handleParamChange('extraRequirements', e.target.value)}
+            placeholder="补充品牌偏好等..."
+            className="w-full bg-slate-50 border border-slate-100 rounded px-2 py-1.5 text-[11px] font-medium outline-none h-14 resize-none focus:bg-white transition-all"
+          />
+        </div>
       </div>
       <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2">
         <h3 className="text-[10px] font-black text-slate-400 border-b pb-1 uppercase tracking-widest">环境图纸</h3>
-        <label className="flex flex-col items-center justify-center w-full h-16 border-2 border-dashed border-slate-200 rounded-lg cursor-pointer hover:bg-slate-50 transition-all">
-          <div className="flex flex-col items-center justify-center pt-2 pb-2">
-            <svg className="w-5 h-5 text-slate-400 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>
-            <p className="text-[9px] text-slate-500 font-bold uppercase">上传 CAD 图纸 (JPG/PNG)</p>
+        <label className="flex flex-col items-center justify-center w-full h-12 border-2 border-dashed border-slate-200 rounded-lg cursor-pointer hover:bg-slate-50 transition-all">
+          <div className="flex flex-col items-center justify-center">
+            <svg className="w-4 h-4 text-slate-400 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>
+            <p className="text-[8px] text-slate-500 font-bold uppercase">上传 CAD 图纸 (JPG/PNG)</p>
           </div>
           <input type="file" className="hidden" accept="image/*" onChange={logic.handleBlueprintUpload} />
         </label>
@@ -274,10 +329,53 @@ const App: React.FC = () => {
   const renderSolutionView = () => (
     <div className="flex-1 flex flex-col overflow-hidden bg-white">
       {!logic.designState.isDesigned ? (
-        <div className="flex-1 flex flex-col items-center justify-center p-12 opacity-10">
-          <div className="text-7xl mb-6">📐</div>
-          <h2 className="text-lg font-black uppercase tracking-[0.4em] text-center">输入参数开启智能设计方案</h2>
-        </div>
+        isBlueprintLocked ? (
+          <div className="flex-1 flex flex-col p-5 overflow-hidden">
+            <div className="flex-1 bg-slate-50 border border-slate-200 rounded-xl shadow-inner relative overflow-hidden">
+              {logic.designState.blueprint && (
+                <img
+                  src={logic.designState.blueprint}
+                  alt="CAD 预览"
+                  className={`absolute inset-0 w-full h-full object-contain transition-all ${logic.isProcessingAi ? 'grayscale opacity-40' : 'opacity-90'}`}
+                />
+              )}
+              {logic.isProcessingAi && (
+                <div className="absolute inset-0 bg-white/70 flex flex-col items-center justify-center">
+                  <div className="flex flex-col items-center justify-center">
+                    <lottie-player
+                      src="https://assets2.lottiefiles.com/packages/lf20_qm8eqzse.json"
+                      background="transparent"
+                      speed="1"
+                      style={{ width: '320px', height: '320px' }}
+                      loop
+                      autoplay
+                    ></lottie-player>
+                    <div className="text-[18px] text-slate-700 font-semibold mt-2">正在为您定制听音方案...</div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : logic.isProcessingAi ? (
+          <div className="flex-1 flex items-center justify-center p-12">
+            <div className="flex flex-col items-center justify-center">
+              <lottie-player
+                src="https://assets2.lottiefiles.com/packages/lf20_qm8eqzse.json"
+                background="transparent"
+                speed="1"
+                style={{ width: '320px', height: '320px' }}
+                loop
+                autoplay
+              ></lottie-player>
+              <div className="text-[18px] text-slate-700 font-semibold mt-2">正在为您定制听音方案...</div>
+            </div>
+          </div>
+        ) : (
+          <div className="flex-1 flex flex-col items-center justify-center p-12 opacity-10">
+            <div className="text-7xl mb-6">📐</div>
+            <h2 className="text-lg font-black uppercase tracking-[0.4em] text-center">输入参数开启智能设计方案</h2>
+          </div>
+        )
       ) : (
         <div className="flex-1 flex flex-col p-5 space-y-4 overflow-y-auto scrollbar-hide">
           <div className="flex justify-between items-center border-b pb-3 shrink-0">
@@ -314,12 +412,30 @@ const App: React.FC = () => {
                     {hasGeneratedReport && (
                       <div className="flex items-center space-x-2 animate-in fade-in slide-in-from-right-2 duration-300">
                         {activeResultView === 'TABLE' ? (
-                          <button onClick={() => logic.handleDownload('EXCEL')} className="flex items-center space-x-2 px-3 h-8 rounded-md font-bold text-[9px] uppercase border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition-all shadow-sm">
+                          <button
+                            onClick={() => {
+                              if (logic.designState.results.length > 1) {
+                                setExportDialogType('EXCEL');
+                              } else {
+                                logic.handleDownload('EXCEL', 'CURRENT');
+                              }
+                            }}
+                            className="flex items-center space-x-2 px-3 h-8 rounded-md font-bold text-[9px] uppercase border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition-all shadow-sm"
+                          >
                             <svg className="w-3.5 h-3.5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                             <span>导出清单 (Excel)</span>
                           </button>
                         ) : (
-                          <button onClick={() => logic.handleDownload('WORD')} className="flex items-center space-x-2 px-3 h-8 rounded-md font-bold text-[9px] uppercase border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition-all shadow-sm">
+                          <button
+                            onClick={() => {
+                              if (logic.designState.results.length > 1) {
+                                setExportDialogType('WORD');
+                              } else {
+                                logic.handleDownload('WORD', 'CURRENT');
+                              }
+                            }}
+                            className="flex items-center space-x-2 px-3 h-8 rounded-md font-bold text-[9px] uppercase border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition-all shadow-sm"
+                          >
                             <svg className="w-3.5 h-3.5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
                             <span>导出方案 (Word)</span>
                           </button>
@@ -328,13 +444,18 @@ const App: React.FC = () => {
                     )}
                     <button
                       onClick={() => setShowReportDialog(true)}
-                      disabled={logic.isGeneratingDocs}
-                      className={`flex items-center space-x-2 px-4 h-8 rounded-md font-black text-[10px] uppercase transition-all shadow-md active:scale-95 ${logic.isGeneratingDocs ? 'bg-slate-100 text-slate-300 cursor-not-allowed' : `${themeBg} text-white hover:brightness-110`}`}
+                      disabled={logic.isGeneratingDocs || reportUpToDate || !activeResult}
+                      className={`flex items-center space-x-2 px-4 h-8 rounded-md font-black text-[10px] uppercase transition-all shadow-md active:scale-95 ${logic.isGeneratingDocs || reportUpToDate || !activeResult ? 'bg-slate-100 text-slate-300 cursor-not-allowed' : `${themeBg} text-white hover:brightness-110`}`}
                     >
                       {logic.isGeneratingDocs ? (
                         <>
                           <div className="w-3 h-3 border-2 border-slate-300 border-t-white rounded-full animate-spin"></div>
                           <span>生成中...</span>
+                        </>
+                      ) : reportUpToDate ? (
+                        <>
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7"></path></svg>
+                          <span>报告已生成</span>
                         </>
                       ) : (
                         <>
@@ -359,13 +480,18 @@ const App: React.FC = () => {
 
           <div className="space-y-3 flex-1 flex flex-col">
             <div className="flex justify-between items-center shrink-0">
-              <div className="flex space-x-1">
-                {logic.designState.results.map((res, idx) => (
-                  <button key={res.id} onClick={() => { logic.setDesignState(prev => ({ ...prev, activeResultIndex: idx })); }}
-                    className={`px-3 py-1.5 rounded-md text-[10px] font-black transition-all ${logic.designState.activeResultIndex === idx ? `bg-slate-900 text-white shadow-md` : 'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}>
-                    {res.title}
-                  </button>
-                ))}
+              <div className="flex flex-col space-y-1">
+                <div className="flex space-x-1">
+                  {logic.designState.results.map((res, idx) => (
+                    <button key={res.id} onClick={() => { logic.setDesignState(prev => ({ ...prev, activeResultIndex: idx })); }}
+                      className={`px-3 py-1.5 rounded-md text-[10px] font-black transition-all ${logic.designState.activeResultIndex === idx ? `bg-slate-900 text-white shadow-md` : 'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}>
+                      {res.title}
+                    </button>
+                  ))}
+                </div>
+                <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                  总价：<span className="text-slate-900">¥{activeTotalPrice.toLocaleString()}</span>
+                </div>
               </div>
               <div className="bg-slate-50 p-0.5 rounded-md border border-slate-200 flex items-center h-8">
                 {/* 切换放置在每个方案之下，体现它是针对当前方案的属性 */}
@@ -393,9 +519,11 @@ const App: React.FC = () => {
                         <thead className="sticky top-0 bg-slate-50 z-10 border-b">
                           <tr>
                             <th className="px-5 py-2.5 font-bold text-slate-400 uppercase tracking-tighter">设备分类</th>
+                            <th className="px-5 py-2.5 font-bold text-slate-400 uppercase tracking-tighter">品牌</th>
                             <th className="px-5 py-2.5 font-bold text-slate-400 uppercase tracking-tighter">产品名称</th>
                             <th className="px-5 py-2.5 font-bold text-slate-400 uppercase tracking-tighter">型号规格</th>
                             <th className="px-5 py-2.5 font-bold text-slate-400 uppercase tracking-tighter text-center">数量</th>
+                            <th className="px-5 py-2.5 font-bold text-slate-400 uppercase tracking-tighter text-right">单价</th>
                             <th className="px-5 py-2.5 text-right pr-5 font-bold text-slate-400 uppercase tracking-tighter">管理操作</th>
                           </tr>
                         </thead>
@@ -403,10 +531,38 @@ const App: React.FC = () => {
                           {activeResult?.items.map((item, idx) => (
                             <tr key={item.id} className="hover:bg-slate-50/50 transition-all group">
                               <td className="px-5 py-2.5 text-slate-500 font-medium">{item.type}</td>
+                              <td className="px-5 py-2.5 text-slate-600 font-bold">{getItemBrand(item) || '--'}</td>
                               <td className="px-5 py-2.5 font-bold text-slate-900">{item.name}</td>
                               <td className="px-5 py-2.5 text-slate-400 font-mono text-[10px]">{item.model}</td>
                               <td className={`px-5 py-2.5 font-black text-center ${themeText}`}>{item.quantity}</td>
+                              <td className="px-5 py-2.5 text-right font-black text-slate-700">¥{getItemUnitPrice(item).toLocaleString()}</td>
                               <td className="px-5 py-2.5 text-right space-x-3 pr-5">
+                                <button
+                                  onClick={async () => {
+                                    const table = Object.values(TableType).includes(item.type as TableType)
+                                      ? (item.type as TableType)
+                                      : item.type === '功放'
+                                        ? TableType.AMPLIFIER
+                                        : item.type === '线阵列配套'
+                                          ? TableType.LINE_ARRAY
+                                          : item.type === '周边设备'
+                                            ? TableType.PERIPHERAL
+                                            : item.type === '其他设备'
+                                              ? TableType.OTHER
+                                              : null;
+
+                                    if (table) {
+                                      await logic.ensureInventoryOptions(table);
+                                    }
+
+                                    const detail = await logic.fetchEquipmentDetail(item);
+                                    setDetailDialog({ resIdx: logic.designState.activeResultIndex, itemIdx: idx, item: { ...item }, detail, table });
+                                    setReplacementId(detail?.id || '');
+                                  }}
+                                  className="text-slate-500 font-bold hover:underline"
+                                >
+                                  详细
+                                </button>
                                 <button onClick={() => logic.setEditingItem({ resIdx: logic.designState.activeResultIndex, itemIdx: idx, item: { ...item } })} className={`${themeText} font-bold hover:underline`}>编辑</button>
                                 <button onClick={() => logic.deleteItem(logic.designState.activeResultIndex, idx)} className="text-slate-300 hover:text-red-500 font-bold">删除</button>
                               </td>
@@ -417,15 +573,36 @@ const App: React.FC = () => {
                     </div>
                   ) : (
                     <div className="flex-1 p-6 overflow-y-auto bg-slate-50/30">
-                      <div className="max-w-2xl mx-auto bg-white shadow-xl border border-slate-100 rounded-lg p-10 space-y-6 animate-in fade-in zoom-in-95 duration-300">
-                        <h1 className="text-2xl font-black text-slate-900 tracking-tight uppercase border-b-2 border-slate-900 pb-2">声学系统设计方案 - {activeResult?.title}</h1>
-                        <p className={`text-[10px] border-l-4 ${themeBorder} pl-4 text-slate-500 leading-relaxed font-bold uppercase`}>该方案文档已根据选定设备及仿真结果自动合成。您可以点击右上角按钮进行导出。</p>
-                        <div className="aspect-[1/1.41] bg-slate-50 border border-dashed border-slate-200 rounded flex flex-col items-center justify-center text-slate-300 font-black text-[12px] uppercase tracking-[0.5em] space-y-4">
-                          <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center text-slate-200">
-                            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                          </div>
-                          <span>正式说明书正文区</span>
+                      <div className="max-w-5xl mx-auto bg-white shadow-xl border border-slate-100 rounded-lg p-6 space-y-4 animate-in fade-in zoom-in-95 duration-300">
+                        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                          <h1 className="text-lg font-black text-slate-900 tracking-tight uppercase">声学系统设计方案 - {activeResult?.title}</h1>
+                          {activeResult?.wordLink && (
+                            <a
+                              className={`text-[10px] font-black uppercase ${themeText} hover:underline`}
+                              href={activeResult.wordLink}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              打开原始 Word
+                            </a>
+                          )}
                         </div>
+                        {activeResult?.wordLink ? (
+                          <div className="w-full aspect-[1/1.41] bg-slate-50 border border-slate-200 rounded overflow-hidden">
+                            <iframe
+                              title="word-preview"
+                              className="w-full h-full"
+                              src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(activeResult.wordLink)}`}
+                            />
+                          </div>
+                        ) : (
+                          <div className="aspect-[1/1.41] bg-slate-50 border border-dashed border-slate-200 rounded flex flex-col items-center justify-center text-slate-300 font-black text-[12px] uppercase tracking-[0.5em] space-y-4">
+                            <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center text-slate-200">
+                              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                            </div>
+                            <span>未获取到 Word 文档</span>
+                          </div>
+                        )}
                       </div>
                     </div>
                   )}
@@ -474,6 +651,36 @@ const App: React.FC = () => {
           </div>
         </div>
       )}
+
+      {exportDialogType && (
+        <div className="fixed inset-0 z-[310] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-5">
+          <div className="bg-white w-full max-sm rounded-2xl shadow-2xl p-6 space-y-5 animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between border-b pb-3">
+              <h3 className="text-sm font-black text-slate-900 uppercase tracking-tight">
+                {exportDialogType === 'EXCEL' ? '导出清单 (Excel)' : '导出方案 (Word)'}
+              </h3>
+              <button onClick={() => setExportDialogType(null)} className="text-slate-300 hover:text-slate-900 transition-colors">✕</button>
+            </div>
+            <p className="text-[11px] text-slate-500 font-medium">请选择导出范围：</p>
+            <div className="grid grid-cols-1 gap-3">
+              <button
+                onClick={() => { logic.handleDownload(exportDialogType, 'CURRENT'); setExportDialogType(null); }}
+                className="flex flex-col items-start p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:border-blue-400 hover:shadow-md transition-all group"
+              >
+                <span className="text-[11px] font-black text-slate-900 group-hover:text-blue-600">仅当前方案：{activeResult?.title}</span>
+                <span className="text-[9px] text-slate-400 mt-1">只导出当前选中方案。</span>
+              </button>
+              <button
+                onClick={() => { logic.handleDownload(exportDialogType, 'ALL'); setExportDialogType(null); }}
+                className="flex flex-col items-start p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:border-blue-400 hover:shadow-md transition-all group"
+              >
+                <span className="text-[11px] font-black text-slate-900 group-hover:text-blue-600">全部方案 (共 {logic.designState.results.length} 个)</span>
+                <span className="text-[9px] text-slate-400 mt-1">同时导出所有方案。</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 
@@ -503,18 +710,55 @@ const App: React.FC = () => {
           <button onClick={() => setIsAddingEq(true)} className="bg-slate-900 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">+ 录入数据</button>
         </div>
 
+        <div className="px-6 py-3 border-b border-slate-100 bg-slate-50/60 flex flex-wrap items-center gap-3">
+          <input
+            value={logic.searchFilters.品牌}
+            onChange={e => logic.setSearchFilters(prev => ({ ...prev, 品牌: e.target.value }))}
+            placeholder="筛选品牌"
+            className="w-40 bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-[11px] font-bold outline-none"
+          />
+          <input
+            value={logic.searchFilters.产品名称}
+            onChange={e => logic.setSearchFilters(prev => ({ ...prev, 产品名称: e.target.value }))}
+            placeholder="筛选名称"
+            className="w-48 bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-[11px] font-bold outline-none"
+          />
+          <select
+            value={logic.searchFilters.场景}
+            onChange={e => logic.setSearchFilters(prev => ({ ...prev, 场景: e.target.value }))}
+            className="w-36 bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-[11px] font-bold outline-none"
+          >
+            <option value="">场景：全部</option>
+            <option value="通用">通用</option>
+            <option value="会议室">会议室</option>
+            <option value="报告厅">报告厅</option>
+          </select>
+        </div>
+
         <div className="flex-1 overflow-auto">
           <table className="w-full text-left text-[11px]">
             <thead className="sticky top-0 bg-white border-b">
               <tr>
-                <th className="px-6 py-4 font-black text-slate-400">品牌</th>
+                <th className="px-6 py-4 font-black text-slate-400">
+                  <button onClick={() => toggleSort('品牌')} className="flex items-center">
+                    品牌{renderSortArrow('品牌')}
+                  </button>
+                </th>
                 <th className="px-6 py-4 font-black text-slate-400">产品名称</th>
                 <th className="px-6 py-4 font-black text-slate-400">型号</th>
-                <th className="px-6 py-4 font-black text-slate-400">市场价</th>
+                <th className="px-6 py-4 font-black text-slate-400">
+                  <button onClick={() => toggleSort('市场价')} className="flex items-center">
+                    市场价{renderSortArrow('市场价')}
+                  </button>
+                </th>
                 {logic.activeTable === TableType.SPEAKER ? (
                   <>
                     <th className="px-6 py-4 font-black text-slate-400">额定功率</th>
-                    <th className="px-6 py-4 font-black text-slate-400">最大声压级</th>
+                    <th className="px-6 py-4 font-black text-slate-400">
+                      <button onClick={() => toggleSort('最大声压级')} className="flex items-center">
+                        最大声压级{renderSortArrow('最大声压级')}
+                      </button>
+                    </th>
                   </>
                 ) : (
                   <>
@@ -617,16 +861,147 @@ const App: React.FC = () => {
 
   const renderHistoryPreview = () => {
     const item = logic.previewHistoryItem!;
+    const scenarioLabel = item.scenario === Scenario.MEETING_ROOM ? '会议室' : '报告厅';
+    const params = item.params || {
+      length: 0,
+      width: 0,
+      height: 0,
+      mics: [],
+      hasCentralControl: false,
+      hasMatrix: false,
+      hasVideoConf: false,
+      hasRecording: false,
+      extraRequirements: ''
+    };
+    const historyResults = Array.isArray(item.results) ? item.results : [];
+    const handleHistoryDownload = (type: 'EXCEL' | 'WORD') => {
+      const missing: string[] = [];
+      historyResults.forEach(res => {
+        const link = type === 'WORD' ? res.wordLink : res.excelLink;
+        if (link) {
+          window.open(link, '_blank');
+        } else {
+          missing.push(res.title);
+        }
+      });
+      if (missing.length) {
+        alert(`${type === 'WORD' ? 'Word' : 'Excel'} 链接缺失：${missing.join('，')}`);
+      }
+    };
     return (
-      <div className="flex-1 flex flex-col p-6 overflow-y-auto bg-white animate-in slide-in-from-right-4 duration-300">
-        <div className="flex items-center space-x-4 mb-6">
-          <button onClick={logic.closeHistoryPreview} className="w-10 h-10 rounded-full border border-slate-200 flex items-center justify-center text-slate-400 hover:text-slate-900 hover:bg-slate-50 transition-all">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7"></path></svg>
-          </button>
-          <div>
-            <h2 className="text-2xl font-black text-slate-900 tracking-tight uppercase">{item.projectName}</h2>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">设计归档于 {new Date(item.createdAt).toISOString().slice(0, 10)}</p>
+      <div className="fixed inset-0 z-[500] bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-6">
+        <div className="bg-white w-full max-w-5xl max-h-[90vh] rounded-3xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200">
+          <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+            <div>
+              <h2 className="text-xl font-black text-slate-900 tracking-tight uppercase">{item.projectName}</h2>
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">设计归档于 {new Date(item.createdAt).toISOString().slice(0, 10)}</p>
+            </div>
+            <button onClick={logic.closeHistoryPreview} className="w-9 h-9 rounded-full border border-slate-200 flex items-center justify-center text-slate-400 hover:text-slate-900 hover:bg-slate-50 transition-all">✕</button>
           </div>
+          <div className="flex-1 overflow-y-auto p-6">
+
+        <div className="flex items-center space-x-3 mb-6">
+          <button
+            onClick={() => handleHistoryDownload('EXCEL')}
+            className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-[10px] font-black uppercase"
+          >
+            下载清单 (Excel)
+          </button>
+          <button
+            onClick={() => handleHistoryDownload('WORD')}
+            className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 text-[10px] font-black uppercase"
+          >
+            下载方案 (Word)
+          </button>
+        </div>
+
+        <div className="bg-slate-50 border border-slate-100 rounded-2xl p-5 mb-6">
+          <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">设计参数</div>
+          <div className="grid grid-cols-2 gap-3 text-[11px]">
+            <div className="flex items-center justify-between bg-white border border-slate-100 rounded-lg px-3 py-2">
+              <span className="text-slate-400 font-bold">场景</span>
+              <span className="font-black text-slate-900">{scenarioLabel}</span>
+            </div>
+            <div className="flex items-center justify-between bg-white border border-slate-100 rounded-lg px-3 py-2">
+              <span className="text-slate-400 font-bold">房间长</span>
+              <span className="font-black text-slate-900">{params.length} m</span>
+            </div>
+            <div className="flex items-center justify-between bg-white border border-slate-100 rounded-lg px-3 py-2">
+              <span className="text-slate-400 font-bold">房间宽</span>
+              <span className="font-black text-slate-900">{params.width} m</span>
+            </div>
+            <div className="flex items-center justify-between bg-white border border-slate-100 rounded-lg px-3 py-2">
+              <span className="text-slate-400 font-bold">安装高度</span>
+              <span className="font-black text-slate-900">{params.height} m</span>
+            </div>
+            {item.scenario === Scenario.LECTURE_HALL && (
+              <>
+                <div className="flex items-center justify-between bg-white border border-slate-100 rounded-lg px-3 py-2">
+                  <span className="text-slate-400 font-bold">台口至最近</span>
+                  <span className="font-black text-slate-900">{params.stageToNearAudience} m</span>
+                </div>
+                <div className="flex items-center justify-between bg-white border border-slate-100 rounded-lg px-3 py-2">
+                  <span className="text-slate-400 font-bold">台口至最远</span>
+                  <span className="font-black text-slate-900">{params.stageToFarAudience} m</span>
+                </div>
+                <div className="flex items-center justify-between bg-white border border-slate-100 rounded-lg px-3 py-2">
+                  <span className="text-slate-400 font-bold">台口宽度</span>
+                  <span className="font-black text-slate-900">{params.stageWidth} m</span>
+                </div>
+                <div className="flex items-center justify-between bg-white border border-slate-100 rounded-lg px-3 py-2">
+                  <span className="text-slate-400 font-bold">舞台深度</span>
+                  <span className="font-black text-slate-900">{params.stageDepth} m</span>
+                </div>
+              </>
+            )}
+          </div>
+          <div className="mt-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">话筒配置</div>
+          <div className="grid grid-cols-2 gap-3 mt-2 text-[11px]">
+            {(params.mics || []).map(mic => (
+              <div key={mic.id} className="flex items-center justify-between bg-white border border-slate-100 rounded-lg px-3 py-2">
+                <span className="text-slate-500 font-bold">{mic.type}</span>
+                <span className="font-black text-slate-900">{mic.count} 只</span>
+              </div>
+            ))}
+          </div>
+          <div className="mt-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">配套子系统</div>
+          <div className="flex flex-wrap gap-2 mt-2 text-[10px]">
+            {params.hasCentralControl && <span className="px-2 py-1 rounded-full bg-white border border-slate-200 font-bold">中控</span>}
+            {params.hasMatrix && <span className="px-2 py-1 rounded-full bg-white border border-slate-200 font-bold">矩阵</span>}
+            {params.hasVideoConf && <span className="px-2 py-1 rounded-full bg-white border border-slate-200 font-bold">视频</span>}
+            {params.hasRecording && <span className="px-2 py-1 rounded-full bg-white border border-slate-200 font-bold">录播</span>}
+            {!params.hasCentralControl && !params.hasMatrix && !params.hasVideoConf && !params.hasRecording && (
+              <span className="text-slate-400 font-bold">无</span>
+            )}
+          </div>
+          {params.extraRequirements && (
+            <div className="mt-4">
+              <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">其他需求</div>
+              <div className="mt-2 text-[11px] text-slate-600 font-medium bg-white border border-slate-100 rounded-lg px-3 py-2">
+                {params.extraRequirements}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-4">
+          <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">方案清单</div>
+          {historyResults.map(res => (
+            <div key={res.id} className="bg-white border border-slate-200 rounded-2xl p-4">
+              <div className="flex items-center justify-between">
+                <div className="text-[12px] font-black text-slate-900">{res.title}</div>
+                <div className="text-[10px] text-slate-400">设备数量：{res.items.reduce((sum, it) => sum + (it.quantity || 0), 0)}</div>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
+                {res.items.map(it => (
+                  <div key={it.id} className="flex items-center justify-between bg-slate-50 border border-slate-100 rounded-lg px-3 py-2">
+                    <span className="text-slate-600 font-bold">{it.name}</span>
+                    <span className="font-black text-slate-900">x{it.quantity}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
         <button
           onClick={() => {
@@ -641,10 +1016,12 @@ const App: React.FC = () => {
             logic.setCurrentPage(Page.SOLUTION);
             logic.setPreviewHistoryItem(null);
           }}
-          className="px-6 py-3 bg-slate-900 text-white rounded-xl font-black text-[11px] uppercase tracking-widest mb-6"
+          className="px-6 py-3 bg-slate-900 text-white rounded-xl font-black text-[11px] uppercase tracking-widest mt-6"
         >
           重新载入此设计
         </button>
+          </div>
+        </div>
       </div>
     );
   };
@@ -818,9 +1195,11 @@ const App: React.FC = () => {
           </>
         )}
         {logic.currentPage === Page.MANAGEMENT && renderManagementView()}
-        {logic.currentPage === Page.HISTORY && (logic.previewHistoryItem ? renderHistoryPreview() : renderHistoryView())}
+        {logic.currentPage === Page.HISTORY && renderHistoryView()}
         {logic.currentPage === Page.USERS && renderUserManagementView()}
       </main>
+
+      {logic.previewHistoryItem && renderHistoryPreview()}
 
       {/* --- 核心修改：动态录入弹窗 (基于 TableType 切换字段) --- */}
       {isAddingEq && (
@@ -1128,27 +1507,6 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* 5. 悬浮报告选择框 */}
-      {showReportDialog && (
-        <div className="fixed inset-0 z-[700] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-5">
-          <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl p-6 space-y-5 animate-in zoom-in-95 duration-200">
-            <div className="flex items-center justify-between border-b pb-3">
-              <h3 className="text-sm font-black text-slate-900 uppercase">生成正式报告</h3>
-              <button onClick={() => setShowReportDialog(false)} className="text-slate-300 hover:text-slate-900 transition-colors">✕</button>
-            </div>
-            <div className="grid grid-cols-1 gap-3">
-              <button onClick={() => { logic.handleGenerateReports('CURRENT'); setShowReportDialog(false); }} className="flex flex-col items-start p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:border-blue-400 hover:shadow-md transition-all group">
-                <span className="text-[11px] font-black group-hover:text-blue-600">仅当前选中的方案: {activeResult?.title}</span>
-                <span className="text-[9px] text-slate-400 mt-1">仅对此备选方案生成 Word 预览及下载。</span>
-              </button>
-              <button onClick={() => { logic.handleGenerateReports('ALL'); setShowReportDialog(false); }} className="flex flex-col items-start p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:border-blue-400 hover:shadow-md transition-all group">
-                <span className="text-[11px] font-black group-hover:text-blue-600">所有备选方案 (共 {logic.designState.results.length} 个)</span>
-                <span className="text-[9px] text-slate-400 mt-1">对本次所有推荐方案批量生成报告。</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       <div className="fixed bottom-6 right-6 z-[200]">
         {!logic.isChatOpen ? (
           <button
@@ -1206,6 +1564,76 @@ const App: React.FC = () => {
             <div className="p-6 bg-slate-50 border-t border-slate-100 flex space-x-3">
               <button onClick={() => logic.setEditingItem(null)} className="flex-1 py-3 rounded-xl border border-slate-200 text-[11px] font-black uppercase tracking-widest text-slate-500">取消</button>
               <button onClick={logic.saveEdit} className={`flex-1 py-3 rounded-xl ${themeBg} text-white shadow-lg text-[11px] font-black uppercase tracking-widest hover:brightness-110`}>保存更改</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {detailDialog && (
+        <div className="fixed inset-0 z-[420] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden">
+            <div className={`px-6 py-4 ${themeBg} text-white flex items-center justify-between`}>
+              <h3 className="text-sm font-black uppercase tracking-widest">设备详细信息</h3>
+              <button onClick={() => setDetailDialog(null)} className="text-white/60 hover:text-white transition-colors">✕</button>
+            </div>
+            <div className="p-6 space-y-5">
+              {detailDialog.detail ? (
+                <div className="grid grid-cols-2 gap-4 text-[11px]">
+                  <div className="space-y-1">
+                    <div className="text-slate-400 font-bold uppercase">品牌</div>
+                    <div className="font-black text-slate-900">{detailDialog.detail.品牌 || '—'}</div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="text-slate-400 font-bold uppercase">型号</div>
+                    <div className="font-black text-slate-900">{detailDialog.detail.型号 || '—'}</div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="text-slate-400 font-bold uppercase">产品名称</div>
+                    <div className="font-black text-slate-900">{detailDialog.detail.产品名称 || '—'}</div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="text-slate-400 font-bold uppercase">市场价</div>
+                    <div className="font-black text-slate-900">¥{Number(detailDialog.detail.市场价 || 0).toLocaleString()}</div>
+                  </div>
+                  {detailDialog.detail.描述 && (
+                    <div className="col-span-2 space-y-1">
+                      <div className="text-slate-400 font-bold uppercase">描述</div>
+                      <div className="text-slate-600 font-medium">{detailDialog.detail.描述}</div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="text-[12px] text-slate-400 font-bold">未找到该设备的数据库信息。</div>
+              )}
+
+              {detailDialog.table && detailOptions.length > 0 && (
+                <div className="border-t border-slate-100 pt-4 space-y-3">
+                  <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">替换设备</div>
+                  <div className="flex items-center space-x-3">
+                    <select
+                      value={replacementId}
+                      onChange={e => setReplacementId(e.target.value ? Number(e.target.value) : '')}
+                      className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-[11px] font-bold outline-none"
+                    >
+                      <option value="">请选择替换设备</option>
+                      {detailOptions.map(opt => (
+                        <option key={opt.id} value={opt.id}>{opt.品牌} / {opt.产品名称} / {opt.型号}</option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={() => {
+                        const selected = detailOptions.find(opt => opt.id === Number(replacementId));
+                        if (!selected) return;
+                        logic.replacePlanItem(detailDialog.resIdx, detailDialog.itemIdx, selected);
+                        setDetailDialog(prev => prev ? { ...prev, detail: selected, item: { ...prev.item, name: selected.产品名称 || prev.item.name, model: selected.型号 || prev.item.model, brand: selected.品牌 || prev.item.brand, unitPrice: Number(selected.市场价) || prev.item.unitPrice } } : prev);
+                      }}
+                      className="px-4 py-2 rounded-lg bg-slate-900 text-white text-[11px] font-black uppercase"
+                    >
+                      确认替换
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

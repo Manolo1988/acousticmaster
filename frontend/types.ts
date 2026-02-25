@@ -51,6 +51,8 @@ export interface EquipmentItem {
   name: string;      // 产品名称
   model: string;     // 型号
   quantity: number;  // 数量
+  brand?: string;    // 品牌（可选）
+  unitPrice?: number; // 单价（可选）
 }
 
 export interface SolutionResult {
@@ -61,6 +63,7 @@ export interface SolutionResult {
   excelLink?: string;
   isGenerating?: boolean;
   simulationImage?: string;
+  lastReportSignature?: string;
 }
 
 export interface ChatMessage {

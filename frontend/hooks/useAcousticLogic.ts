@@ -22,6 +22,38 @@ declare global {
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://115.231.236.153:3001";
 
+const TABLE_NAME_MAP: Record<string, TableType> = {
+  音箱: TableType.SPEAKER,
+  线阵列配套: TableType.LINE_ARRAY,
+  定阻功放: TableType.AMPLIFIER,
+  功放: TableType.AMPLIFIER,
+  周边设备: TableType.PERIPHERAL,
+  其他设备: TableType.OTHER
+};
+
+const normalizeTableName = (type: string): TableType | null => {
+  if (!type) return null;
+  if (Object.values(TableType).includes(type as TableType)) return type as TableType;
+  return TABLE_NAME_MAP[type] || null;
+};
+
+const buildEquipmentKey = (table: string, model: string, name: string) => {
+  return `${table}::${model || ''}::${name || ''}`;
+};
+
+const buildItemsSignature = (items: EquipmentItem[]) => {
+  return JSON.stringify(
+    items.map(item => ({
+      type: item.type,
+      name: item.name,
+      model: item.model,
+      quantity: item.quantity,
+      brand: item.brand || '',
+      unitPrice: item.unitPrice || 0
+    }))
+  );
+};
+
 
 // 👇 新增：工具函数
 const submitDesign = async (acousticIntent: any) => {
@@ -173,11 +205,13 @@ export const useAcousticLogic = () => {
   const [users, setUsers] = useState<User[]>([]);
   const [userRoleFilter, setUserRoleFilter] = useState<string>('ALL');  // --- 方案设计核心状态 ---
   const [userNameFilter, setUserNameFilter] = useState("");
-  const [searchFilters, setSearchFilters] = useState({ 品牌: '', 用途: '', 场景: '' });
+  const [searchFilters, setSearchFilters] = useState({ 品牌: '', 产品名称: '', 用途: '', 场景: '' });
   const [sortConfig, setSortConfig] = useState<{ key: string, direction: 'asc' | 'desc' } | null>(null);
   // --- 资源管理状态 (对应 MySQL 数据库) ---
   const [activeTable, setActiveTable] = useState<TableType>(TableType.SPEAKER as TableType);
   const [inventory, setInventory] = useState<DbInventoryItem[]>([]);
+  const [equipmentDetailCache, setEquipmentDetailCache] = useState<Record<string, DbInventoryItem>>({});
+  const [inventoryOptionsByTable, setInventoryOptionsByTable] = useState<Record<string, DbInventoryItem[]>>({});
   const [history, setHistory] = useState<HistoryRecord[]>([]);
   const [currentUser, setCurrentUser] = useState<AuthUser>({
     id: 0,
@@ -217,21 +251,38 @@ export const useAcousticLogic = () => {
           sortedResult.push({ ...c, isChild: true });
         });
       });
-      return sortedResult;
+      result = sortedResult;
     }
     if (searchFilters.品牌) {
       result = result.filter(item => item.品牌.toLowerCase().includes(searchFilters.品牌.toLowerCase()));
     }
+    if (searchFilters.产品名称) {
+      result = result.filter(item => item.产品名称.toLowerCase().includes(searchFilters.产品名称.toLowerCase()));
+    }
     if (searchFilters.用途 && activeTable === TableType.SPEAKER as TableType) {
       result = result.filter(item => Array.isArray(item.用途) ? item.用途.includes(searchFilters.用途) : item.用途 === searchFilters.用途);
+    }
+    if (searchFilters.场景) {
+      result = result.filter(item => {
+        const scene = item.场景 || '';
+        const usage = Array.isArray(item.用途) ? item.用途.join(',') : (item.用途 || '');
+        return scene.includes(searchFilters.场景) || usage.includes(searchFilters.场景);
+      });
     }
 
     // 3. 排序逻辑
     if (sortConfig) {
       result.sort((a: any, b: any) => {
-        const valA = a[sortConfig.key] || 0;
-        const valB = b[sortConfig.key] || 0;
-        return sortConfig.direction === 'asc' ? valA - valB : valB - valA;
+        const valA = a[sortConfig.key];
+        const valB = b[sortConfig.key];
+        if (typeof valA === 'string' || typeof valB === 'string') {
+          const aStr = (valA || '').toString();
+          const bStr = (valB || '').toString();
+          return sortConfig.direction === 'asc' ? aStr.localeCompare(bStr) : bStr.localeCompare(aStr);
+        }
+        const aNum = Number(valA || 0);
+        const bNum = Number(valB || 0);
+        return sortConfig.direction === 'asc' ? aNum - bNum : bNum - aNum;
       });
     }
     return result;
@@ -275,6 +326,74 @@ export const useAcousticLogic = () => {
       console.error("❌ Failed to fetch inventory:", error);
       setInventory([]);
     }
+  };
+
+  const getCachedEquipmentDetail = (item: EquipmentItem) => {
+    const table = normalizeTableName(item.type);
+    if (!table) return null;
+    const key = buildEquipmentKey(table, item.model, item.name);
+    return equipmentDetailCache[key] || null;
+  };
+
+  const fetchEquipmentDetail = async (item: EquipmentItem) => {
+    const table = normalizeTableName(item.type);
+    if (!table) return null;
+    const key = buildEquipmentKey(table, item.model, item.name);
+    if (equipmentDetailCache[key]) return equipmentDetailCache[key];
+
+    const params = new URLSearchParams();
+    if (item.model) params.set('model', item.model);
+    if (item.name) params.set('name', item.name);
+
+    try {
+      const response = await fetch(`${API_BASE}/api/inventory/${encodeURIComponent(table)}/detail?${params.toString()}`);
+      if (!response.ok) return null;
+      const detail = await response.json();
+      if (detail) {
+        setEquipmentDetailCache(prev => ({ ...prev, [key]: detail }));
+        return detail as DbInventoryItem;
+      }
+    } catch (error) {
+      console.error('❌ Failed to fetch equipment detail:', error);
+    }
+    return null;
+  };
+
+  const ensureInventoryOptions = async (table: TableType) => {
+    if (inventoryOptionsByTable[table]?.length) return;
+    try {
+      const response = await fetch(`${API_BASE}/api/inventory/${encodeURIComponent(table)}`);
+      if (!response.ok) throw new Error(`Fetch inventory options failed: ${response.status}`);
+      const data = await response.json();
+      setInventoryOptionsByTable(prev => ({ ...prev, [table]: Array.isArray(data) ? data : [] }));
+    } catch (error) {
+      console.error('❌ Failed to fetch inventory options:', error);
+      setInventoryOptionsByTable(prev => ({ ...prev, [table]: [] }));
+    }
+  };
+
+  const getInventoryOptions = (table: TableType) => inventoryOptionsByTable[table] || [];
+
+  const replacePlanItem = (resIdx: number, itemIdx: number, detail: DbInventoryItem) => {
+    setDesignState(prev => {
+      const newResults = [...prev.results];
+      const currentItem = newResults[resIdx]?.items[itemIdx];
+      if (!currentItem) return prev;
+
+      const nextItem: EquipmentItem = {
+        ...currentItem,
+        name: detail.产品名称 || currentItem.name,
+        model: detail.型号 || currentItem.model,
+        brand: detail.品牌 || currentItem.brand,
+        unitPrice: Number(detail.市场价) || currentItem.unitPrice || 0
+      };
+
+      newResults[resIdx] = {
+        ...newResults[resIdx],
+        items: newResults[resIdx].items.map((item, idx) => (idx === itemIdx ? nextItem : item))
+      };
+      return { ...prev, results: newResults };
+    });
   };
 
   useEffect(() => {
@@ -605,21 +724,24 @@ const deleteItem = (resIdx: number, itemIdx: number) => {
 // --- 2. 实现 handleGenerateReports (生成正式报告) ---
 const handleGenerateReports = (scope: 'CURRENT' | 'ALL') => {
   setIsGeneratingDocs(true);
-  // 模拟生成过程
   setTimeout(() => {
     setDesignState(prev => {
       const newResults = [...prev.results];
       if (scope === 'CURRENT') {
         const current = newResults[prev.activeResultIndex];
-        if (current) current.wordLink = "#"; // 赋予模拟链接
+        if (current) {
+          current.lastReportSignature = buildItemsSignature(current.items);
+        }
       } else {
-        newResults.forEach(r => r.wordLink = "#");
+        newResults.forEach(r => {
+          r.lastReportSignature = buildItemsSignature(r.items);
+        });
       }
       return { ...prev, results: newResults };
     });
     setIsGeneratingDocs(false);
     alert(scope === 'CURRENT' ? "当前方案报告已生成" : "所有方案报告已生成");
-  }, 1500);
+  }, 800);
 };
 
 // --- 3. 实现 deleteUser (用户管理中的删除) ---
@@ -703,10 +825,30 @@ const updateProfile = async (updates: Partial<User> & { password?: string }) => 
   }
 };
 // --- 4. 实现 handleDownload (文件下载逻辑) ---
-const handleDownload = (type: 'EXCEL' | 'WORD' | 'PNG') => {
-  const fileName = designState.projectName || "声学方案";
-  alert(`系统正在准备 ${fileName} 的 ${type} 文件，请稍后...`);
-  // 实际项目中这里会调用 window.open(url) 或创建 <a> 标签下载
+const handleDownload = (type: 'EXCEL' | 'WORD' | 'PNG', scope: 'CURRENT' | 'ALL' = 'CURRENT') => {
+  if (type === 'PNG') {
+    const fileName = designState.projectName || "声学方案";
+    alert(`系统正在准备 ${fileName} 的 ${type} 文件，请稍后...`);
+    return;
+  }
+
+  const results = scope === 'CURRENT'
+    ? [designState.results[designState.activeResultIndex]].filter(Boolean)
+    : designState.results;
+
+  const missing: string[] = [];
+  results.forEach(res => {
+    const link = type === 'WORD' ? res.wordLink : res.excelLink;
+    if (link) {
+      window.open(link, '_blank');
+    } else {
+      missing.push(res.title);
+    }
+  });
+
+  if (missing.length) {
+    alert(`${type === 'WORD' ? 'Word' : 'Excel'} 链接缺失：${missing.join('，')}`);
+  }
 };
 const handleBlueprintUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
   const file = e.target.files?.[0];
@@ -835,6 +977,12 @@ const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
     setHistory,
     handleParamChange, handleMicChange, addMic, removeMic,
     handleUpdateProjectName, handleSendMessage, startDesign, saveEdit, handleLogout,
+    fetchEquipmentDetail,
+    getCachedEquipmentDetail,
+    ensureInventoryOptions,
+    getInventoryOptions,
+    replacePlanItem,
+    buildItemsSignature,
     closeHistoryPreview: () => setPreviewHistoryItem(null)
   };
 };

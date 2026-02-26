@@ -128,6 +128,30 @@ const parseTableLines = (tableText: string): EquipmentItem[] => {
   return items;
 };
 
+const normalizeSchemeTitle = (value: string) => value.replace(/\s+/g, '');
+
+const extractDocLinksFromSegment = (segment: string) => {
+  const wordMatch = segment.match(/https?:\/\/[^\s"']+\.docx/);
+  const excelMatch = segment.match(/https?:\/\/[^\s"']+\.xlsx/);
+  return {
+    word: wordMatch ? wordMatch[0] : '',
+    excel: excelMatch ? excelMatch[0] : ''
+  };
+};
+
+const collectLinkPairs = (text: string) => {
+  const pairs: Array<{ word: string; excel: string; key: string }> = [];
+  const blocks = [...text.matchAll(/\{[^{}]*\}/g)].map(match => match[0]);
+  blocks.forEach(block => {
+    const links = extractDocLinksFromSegment(block);
+    if (links.word || links.excel) {
+      const key = `${links.word}||${links.excel}`;
+      pairs.push({ ...links, key });
+    }
+  });
+  return pairs;
+};
+
 const parseDifyResponseToResults = (rawText: string): SolutionResult[] => {
   const resultStartKeyword = '生成完毕，最终结果如下：';
   const resultStartIndex = rawText.indexOf(resultStartKeyword);
@@ -167,19 +191,49 @@ const parseDifyResponseToResults = (rawText: string): SolutionResult[] => {
     }
   }
 
-  // 尝试关联文档链接
-  const docMatches = [...rawText.matchAll(/(方案\s*\S+)\s*(\{.*?"word":\s*".*?".*?\})/g)];
-  for (const match of docMatches) {
-    const titleInDoc = match[1].trim();
-    try {
-      const links = JSON.parse(match[2]);
-      const target = results.find(r => r.title === titleInDoc);
+  const docSectionIndex = rawText.indexOf('请耐心等待');
+  const docText = docSectionIndex >= 0 ? rawText.slice(docSectionIndex) : rawText;
+
+  // 尝试关联文档链接（按标题优先，再按顺序兜底）
+  const schemeAnchors = [...docText.matchAll(/方案\s*(\d+)/g)].map(match => ({
+    index: match.index ?? 0,
+    title: `方案${match[1]}`
+  }));
+
+  const collectedPairs = collectLinkPairs(docText);
+  const usedPairs = new Set<string>();
+
+  if (schemeAnchors.length > 0) {
+    for (let i = 0; i < schemeAnchors.length; i += 1) {
+      const start = schemeAnchors[i].index;
+      const end = i + 1 < schemeAnchors.length ? schemeAnchors[i + 1].index : docText.length;
+      const segment = docText.slice(start, end);
+      const links = extractDocLinksFromSegment(segment);
+      if (!links.word && !links.excel) continue;
+
+      const target = results.find(r => normalizeSchemeTitle(r.title) === normalizeSchemeTitle(schemeAnchors[i].title));
       if (target) {
-        target.wordLink = links.word || '';
-        target.excelLink = links.excel || '';
+        target.wordLink = target.wordLink || links.word;
+        target.excelLink = target.excelLink || links.excel;
+        usedPairs.add(`${links.word}||${links.excel}`);
       }
-    } catch (e) { /* 忽略解析错误 */ }
+    }
   }
+
+  // 兜底：按出现顺序绑定未使用的链接对，不重复复用
+  let pairCursor = 0;
+  results.forEach((res) => {
+    if (res.wordLink && res.excelLink) return;
+    while (pairCursor < collectedPairs.length && usedPairs.has(collectedPairs[pairCursor].key)) {
+      pairCursor += 1;
+    }
+    if (pairCursor >= collectedPairs.length) return;
+    const pair = collectedPairs[pairCursor];
+    res.wordLink = res.wordLink || pair.word;
+    res.excelLink = res.excelLink || pair.excel;
+    usedPairs.add(pair.key);
+    pairCursor += 1;
+  });
 
   return results;
 };
@@ -650,7 +704,8 @@ if (designState.scenario === Scenario.LECTURE_HALL) {
       results: parsedResults.map((res) => ({
         ...res,
         simulationImage: '',
-        wordLink: res.wordLink || ''
+        wordLink: res.wordLink || '',
+        excelLink: res.excelLink || ''
       }))
     };
 

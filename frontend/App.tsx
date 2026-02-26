@@ -67,6 +67,11 @@ const App: React.FC = () => {
 
   const reportUpToDate = !!(activeResult?.lastReportSignature && activeResult.lastReportSignature === logic.buildItemsSignature(activeResult.items));
   const hasGeneratedReport = reportUpToDate || !!activeResult?.wordLink;
+  const hasWordExport = reportUpToDate;
+  const hasExcelExport = reportUpToDate;
+  const wordPreviewUrl = activeResult?.wordLink?.startsWith('https://')
+    ? `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(activeResult.wordLink)}`
+    : '';
   const detailOptions = detailDialog?.table ? logic.getInventoryOptions(detailDialog.table) : [];
 
   const toggleSort = (key: string) => {
@@ -95,10 +100,10 @@ const App: React.FC = () => {
 
   // 当方案切换时，如果当前视图是方案预览且未生成，则切回到数据清单
   useEffect(() => {
-    if (activeResultView === 'WORD' && !hasGeneratedReport) {
+    if (activeResultView === 'WORD' && !hasWordExport) {
       setActiveResultView('TABLE');
     }
-  }, [logic.designState.activeResultIndex, hasGeneratedReport]);
+  }, [logic.designState.activeResultIndex, hasWordExport]);
 
   useEffect(() => {
     if (!activeResult?.items?.length) return;
@@ -216,113 +221,121 @@ const App: React.FC = () => {
   );
 
   const renderSolutionSidebar = () => (
-    <div className={`w-[290px] ${theme.lightBg} border-r border-slate-200 overflow-y-auto p-3 flex flex-col space-y-3 scrollbar-hide shrink-0`}>
-      <div className={isBlueprintLocked ? 'pointer-events-none opacity-60' : ''}>
-        <div className="bg-slate-200/40 p-0.5 rounded-lg flex border border-slate-200 shadow-inner">
-          <button onClick={() => logic.handleParamChange('scenario', Scenario.MEETING_ROOM)}
-            className={`flex-1 py-1 rounded-md text-[11px] font-bold transition-all ${logic.designState.scenario === Scenario.MEETING_ROOM ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}>
-            会议室
-          </button>
-          <button onClick={() => logic.handleParamChange('scenario', Scenario.LECTURE_HALL)}
-            className={`flex-1 py-1 rounded-md text-[11px] font-bold transition-all ${logic.designState.scenario === Scenario.LECTURE_HALL ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-500'}`}>
-            报告厅
-          </button>
-        </div>
-
-        <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2 mt-3">
-          <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b pb-1">物理参数 (M)</h3>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">房间长</label>
-              <input type="number" value={logic.designState.params.length} onChange={e => logic.handleParamChange('length', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
-            </div>
-            <div>
-              <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">房间宽</label>
-              <input type="number" value={logic.designState.params.width} onChange={e => logic.handleParamChange('width', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
-            </div>
-            <div className="col-span-2">
-              <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">安装高度</label>
-              <input type="number" value={logic.designState.params.height} onChange={e => logic.handleParamChange('height', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
-            </div>
-
-            {logic.designState.scenario === Scenario.LECTURE_HALL && (
-              <div className="col-span-2 grid grid-cols-2 gap-2 pt-1 border-t border-slate-50">
-                <div>
-                  <label className="text-[9px] text-slate-400 font-bold mb-0.5 block leading-tight">台口至最近</label>
-                  <input type="number" value={logic.designState.params.stageToNearAudience} onChange={e => logic.handleParamChange('stageToNearAudience', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold outline-none ${themeText}`} />
-                </div>
-                <div>
-                  <label className="text-[9px] text-slate-400 font-bold mb-0.5 block leading-tight">台口至最远</label>
-                  <input type="number" value={logic.designState.params.stageToFarAudience} onChange={e => logic.handleParamChange('stageToFarAudience', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold outline-none ${themeText}`} />
-                </div>
-                <div>
-                  <label className="text-[9px] text-slate-400 font-bold mb-0.5 block leading-tight">台口宽度</label>
-                  <input type="number" value={logic.designState.params.stageWidth} onChange={e => logic.handleParamChange('stageWidth', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold outline-none ${themeText}`} />
-                </div>
-                <div>
-                  <label className="text-[9px] text-slate-400 font-bold mb-0.5 block leading-tight">舞台深度</label>
-                  <input type="number" value={logic.designState.params.stageDepth} onChange={e => logic.handleParamChange('stageDepth', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold outline-none ${themeText}`} />
-                </div>
+    <div className={`w-[290px] ${theme.lightBg} border-r border-slate-200 flex flex-col shrink-0`}>
+      <div className="flex-1 overflow-y-auto p-3 flex flex-col space-y-3 scrollbar-hide">
+        <div className={isBlueprintLocked ? 'pointer-events-none opacity-60' : ''}>
+          <div className="bg-slate-200/40 p-0.5 rounded-lg flex border border-slate-200 shadow-inner">
+            <button
+              onClick={() => logic.handleParamChange('scenario', Scenario.MEETING_ROOM)}
+              className={`flex-1 py-1 rounded-md text-[11px] font-bold transition-all ${logic.designState.scenario === Scenario.MEETING_ROOM ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}
+            >
+              会议室
+            </button>
+            <button
+              onClick={() => logic.handleParamChange('scenario', Scenario.LECTURE_HALL)}
+              className={`flex-1 py-1 rounded-md text-[11px] font-bold transition-all ${logic.designState.scenario === Scenario.LECTURE_HALL ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-500'}`}
+            >
+              报告厅
+            </button>
+          </div>
+          <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2 mt-3">
+            <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b pb-1">物理参数 (M)</h3>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">房间长</label>
+                <input type="number" value={logic.designState.params.length} onChange={e => logic.handleParamChange('length', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
               </div>
-            )}
-          </div>
-        </div>
-
-        <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2 mt-3">
-          <div className="flex items-center justify-between border-b pb-1">
-            <h3 className={`text-[10px] font-black ${themeText} uppercase tracking-widest`}>话筒配置</h3>
-            <button onClick={logic.addMic} className={`text-[8px] font-black px-1.5 py-0.5 rounded border ${themeText} ${themeBorder} bg-slate-50 hover:bg-white transition-colors`}>+ 添加</button>
-          </div>
-          <div className="space-y-1.5">
-            {logic.designState.params.mics.map(m => (
-              <div key={m.id} className="flex items-center space-x-1.5 group">
-                <select value={m.type} onChange={e => logic.handleParamChange('mics', logic.designState.params.mics.map(mic => mic.id === m.id ? { ...mic, type: e.target.value } : mic))} className="flex-1 bg-slate-50 border border-slate-100 rounded px-1.5 py-1 text-[11px] font-bold outline-none">
-                  {MIC_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                </select>
-                <input type="number" value={m.count} onChange={e => logic.handleMicChange(m.id, parseInt(e.target.value))} className={`w-8 bg-white border border-slate-200 rounded py-1 text-center text-[11px] font-bold ${themeText} outline-none`} />
-                <button onClick={() => logic.removeMic(m.id)} className="text-slate-300 hover:text-red-500 text-[9px] px-0.5">✕</button>
+              <div>
+                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">房间宽</label>
+                <input type="number" value={logic.designState.params.width} onChange={e => logic.handleParamChange('width', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
               </div>
-            ))}
+              <div className="col-span-2">
+                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">安装高度</label>
+                <input type="number" value={logic.designState.params.height} onChange={e => logic.handleParamChange('height', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
+              </div>
+
+              {logic.designState.scenario === Scenario.LECTURE_HALL && (
+                <div className="col-span-2 grid grid-cols-2 gap-2 pt-1 border-t border-slate-50">
+                  <div>
+                    <label className="text-[9px] text-slate-400 font-bold mb-0.5 block leading-tight">台口至最近</label>
+                    <input type="number" value={logic.designState.params.stageToNearAudience} onChange={e => logic.handleParamChange('stageToNearAudience', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold outline-none ${themeText}`} />
+                  </div>
+                  <div>
+                    <label className="text-[9px] text-slate-400 font-bold mb-0.5 block leading-tight">台口至最远</label>
+                    <input type="number" value={logic.designState.params.stageToFarAudience} onChange={e => logic.handleParamChange('stageToFarAudience', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold outline-none ${themeText}`} />
+                  </div>
+                  <div>
+                    <label className="text-[9px] text-slate-400 font-bold mb-0.5 block leading-tight">台口宽度</label>
+                    <input type="number" value={logic.designState.params.stageWidth} onChange={e => logic.handleParamChange('stageWidth', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold outline-none ${themeText}`} />
+                  </div>
+                  <div>
+                    <label className="text-[9px] text-slate-400 font-bold mb-0.5 block leading-tight">舞台深度</label>
+                    <input type="number" value={logic.designState.params.stageDepth} onChange={e => logic.handleParamChange('stageDepth', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold outline-none ${themeText}`} />
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2 mt-3">
+            <div className="flex items-center justify-between border-b pb-1">
+              <h3 className={`text-[10px] font-black ${themeText} uppercase tracking-widest`}>话筒配置</h3>
+              <button onClick={logic.addMic} className={`text-[8px] font-black px-1.5 py-0.5 rounded border ${themeText} ${themeBorder} bg-slate-50 hover:bg-white transition-colors`}>+ 添加</button>
+            </div>
+            <div className="space-y-1.5">
+              {logic.designState.params.mics.map(m => (
+                <div key={m.id} className="flex items-center space-x-1.5 group">
+                  <select value={m.type} onChange={e => logic.handleParamChange('mics', logic.designState.params.mics.map(mic => mic.id === m.id ? { ...mic, type: e.target.value } : mic))} className="flex-1 bg-slate-50 border border-slate-100 rounded px-1.5 py-1 text-[11px] font-bold outline-none">
+                    {MIC_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                  <input type="number" value={m.count} onChange={e => logic.handleMicChange(m.id, parseInt(e.target.value))} className={`w-8 bg-white border border-slate-200 rounded py-1 text-center text-[11px] font-bold ${themeText} outline-none`} />
+                  <button onClick={() => logic.removeMic(m.id)} className="text-slate-300 hover:text-red-500 text-[9px] px-0.5">✕</button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2 mt-3">
+            <h3 className="text-[10px] font-black text-slate-400 border-b pb-1 uppercase tracking-widest">配套子系统</h3>
+            <div className="grid grid-cols-2 gap-1.5">
+              {[
+                { id: 'hasCentralControl', l: '中控' }, { id: 'hasMatrix', l: '矩阵' }, { id: 'hasVideoConf', l: '视频' }, { id: 'hasRecording', l: '录播' }
+              ].map(sys => (
+                <label key={sys.id} className="flex items-center space-x-1.5 bg-slate-50/50 p-1.5 rounded border border-slate-100 cursor-pointer hover:bg-white transition-all">
+                  <input type="checkbox" checked={(logic.designState.params as any)[sys.id]} onChange={e => logic.handleParamChange(sys.id as any, e.target.checked)} className={`w-3 h-3 rounded accent-${theme.color.split('-')[0]}`} />
+                  <span className="text-[10px] font-bold text-slate-600">{sys.l}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-1.5 flex-1 mt-3">
+            <h3 className="text-[10px] font-black text-slate-400 border-b pb-1 uppercase tracking-widest">其他需求</h3>
+            <textarea
+              value={logic.designState.params.extraRequirements}
+              onChange={e => logic.handleParamChange('extraRequirements', e.target.value)}
+              placeholder="补充品牌偏好等..."
+              className="w-full bg-slate-50 border border-slate-100 rounded px-2 py-1.5 text-[11px] font-medium outline-none h-14 resize-none focus:bg-white transition-all"
+            />
           </div>
         </div>
 
-        <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2 mt-3">
-          <h3 className="text-[10px] font-black text-slate-400 border-b pb-1 uppercase tracking-widest">配套子系统</h3>
-          <div className="grid grid-cols-2 gap-1.5">
-            {[
-              { id: 'hasCentralControl', l: '中控' }, { id: 'hasMatrix', l: '矩阵' }, { id: 'hasVideoConf', l: '视频' }, { id: 'hasRecording', l: '录播' }
-            ].map(sys => (
-              <label key={sys.id} className="flex items-center space-x-1.5 bg-slate-50/50 p-1.5 rounded border border-slate-100 cursor-pointer hover:bg-white transition-all">
-                <input type="checkbox" checked={(logic.designState.params as any)[sys.id]} onChange={e => logic.handleParamChange(sys.id as any, e.target.checked)} className={`w-3 h-3 rounded accent-${theme.color.split('-')[0]}`} />
-                <span className="text-[10px] font-bold text-slate-600">{sys.l}</span>
-              </label>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-1.5 flex-1 mt-3">
-          <h3 className="text-[10px] font-black text-slate-400 border-b pb-1 uppercase tracking-widest">其他需求</h3>
-          <textarea
-            value={logic.designState.params.extraRequirements}
-            onChange={e => logic.handleParamChange('extraRequirements', e.target.value)}
-            placeholder="补充品牌偏好等..."
-            className="w-full bg-slate-50 border border-slate-100 rounded px-2 py-1.5 text-[11px] font-medium outline-none h-14 resize-none focus:bg-white transition-all"
-          />
+        <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2">
+          <h3 className="text-[10px] font-black text-slate-400 border-b pb-1 uppercase tracking-widest">环境图纸</h3>
+          <label className="flex flex-col items-center justify-center w-full h-12 border-2 border-dashed border-slate-200 rounded-lg cursor-pointer hover:bg-slate-50 transition-all">
+            <div className="flex flex-col items-center justify-center">
+              <svg className="w-4 h-4 text-slate-400 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>
+              <p className="text-[8px] text-slate-500 font-bold uppercase">上传 CAD 图纸 (JPG/PNG)</p>
+            </div>
+            <input type="file" className="hidden" accept="image/*" onChange={logic.handleBlueprintUpload} />
+          </label>
         </div>
       </div>
-      <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2">
-        <h3 className="text-[10px] font-black text-slate-400 border-b pb-1 uppercase tracking-widest">环境图纸</h3>
-        <label className="flex flex-col items-center justify-center w-full h-12 border-2 border-dashed border-slate-200 rounded-lg cursor-pointer hover:bg-slate-50 transition-all">
-          <div className="flex flex-col items-center justify-center">
-            <svg className="w-4 h-4 text-slate-400 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>
-            <p className="text-[8px] text-slate-500 font-bold uppercase">上传 CAD 图纸 (JPG/PNG)</p>
-          </div>
-          <input type="file" className="hidden" accept="image/*" onChange={logic.handleBlueprintUpload} />
-        </label>
+      <div className="p-3 pt-0">
+        <button onClick={logic.startDesign} disabled={logic.isProcessingAi} className={`w-full py-2.5 ${themeBg} text-white rounded-lg font-bold text-[13px] shadow-lg hover:brightness-110 transition-all shrink-0 uppercase tracking-widest`}>
+          {logic.isProcessingAi ? '生成中...' : '启动方案设计'}
+        </button>
       </div>
-      <button onClick={logic.startDesign} disabled={logic.isProcessingAi} className={`w-full py-2.5 ${themeBg} text-white rounded-lg font-bold text-[13px] shadow-lg hover:brightness-110 transition-all shrink-0 uppercase tracking-widest`}>
-        {logic.isProcessingAi ? '生成中...' : '启动方案设计'}
-      </button>
     </div>
   );
 
@@ -350,7 +363,7 @@ const App: React.FC = () => {
                       loop
                       autoplay
                     ></lottie-player>
-                    <div className="text-[18px] text-slate-700 font-semibold mt-2">正在为您定制听音方案...</div>
+                    <div className="text-[18px] text-slate-700 font-semibold mt-2">正在为您定制音频方案...</div>
                   </div>
                 </div>
               )}
@@ -367,7 +380,7 @@ const App: React.FC = () => {
                 loop
                 autoplay
               ></lottie-player>
-              <div className="text-[18px] text-slate-700 font-semibold mt-2">正在为您定制听音方案...</div>
+              <div className="text-[18px] text-slate-700 font-semibold mt-2">正在为您定制音频方案...</div>
             </div>
           </div>
         ) : (
@@ -409,9 +422,9 @@ const App: React.FC = () => {
                 {/* 动态导出按钮逻辑 */}
                 {logic.currentResultTab === ResultTab.PLAN ? (
                   <>
-                    {hasGeneratedReport && (
+                    {(hasExcelExport || hasWordExport) && (
                       <div className="flex items-center space-x-2 animate-in fade-in slide-in-from-right-2 duration-300">
-                        {activeResultView === 'TABLE' ? (
+                        {hasExcelExport && (
                           <button
                             onClick={() => {
                               if (logic.designState.results.length > 1) {
@@ -425,7 +438,8 @@ const App: React.FC = () => {
                             <svg className="w-3.5 h-3.5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                             <span>导出清单 (Excel)</span>
                           </button>
-                        ) : (
+                        )}
+                        {hasWordExport && (
                           <button
                             onClick={() => {
                               if (logic.designState.results.length > 1) {
@@ -483,13 +497,16 @@ const App: React.FC = () => {
               <div className="flex flex-col space-y-1">
                 <div className="flex space-x-1">
                   {logic.designState.results.map((res, idx) => (
-                    <button key={res.id} onClick={() => { logic.setDesignState(prev => ({ ...prev, activeResultIndex: idx })); }}
-                      className={`px-3 py-1.5 rounded-md text-[10px] font-black transition-all ${logic.designState.activeResultIndex === idx ? `bg-slate-900 text-white shadow-md` : 'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}>
+                    <button
+                      key={res.id}
+                      onClick={() => { logic.setDesignState(prev => ({ ...prev, activeResultIndex: idx })); }}
+                      className={`px-3 py-1.5 rounded-md text-[10px] font-black transition-all ${logic.designState.activeResultIndex === idx ? `bg-slate-900 text-white shadow-md` : 'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}
+                    >
                       {res.title}
                     </button>
                   ))}
                 </div>
-                <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest py-1">
                   总价：<span className="text-slate-900">¥{activeTotalPrice.toLocaleString()}</span>
                 </div>
               </div>
@@ -506,7 +523,7 @@ const App: React.FC = () => {
                   <div className="bg-slate-100/50 p-0.5 rounded-md border border-slate-200 flex items-center h-8">
                     <button onClick={() => setActiveResultView('TABLE')} className={`px-3 h-7 rounded-sm text-[10px] font-bold transition-all ${activeResultView === 'TABLE' ? `bg-white ${themeText} shadow-sm` : 'text-slate-400'}`}>数据清单</button>
                     {/* 方案预览仅在生成后显示 */}
-                    {hasGeneratedReport && (
+                    {hasWordExport && (
                       <button onClick={() => setActiveResultView('WORD')} className={`px-3 h-7 rounded-sm text-[10px] font-bold transition-all animate-in zoom-in-95 duration-200 ${activeResultView === 'WORD' ? `bg-white ${themeText} shadow-sm` : 'text-slate-400'}`}>方案预览</button>
                     )}
                   </div>
@@ -587,13 +604,25 @@ const App: React.FC = () => {
                             </a>
                           )}
                         </div>
-                        {activeResult?.wordLink ? (
+                        {activeResult?.wordLink && wordPreviewUrl ? (
                           <div className="w-full aspect-[1/1.41] bg-slate-50 border border-slate-200 rounded overflow-hidden">
                             <iframe
                               title="word-preview"
                               className="w-full h-full"
-                              src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(activeResult.wordLink)}`}
+                              src={wordPreviewUrl}
                             />
+                          </div>
+                        ) : activeResult?.wordLink ? (
+                          <div className="aspect-[1/1.41] bg-slate-50 border border-dashed border-slate-200 rounded flex flex-col items-center justify-center text-slate-400 font-bold text-[12px] uppercase tracking-[0.3em] space-y-4">
+                            <div className="text-slate-500">预览不可用（仅支持 https 链接）</div>
+                            <a
+                              className={`text-[10px] font-black uppercase ${themeText} hover:underline`}
+                              href={activeResult.wordLink}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              点击打开 Word
+                            </a>
                           </div>
                         ) : (
                           <div className="aspect-[1/1.41] bg-slate-50 border border-dashed border-slate-200 rounded flex flex-col items-center justify-center text-slate-300 font-black text-[12px] uppercase tracking-[0.5em] space-y-4">

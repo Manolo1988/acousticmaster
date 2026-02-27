@@ -484,8 +484,12 @@ app.get("/api/acoustic-intent/latest", (req, res) => {
   res.json(latestAcousticIntent || {});
 });
 
-// 启动
-const PORT = 3001;
+// 启动 - 支持环境变量动态指定端口
+// 优先读取环境变量 PORT，没有则用默认值（开发3002/线上3001）
+const isProduction = process.env.NODE_ENV === 'production';
+const PORT = process.env.PORT || (isProduction ? 3001 : 3002);
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🎧 Server running on http://0.0.0.0:${PORT}`);
+  console.log(`🎯 Current environment: ${isProduction ? 'production' : 'development'}`);
 });

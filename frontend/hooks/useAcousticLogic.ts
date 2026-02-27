@@ -6,7 +6,6 @@ import {
   TableType, DbInventoryItem
 } from '../types';
 import { DEFAULT_PARAMS, MIC_TYPES } from '../constants';
-import { processAcousticCommand } from '../services/geminiService';
 import { v4 as uuidv4 } from 'uuid';
 
 // Type declaration for import.meta.env
@@ -524,37 +523,19 @@ export const useAcousticLogic = () => {
 
 
 
-  // --- AI 交互与设计逻辑 ---
+  // --- 交互与设计逻辑 ---
   const handleSendMessage = async () => {
     if (!chatInputValue.trim() || isProcessingAi) return;
     const userMsg = chatInputValue;
     setChatInputValue("");
     setDesignState(prev => ({
       ...prev,
-      chatHistory: [...prev.chatHistory, { role: 'user', text: userMsg, timestamp: new Date() }]
+      chatHistory: [
+        ...prev.chatHistory,
+        { role: 'user', text: userMsg, timestamp: new Date() },
+        { role: 'ai', text: '已收到需求，请手动调整参数后点击“启动方案设计”。', timestamp: new Date() }
+      ]
     }));
-    setIsProcessingAi(true);
-    
-    const aiResult = await processAcousticCommand(userMsg);
-    setDesignState(prev => {
-      let nextParams = { ...prev.params };
-      if (aiResult) {
-        nextParams = { ...nextParams, ...aiResult };
-        if (aiResult.suggestedMics) {
-          nextParams.mics = aiResult.suggestedMics.map((m: any, i: number) => ({ id: `ai-${Date.now()}-${i}`, ...m }));
-        }
-      }
-      return {
-        ...prev,
-        params: nextParams,
-        chatHistory: [...prev.chatHistory, { 
-          role: 'ai', 
-          text: aiResult ? `已识别到您的需求，参数已同步。是否基于这些参数生成方案？` : `收到，正在分析您的声学需求...`, 
-          timestamp: new Date() 
-        }]
-      };
-    });
-    setIsProcessingAi(false);
   };
 
 

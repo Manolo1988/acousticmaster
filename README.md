@@ -41,9 +41,8 @@ View your app in AI Studio: https://ai.studio/apps/drive/1r-FK-NFmK52s68Lsbk7JlT
 
 1. Install dependencies:
    `npm install`
-2.  Run the app:
-   `npm run dev` in /backend 
-3. use `node server.js` in /frontend to start node service
+2.  Run the app: `node server.js` in /backend 
+3. use `npm run dev`  in /frontend to start node service
 
 当前是线上和测试双环境。线上前端在8100端口，测试前端是3000端口
 

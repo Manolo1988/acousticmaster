@@ -603,6 +603,11 @@ export const useAcousticLogic = () => {
 
  // new_startDesign
 const startDesign = async () => {
+  setDesignState((prev) => ({
+    ...prev,
+    isDesigned: false
+  }));
+
   // ✅ 参数校验：基础尺寸必须 > 0
   if (
     designState.params.length <= 0 ||

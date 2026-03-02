@@ -19,7 +19,8 @@ declare global {
   }
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://115.231.236.153:3001";
+const rawApiBase = import.meta.env.VITE_API_BASE ?? "";
+const API_BASE = rawApiBase.replace(/\/+$/, "");
 
 const TABLE_NAME_MAP: Record<string, TableType> = {
   音箱: TableType.SPEAKER,
@@ -127,6 +128,12 @@ const parseTableLines = (tableText: string): EquipmentItem[] => {
   return items;
 };
 
+const normalizeRawText = (text: string) => {
+  return text
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/\r\n/g, '\n');
+};
+
 const normalizeSchemeTitle = (value: string) => value.replace(/\s+/g, '');
 
 const extractDocLinksFromSegment = (segment: string) => {
@@ -151,12 +158,50 @@ const collectLinkPairs = (text: string) => {
   return pairs;
 };
 
-const parseDifyResponseToResults = (rawText: string): SolutionResult[] => {
-  const resultStartKeyword = '生成完毕，最终结果如下：';
-  const resultStartIndex = rawText.indexOf(resultStartKeyword);
-  if (resultStartIndex === -1) return [];
+const extractTableBlocks = (text: string) => {
+  const lines = text.split('\n');
+  const blocks: Array<{ title: string; tableText: string }> = [];
+  let idx = 0;
 
-  let content = rawText.slice(resultStartIndex + resultStartKeyword.length);
+  while (idx < lines.length) {
+    const line = lines[idx];
+    const nextLine = lines[idx + 1] || '';
+    const looksLikeTableHeader = line.includes('|') && nextLine.includes('|') && /-+|:-:|:--|--:/g.test(nextLine);
+
+    if (looksLikeTableHeader) {
+      let end = idx + 2;
+      while (end < lines.length && lines[end].includes('|')) {
+        end += 1;
+      }
+      const tableText = lines.slice(idx, end).join('\n');
+      let title = '';
+      for (let back = idx - 1; back >= 0 && back >= idx - 6; back -= 1) {
+        const candidate = lines[back].trim();
+        if (!candidate || candidate.includes('|')) continue;
+        title = candidate;
+        if (candidate.includes('方案')) break;
+      }
+      if (!title) {
+        title = `方案${blocks.length + 1}`;
+      }
+      blocks.push({ title, tableText });
+      idx = end;
+      continue;
+    }
+    idx += 1;
+  }
+
+  return blocks;
+};
+
+const parseDifyResponseToResults = (rawText: string): SolutionResult[] => {
+  const normalizedText = normalizeRawText(rawText || '');
+  const resultStartKeyword = '生成完毕，最终结果如下：';
+  const resultStartIndex = normalizedText.indexOf(resultStartKeyword);
+
+  let content = resultStartIndex === -1
+    ? normalizedText
+    : normalizedText.slice(resultStartIndex + resultStartKeyword.length);
   const docStartIndex = content.indexOf('请耐心等待');
   if (docStartIndex !== -1) {
     content = content.slice(0, docStartIndex);
@@ -190,8 +235,23 @@ const parseDifyResponseToResults = (rawText: string): SolutionResult[] => {
     }
   }
 
-  const docSectionIndex = rawText.indexOf('请耐心等待');
-  const docText = docSectionIndex >= 0 ? rawText.slice(docSectionIndex) : rawText;
+  if (results.length === 0) {
+    const tableBlocks = extractTableBlocks(content);
+    tableBlocks.forEach(block => {
+      const items = parseTableLines(block.tableText);
+      if (items.length === 0) return;
+      results.push({
+        id: `res-${Date.now()}-${results.length}`,
+        title: block.title,
+        items,
+        wordLink: '',
+        excelLink: ''
+      });
+    });
+  }
+
+  const docSectionIndex = normalizedText.indexOf('请耐心等待');
+  const docText = docSectionIndex >= 0 ? normalizedText.slice(docSectionIndex) : normalizedText;
 
   // 尝试关联文档链接（按标题优先，再按顺序兜底）
   const schemeAnchors = [...docText.matchAll(/方案\s*(\d+)/g)].map(match => ({
@@ -653,7 +713,7 @@ if (designState.scenario === Scenario.LECTURE_HALL) {
 
   try {
     const apiResult = await submitDesign(acousticIntent);
-    const rawText = apiResult?.raw_answer || '';
+    const rawText = apiResult?.raw_answer ?? apiResult?.answer ?? apiResult?.data?.answer ?? '';
 
     // 🔑 解析结构化方案
     const parsedResults = parseDifyResponseToResults(rawText);

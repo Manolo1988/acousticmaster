@@ -10,13 +10,13 @@ export const MIC_TYPES = [
 ];
 
 export const DEFAULT_PARAMS: AcousticParams = {
-  length: 12,
-  width: 8,
-  height: 3.5,
+  length: 30,
+  width: 20,
+  height: 10,
   stageToNearAudience: 2,
-  stageToFarAudience: 15,
+  stageToFarAudience: 23,
   stageWidth: 10,
-  stageDepth: 5,
+  stageDepth: 3,
   hasCentralControl: true,
   hasMatrix: true,
   hasVideoConf: false,

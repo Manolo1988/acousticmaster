@@ -6,7 +6,29 @@ import mysql from "mysql2/promise";
 import bcrypt from "bcryptjs";
 
 const app = express();
-app.use(cors());
+const defaultCorsOrigins = [
+  "http://115.231.236.153:8100",
+  "http://115.231.236.153:3000",
+  "http://localhost:3000",
+  "http://127.0.0.1:3000"
+];
+const corsOrigins = (process.env.CORS_ORIGINS || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      const allowed = corsOrigins.length > 0 ? corsOrigins : defaultCorsOrigins;
+      if (allowed.includes(origin)) return callback(null, true);
+      return callback(new Error("CORS not allowed"), false);
+    },
+    credentials: true,
+    optionsSuccessStatus: 204
+  })
+);
 app.use(express.json());
 
 const DB_CONFIG = {
@@ -20,7 +42,7 @@ const DB_CONFIG = {
 };
 
 const pool = mysql.createPool(DB_CONFIG);
-
+const isProduction = process.env.NODE_ENV === 'production';
 const ALLOWED_TABLES = new Set([
   "音箱",
   "线阵列配套",
@@ -95,7 +117,8 @@ app.post("/api/run-dify-chatflow", async (req, res) => {
   // === ⚠️ 替换为你自己的 Dify 信息 ===
   const DIFY_API_KEY = "app-TUFsI5nY9v9e6ZEUXiNvISuZ"; // ← 已保留你的 key
   const DIFY_CHAT_API_URL = "http://115.231.236.153:20000/v1/chat-messages"; // 自建地址
-
+  const queryText = isProduction ? "请执行声学方案设计流程。" : "请执行声学方案设计流程（测试）。";
+  console.log(`🎯 Running Dify Chatflow in ${isProduction ? 'production' : 'development'} mode with query: "${queryText}"`);
   try {
     console.log("🚀 Calling Dify Chatflow with intent:", latestAcousticIntent);
 
@@ -103,7 +126,7 @@ app.post("/api/run-dify-chatflow", async (req, res) => {
       DIFY_CHAT_API_URL,
       {
         inputs: latestAcousticIntent,
-        query: "请执行声学方案设计流程。", // 👈 改为非空（避免 400）
+        query: queryText, // 👈 改为非空（避免 400）
         response_mode: "blocking",
         user: "acoustic_user_001"
       },
@@ -484,12 +507,20 @@ app.get("/api/acoustic-intent/latest", (req, res) => {
   res.json(latestAcousticIntent || {});
 });
 
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'UP', timestamp: new Date().toISOString() });
+});
+
 // 启动 - 支持环境变量动态指定端口
-// 优先读取环境变量 PORT，没有则用默认值（开发3002/线上3001）
-const isProduction = process.env.NODE_ENV === 'production';
-const PORT = process.env.PORT || (isProduction ? 3001 : 3002);
+// 优先读取环境变量 PORT，没有则用默认值（测试3002/线上3001）
+const DEFAULT_TEST_PORT = Number(process.env.TEST_PORT || 3002);
+const DEFAULT_PROD_PORT = Number(process.env.PROD_PORT || 3001);
+const PORT = Number(process.env.PORT || (isProduction ? DEFAULT_PROD_PORT : DEFAULT_TEST_PORT));
+const DIFY_INTENT_HOST = process.env.DIFY_INTENT_HOST || "115.231.236.153";
+const difyIntentUrl = `http://${DIFY_INTENT_HOST}:${PORT}/api/acoustic-intent/latest`;
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🎧 Server running on http://0.0.0.0:${PORT}`);
   console.log(`🎯 Current environment: ${isProduction ? 'production' : 'development'}`);
+  console.log(`🤖 Dify should request: ${difyIntentUrl}`);
 });

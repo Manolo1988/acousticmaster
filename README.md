@@ -50,5 +50,7 @@ View your app in AI Studio: https://ai.studio/apps/drive/1r-FK-NFmK52s68Lsbk7JlT
 ## 测试代码上线
 
 1. 在 backend 目录运行 docker compose down 停止当前服务，运行 docker compose up -d --build 编译当前代码并且重启后端服务
-2. 在 frontend 目录运行 npm run build 在 frontend/dist 文件夹下生成了新的 assets文件夹 和 index.html ，把这两个替换 docker/nginx/html里的文件，刷新浏览器页面就可以了
+2. 在 frontend 目录运行 npm run build 在 frontend/dist 文件夹下生成了新的 assets文件夹 和 index.html 
+3. 把这两个替换 docker/nginx/html里的文件，或者在主目录下运行 ./deploy_frontend.sh
+4. 刷新浏览器页面就可以了 
 

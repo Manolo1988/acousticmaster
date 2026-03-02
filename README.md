@@ -41,6 +41,14 @@ View your app in AI Studio: https://ai.studio/apps/drive/1r-FK-NFmK52s68Lsbk7JlT
 
 1. Install dependencies:
    `npm install`
-2. use `node server.js` in /frontend to start node service
-3. Run the app:
-   `npm run dev` in /backend
+2.  Run the app:
+   `npm run dev` in /backend 
+3. use `node server.js` in /frontend to start node service
+
+当前是线上和测试双环境。线上前端在8100端口，测试前端是3000端口
+
+## 测试代码上线
+
+1. 在 backend 目录运行 docker compose down 停止当前服务，运行 docker compose up -d --build 编译当前代码并且重启后端服务
+2. 在 frontend 目录运行 npm run build 在 frontend/dist 文件夹下生成了新的 assets文件夹 和 index.html ，把这两个替换 docker/nginx/html里的文件，刷新浏览器页面就可以了
+

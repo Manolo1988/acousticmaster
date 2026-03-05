@@ -1,5 +1,7 @@
 
 import React, { useRef, useEffect, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Scenario, Page, SolutionTab, ResultTab, User, TableType, DbInventoryItem, HistoryRecord, EquipmentItem } from './types';
 import { MIC_TYPES, SCENARIO_THEMES, VERIFY_THEME } from './constants';
 import Visualization from './components/Visualization';
@@ -1553,9 +1555,30 @@ const App: React.FC = () => {
             <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50 scrollbar-hide">
               {logic.designState.chatHistory.map((chat, idx) => (
                 <div key={idx} className={`flex ${chat.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[85%] p-3 rounded-2xl text-[12px] leading-relaxed shadow-sm ${chat.role === 'user' ? `${themeBg} text-white rounded-tr-none` : 'bg-white text-slate-700 border border-slate-100 rounded-tl-none'
+                  <div className={`max-w-[90%] p-3.5 rounded-2xl text-[12px] leading-relaxed shadow-sm ${chat.role === 'user'
+                    ? `${themeBg} text-white rounded-tr-none`
+                    : 'bg-white text-slate-700 border border-slate-100 rounded-tl-none prose prose-slate prose-xs max-w-none'
                     }`}>
-                    {chat.text}
+                    {chat.role === 'user' ? (
+                      chat.text
+                    ) : (
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={{
+                          table: ({ node, ...props }) => (
+                            <div className="overflow-x-auto my-2">
+                              <table className="min-w-full border shadow-sm rounded-lg text-[10px]" {...props} />
+                            </div>
+                          ),
+                          th: ({ node, ...props }) => <th className="border px-2 py-1 bg-slate-50 font-black text-slate-900" {...props} />,
+                          td: ({ node, ...props }) => <td className="border px-2 py-1" {...props} />,
+                          code: ({ node, ...props }) => <code className="bg-slate-100 px-1 rounded text-pink-600 font-mono" {...props} />,
+                          p: ({ node, ...props }) => <p className="mb-2 last:mb-0" {...props} />,
+                        }}
+                      >
+                        {chat.text}
+                      </ReactMarkdown>
+                    )}
                   </div>
                 </div>
               ))}

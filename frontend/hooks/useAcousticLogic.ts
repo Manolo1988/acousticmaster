@@ -3,7 +3,7 @@ import React from 'react';
 import {
   Scenario, Page, SolutionTab, ResultTab, AcousticParams, DesignState,
   EquipmentItem, SolutionResult, User, AuthUser, HistoryRecord,
-  TableType, DbInventoryItem
+  TableType, DbInventoryItem, ChatMessage
 } from '../types';
 import { DEFAULT_PARAMS, MIC_TYPES } from '../constants';
 import { v4 as uuidv4 } from 'uuid';
@@ -89,9 +89,106 @@ const formatDifyResult = (result: any): string => {
   if (result?.raw_answer) {
     return result.raw_answer;
   }
+  if (result?.answer) {
+    return result.answer;
+  }
   return '❌ 方案生成失败，请检查后端日志。';
 };
 
+// ========================================
+// 新增：本地 LLM 对话支持及自动参数提取
+// ========================================
+const useAcousticAssistant = (
+  params: AcousticParams, 
+  setParams: React.Dispatch<React.SetStateAction<AcousticParams>>,
+  setChatHistory: React.Dispatch<React.SetStateAction<ChatMessage[]>>
+) => {
+  const [isAssistantLoading, setIsAssistantLoading] = useState(false);
+
+  const sendMessageToAssistant = async (text: string, history: ChatMessage[]) => {
+    setIsAssistantLoading(true);
+    
+    // 1. 立即显示用户消息
+    const userMsg: ChatMessage = { role: 'user', text, timestamp: new Date() };
+    setChatHistory(prev => [...prev, userMsg]);
+
+    // 2. 创建占位 AI 消息（后续流式更新）
+    const aiId = Date.now().toString();
+    setChatHistory(prev => [...prev, { role: 'ai', text: "", timestamp: new Date() }]);
+
+    let fullAiText = "";
+    try {
+      const response = await fetch(`${API_BASE}/api/chat-assistant`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: text,
+          history: history.map(h => ({ role: h.role === 'ai' ? 'assistant' : 'user', content: h.text })),
+          currentParams: params
+        })
+      });
+
+      if (!response.body) throw new Error("No stream content");
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+        
+        for (const line of lines) {
+          if (!line.startsWith('data: ') || line.includes('[DONE]')) continue;
+          
+          try {
+            const data = JSON.parse(line.replace('data: ', ''));
+            if (data.content) {
+              fullAiText += data.content;
+              // 流式更新最后一条消息
+              setChatHistory(prev => {
+                const updated = [...prev];
+                updated[updated.length - 1] = { ...updated[updated.length - 1], text: fullAiText };
+                return updated;
+              });
+            }
+          } catch (e) {
+            console.warn("SSE parse error", e);
+          }
+        }
+      }
+
+      // 3. 处理参数提取 [UPDATE_PARAM: {...}]
+      const paramMatch = fullAiText.match(/\[UPDATE_PARAM:\s*({.*?})\]/);
+      if (paramMatch && paramMatch[1]) {
+        try {
+          const newVals = JSON.parse(paramMatch[1]);
+          setParams(prev => ({ ...prev, ...newVals }));
+          
+          // 静默移除标记，保持 UI 干净
+          const cleanText = fullAiText.replace(/\[UPDATE_PARAM:.*?\]/g, "").trim();
+          setChatHistory(prev => {
+            const updated = [...prev];
+            updated[updated.length - 1] = { ...updated[updated.length - 1], text: cleanText };
+            return updated;
+          });
+        } catch (e) {
+          console.error("AI Params parse failed:", e);
+        }
+      }
+
+    } catch (err) {
+      console.error("Assistant Error:", err);
+      setChatHistory(prev => [...prev, { role: 'ai', text: "抱歉，我的大脑暂时断网了，请稍后再试。", timestamp: new Date() }]);
+    } finally {
+      setIsAssistantLoading(false);
+    }
+  };
+
+  return { sendMessageToAssistant, isAssistantLoading };
+};
 
 // ========================================
 // 新增：Dify 响应解析器（动态支持任意数量方案）
@@ -336,16 +433,32 @@ export const useAcousticLogic = () => {
   });
   const defaultProjectName = `声学项目_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}_01`;
   const [designState, setDesignState] = useState<DesignState>({
-  
     projectName: defaultProjectName,
     scenario: Scenario.MEETING_ROOM,
     params: { ...DEFAULT_PARAMS },
     blueprint: null,
     isDesigned: false,
-    chatHistory: [{ role: 'ai', text: '您好，我是您的声学助理。请描述您的场景需求，我会自动同步参数并优化方案。', timestamp: new Date() }],
+    chatHistory: [{ role: 'ai', text: '您好，协助您进行声学方案设计的专家已就绪。请描述您的场景需求（如长、宽、高），我会自动为您调整参数。', timestamp: new Date() }],
     results: [],
     activeResultIndex: 0
   });
+
+  // --- 注入本地 LLM 助理逻辑 ---
+  const { sendMessageToAssistant, isAssistantLoading } = useAcousticAssistant(
+    designState.params,
+    (updater: any) => {
+      setDesignState(prev => ({
+        ...prev,
+        params: typeof updater === 'function' ? updater(prev.params) : { ...prev.params, ...updater }
+      }));
+    },
+    (updater: any) => {
+      setDesignState(prev => ({
+        ...prev,
+        chatHistory: typeof updater === 'function' ? updater(prev.chatHistory) : updater
+      }));
+    }
+  );
 
   // --- [核心修改] 多表切换与主子表关联逻辑 ---
   const displayInventory = useMemo(() => {
@@ -585,17 +698,10 @@ export const useAcousticLogic = () => {
 
   // --- 交互与设计逻辑 ---
   const handleSendMessage = async () => {
-    if (!chatInputValue.trim() || isProcessingAi) return;
-    const userMsg = chatInputValue;
+    if (!chatInputValue.trim() || isAssistantLoading) return;
+    const msg = chatInputValue;
     setChatInputValue("");
-    setDesignState(prev => ({
-      ...prev,
-      chatHistory: [
-        ...prev.chatHistory,
-        { role: 'user', text: userMsg, timestamp: new Date() },
-        { role: 'ai', text: '已收到需求，请手动调整参数后点击“启动方案设计”。', timestamp: new Date() }
-      ]
-    }));
+    await sendMessageToAssistant(msg, designState.chatHistory);
   };
 
 

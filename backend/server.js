@@ -94,6 +94,80 @@ const parseJsonField = (value, fallback) => {
 let latestAcousticIntent = null;
 let latestDifyResult = null;
 
+// === 本地 LLM 配置 (例如 Ollama 或 LocalAI) ===
+const LOCAL_LLM_URL = process.env.LOCAL_LLM_URL || "http://115.231.236.153:11434/v1/chat/completions";
+const LOCAL_LLM_MODEL = process.env.LOCAL_LLM_MODEL || "deepseek-r1:32b"; 
+
+app.post("/api/chat-assistant", async (req, res) => {
+  const { message, history = [], currentParams = {} } = req.body;
+
+  const systemPrompt = `你是一位专业的声学系统设计师。你的任务是通过对话引导用户提供设计方案所需的关键信息。
+当前已掌握参数: ${JSON.stringify(currentParams)}
+
+所需关键信息清单：
+1. 空间类型 (会议室/报告厅)
+2. 空间尺寸 (长、宽、高) [单位: 米]
+3. 核心功能需求 (如：是否有远程视频、是否需要录制、中控一键切换等)
+4. 话筒偏好 (如：手持、鹅颈、阵列等)
+
+人性化交互指南：
+- 像在茶水间沟通一样亲切自然，不要给人填表的感觉。
+- 如果用户说“很大”、“很宽”，可以尝试询问“大概能坐多少人？”来反推面积，并回复 [UPDATE_PARAM: {"length": x, "width": y}]。
+- 当你检测到任何数值或设定变化时，必须输出 [UPDATE_PARAM: {"key": value}]，放在回复的最末尾（不要加在正文中）。
+- 所有对话内容必须简洁，每轮对话尽量只关注一个新信息点。
+- 当信息集齐到可以出方案时，请热情地邀请用户点击“生成方案”并给出你的专业简评。`;
+
+  try {
+    // 设置 Server-Sent Events (SSE) 头部供流式输出
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    const response = await axios.post(LOCAL_LLM_URL, {
+      model: LOCAL_LLM_MODEL,
+      messages: [
+        { role: "system", content: systemPrompt },
+        ...history,
+        { role: "user", content: message }
+      ],
+      temperature: 0.7,
+      stream: true // 👈 开启流式输出
+    }, { 
+      timeout: 120000,
+      responseType: 'stream' // 👈 接收流
+    });
+
+    response.data.on('data', chunk => {
+      const payload = chunk.toString();
+      const lines = payload.split('\n');
+      for (const line of lines) {
+        if (!line.trim() || line.includes('[DONE]')) continue;
+        if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.replace('data: ', ''));
+            const content = data.choices[0]?.delta?.content || "";
+            if (content) {
+              res.write(`data: ${JSON.stringify({ content })}\n\n`);
+            }
+          } catch (e) {
+            // 解析失败时忽略
+          }
+        }
+      }
+    });
+
+    response.data.on('end', () => {
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+
+  } catch (error) {
+    console.error("❌ Local LLM Stream failed:", error.message);
+    res.write(`data: ${JSON.stringify({ error: "Local LLM service unavailable" })}\n\n`);
+    res.end();
+  }
+});
+
 app.post("/api/acoustic-intent", (req, res) => {
   const { acousticIntent } = req.body;
   if (!acousticIntent) {

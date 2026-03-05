@@ -100,22 +100,14 @@ const LOCAL_LLM_MODEL = process.env.LOCAL_LLM_MODEL || "qwen3:32b";
 app.post("/api/chat-assistant", async (req, res) => {
   const { message, history = [], currentParams = {} } = req.body;
 
-  const systemPrompt = `你是一位专业的声学系统设计师。你的任务是通过对话引导用户提供设计方案所需的关键信息。
-当前已掌握参数: ${JSON.stringify(currentParams)}
+  const systemPrompt = `你是一位声学工程师。你的任务是引导用户补全声学方案所需的空间参数。
+当前参数：${JSON.stringify(currentParams)}
 
-所需关键信息清单：
-1. 空间类型 (会议室/报告厅)
-2. 空间尺寸 (长、宽、高) [单位: 米]
-3. 核心功能需求 (如：是否有远程视频、是否需要录制、中控一键切换等)
-4. 话筒偏好 (如：手持、鹅颈、阵列等)
-
-人性化交互指南：
-- 像在茶水间沟通一样亲切自然，不要给人填表的感觉。
-- 如果用户说“很大”、“很宽”，可以尝试询问“大概能坐多少人？”来反推面积，并回复 [UPDATE_PARAM: {"length": x, "width": y}]。
-- 当你检测到任何数值或设定变化时，必须输出 [UPDATE_PARAM: {"key": value}]，放在回复的最末尾（不要加在正文中）。
-- 所有对话内容必须简洁，每轮对话尽量只关注一个新信息点。
-- 请直接输出建议，不要输出任何思考过程（绝对不要包含 <think> 标签）。
-- 当信息集齐到可以出方案时，请热情地邀请用户点击“生成方案”并给出你的专业简评。`;
+指令：
+1. 严禁输出任何思考过程，绝对不允许输出 <think> 标签及其内容。
+2. 回复必须极简，每次只问一个关键问题，字数少于50字。
+3. 如果检测到用户提到了尺寸、类型等参数，必须在回复末尾输出 [UPDATE_PARAM: {"key": value}]。
+4. 确保对话连续，不要重复用户的上一句话。`;
 
   try {
     // 设置 Server-Sent Events (SSE) 头部供流式输出
@@ -130,16 +122,16 @@ app.post("/api/chat-assistant", async (req, res) => {
         ...history,
         { role: "user", content: message }
       ],
-      temperature: 0.7,
-      stream: true, // 👈 开启流式输出
+      temperature: 0.1, 
+      stream: true, 
       options: {
-        num_ctx: 4096,
-        top_k: 40,
-        top_p: 0.9
+        num_ctx: 2048,
+        stop: ["<think>", "</think>", "|im_end|"], 
+        num_predict: 100
       }
     }, { 
       timeout: 120000,
-      responseType: 'stream' // 👈 接收流
+      responseType: 'stream' 
     });
 
     response.data.on('data', chunk => {

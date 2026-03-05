@@ -95,7 +95,7 @@ let latestDifyResult = null;
 
 // === 本地 LLM 配置 (例如 Ollama 或 LocalAI) ===
 const LOCAL_LLM_URL = process.env.LOCAL_LLM_URL || "http://115.231.236.153:11434/v1/chat/completions";
-const LOCAL_LLM_MODEL = process.env.LOCAL_LLM_MODEL || "deepseek-r1:32b"; 
+const LOCAL_LLM_MODEL = process.env.LOCAL_LLM_MODEL || "qwen3:32b"; 
 
 app.post("/api/chat-assistant", async (req, res) => {
   const { message, history = [], currentParams = {} } = req.body;
@@ -114,6 +114,7 @@ app.post("/api/chat-assistant", async (req, res) => {
 - 如果用户说“很大”、“很宽”，可以尝试询问“大概能坐多少人？”来反推面积，并回复 [UPDATE_PARAM: {"length": x, "width": y}]。
 - 当你检测到任何数值或设定变化时，必须输出 [UPDATE_PARAM: {"key": value}]，放在回复的最末尾（不要加在正文中）。
 - 所有对话内容必须简洁，每轮对话尽量只关注一个新信息点。
+- 请直接输出建议，不要输出任何思考过程（绝对不要包含 <think> 标签）。
 - 当信息集齐到可以出方案时，请热情地邀请用户点击“生成方案”并给出你的专业简评。`;
 
   try {
@@ -130,7 +131,12 @@ app.post("/api/chat-assistant", async (req, res) => {
         { role: "user", content: message }
       ],
       temperature: 0.7,
-      stream: true // 👈 开启流式输出
+      stream: true, // 👈 开启流式输出
+      options: {
+        num_ctx: 4096,
+        top_k: 40,
+        top_p: 0.9
+      }
     }, { 
       timeout: 120000,
       responseType: 'stream' // 👈 接收流
@@ -585,10 +591,8 @@ app.get('/health', (req, res) => {
 });
 
 // 启动 - 支持环境变量动态指定端口
-// 优先读取环境变量 PORT，没有则用默认值（测试3002/线上3001）
-const DEFAULT_TEST_PORT = Number(process.env.TEST_PORT || 3002);
-const DEFAULT_PROD_PORT = Number(process.env.PROD_PORT || 3001);
-const PORT = Number(process.env.PORT || (isProduction ? DEFAULT_PROD_PORT : DEFAULT_TEST_PORT));
+// 强制设置一个未被占用的端口 3003 (原 3002 被系统进程占用)
+const PORT = 3003;
 const DIFY_INTENT_HOST = process.env.DIFY_INTENT_HOST || "115.231.236.153";
 const difyIntentUrl = `http://${DIFY_INTENT_HOST}:${PORT}/api/acoustic-intent/latest`;
 

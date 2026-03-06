@@ -92,59 +92,111 @@ const PARAM_KEY_ALIASES: Record<string, keyof AcousticParams> = {
   吊装话筒: 'micCeiling',
   手持话筒: 'micHandheld',
   鹅颈话筒: 'micGooseneck',
-  全向话筒: 'micOmni'
+  全向话筒: 'micOmni',
+  hasCentralControl: 'hasCentralControl',
+  hasMatrix: 'hasMatrix',
+  hasVideoConf: 'hasVideoConf',
+  hasRecording: 'hasRecording',
+  中控系统: 'hasCentralControl',
+  矩阵系统: 'hasMatrix',
+  视频会议: 'hasVideoConf',
+  录播系统: 'hasRecording',
+  中控: 'hasCentralControl',
+  矩阵: 'hasMatrix',
+  视讯: 'hasVideoConf',
+  录播: 'hasRecording'
 };
 
-const normalizeAssistantParams = (raw: Record<string, any>): Partial<AcousticParams> => {
+const normalizeAssistantParams = (raw: Record<string, any> | Record<string, any>[]): Partial<AcousticParams> => {
   const normalized: Partial<AcousticParams> = {};
-  Object.entries(raw || {}).forEach(([key, value]) => {
-    const mappedKey = PARAM_KEY_ALIASES[key] || (key as keyof AcousticParams);
-    if (!mappedKey) return;
+  if (!raw) return normalized;
 
-    if (typeof value === 'number') {
+  // Normalize single object into an array for uniform processing
+  const items = Array.isArray(raw) ? raw : [raw];
+
+  items.forEach(item => {
+    // Handle both {"key": "length", "value": 20} and {"length": 20} formats
+    const pairs: [string, any][] = [];
+    if (item.key && item.hasOwnProperty('value')) {
+      pairs.push([item.key, item.value]);
+    } else {
+      pairs.push(...Object.entries(item));
+    }
+
+    pairs.forEach(([key, value]) => {
+      const mappedKey = PARAM_KEY_ALIASES[key] || (key as keyof AcousticParams);
+      if (!mappedKey) return;
+
+      if (typeof value === 'boolean') {
+        (normalized as any)[mappedKey] = value;
+        return;
+      }
+
+      if (typeof value === 'number') {
+        (normalized as any)[mappedKey] = value;
+        return;
+      }
+
+      if (typeof value === 'string') {
+        const lowerVal = value.toLowerCase();
+        if (lowerVal === 'true') {
+          (normalized as any)[mappedKey] = true;
+          return;
+        }
+        if (lowerVal === 'false') {
+          (normalized as any)[mappedKey] = false;
+          return;
+        }
+        const maybeNum = Number(value);
+        (normalized as any)[mappedKey] = Number.isFinite(maybeNum) ? maybeNum : value;
+        return;
+      }
+
       (normalized as any)[mappedKey] = value;
-      return;
-    }
-
-    if (typeof value === 'string') {
-      const maybeNum = Number(value);
-      (normalized as any)[mappedKey] = Number.isFinite(maybeNum) ? maybeNum : value;
-      return;
-    }
-
-    (normalized as any)[mappedKey] = value;
+    });
   });
+
   return normalized;
 };
 
-const extractAssistantParamPayload = (text: string): Record<string, any> | null => {
-  const markerRegex = /\[UPDATE_PARAM:\s*(\{[\s\S]*?\})\]/g;
+const extractAssistantParamPayloads = (text: string): (Record<string, any> | Record<string, any>[])[] => {
+  // 更加宽容的正则，不强制要求外层有方括号/花括号，只要被 [UPDATE_PARAM: ...] 包裹
+  const markerRegex = /\[UPDATE_PARAM:\s*([\s\S]*?)\]/g;
   const matches = [...text.matchAll(markerRegex)];
-  if (matches.length === 0) return null;
+  
+  return matches.map(match => {
+    let rawContent = match[1]?.trim();
+    if (!rawContent) return null;
 
-  // 仅获取最后一个匹配项，回滚 State A
-  const lastMatch = matches[matches.length - 1];
-  const payload = lastMatch[1]?.trim();
-  if (!payload) return null;
+    // 1. 尝试清理 Markdown 代码块
+    let cleaned = rawContent
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/```$/i, '')
+      .trim();
 
-  const cleaned = payload
-    .replace(/^```json\s*/i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/```$/i, '')
-    .trim();
-
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    // 兜底：尝试兼容单引号 JSON
+    // 2. 尝试直接解析
     try {
-      const singleQuoted = cleaned.replace(/'/g, '"');
-      return JSON.parse(singleQuoted);
-    } catch (e) {
-      console.warn("Failed to parse [UPDATE_PARAM] block:", cleaned, e);
-      return null;
+      return JSON.parse(cleaned);
+    } catch {
+      // 3. 兜底处理：如果 AI 输出了 {"key": "length", "value": 7}, {"key": "width", "value": 4} 这种非标准数组
+      // 将其包裹成数组再尝试
+      if (cleaned.includes('},{') || (cleaned.includes('"value":') && !cleaned.startsWith('[') && !cleaned.startsWith('{'))) {
+        try {
+          return JSON.parse(`[${cleaned}]`);
+        } catch { /* ignore */ }
+      }
+
+      // 4. 再次兜底：处理单引号
+      try {
+        const singleQuoted = cleaned.replace(/'/g, '"');
+        return JSON.parse(singleQuoted);
+      } catch (e) {
+        console.warn("Failed to parse [UPDATE_PARAM] block:", cleaned, e);
+        return null;
+      }
     }
-  }
+  }).flat().filter((p): p is any => p !== null && typeof p === 'object');
 };
 
 
@@ -258,11 +310,16 @@ const useAcousticAssistant = (
       }
 
       // 3. 处理参数提取 [UPDATE_PARAM: {...}]
-      const extractedParams = extractAssistantParamPayload(fullAiText);
-      if (extractedParams) {
-        const normalized = normalizeAssistantParams(extractedParams);
-        if (Object.keys(normalized).length > 0) {
-          setParams(prev => ({ ...prev, ...normalized }));
+      const extractedPayloads = extractAssistantParamPayloads(fullAiText);
+      if (extractedPayloads.length > 0) {
+        // 合并所有提取到的参数
+        const combinedNormalized = extractedPayloads.reduce((acc, payload) => {
+          const normalized = normalizeAssistantParams(payload);
+          return { ...acc, ...normalized };
+        }, {});
+
+        if (Object.keys(combinedNormalized).length > 0) {
+          setParams(prev => ({ ...prev, ...combinedNormalized }));
         }
 
         // 静默移除标记，保持 UI 干净

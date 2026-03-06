@@ -280,20 +280,28 @@ const App: React.FC = () => {
           </div>
 
           <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2 mt-3">
-            <div className="flex items-center justify-between border-b pb-1">
-              <h3 className={`text-[10px] font-black ${themeText} uppercase tracking-widest`}>话筒配置</h3>
-              <button onClick={logic.addMic} className={`text-[8px] font-black px-1.5 py-0.5 rounded border ${themeText} ${themeBorder} bg-slate-50 hover:bg-white transition-colors`}>+ 添加</button>
-            </div>
-            <div className="space-y-1.5">
-              {logic.designState.params.mics.map(m => (
-                <div key={m.id} className="flex items-center space-x-1.5 group">
-                  <select value={m.type} onChange={e => logic.handleParamChange('mics', logic.designState.params.mics.map(mic => mic.id === m.id ? { ...mic, type: e.target.value } : mic))} className="flex-1 bg-slate-50 border border-slate-100 rounded px-1.5 py-1 text-[11px] font-bold outline-none">
-                    {MIC_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                  <input type="number" value={m.count} onChange={e => logic.handleMicChange(m.id, parseInt(e.target.value))} className={`w-8 bg-white border border-slate-200 rounded py-1 text-center text-[11px] font-bold ${themeText} outline-none`} />
-                  <button onClick={() => logic.removeMic(m.id)} className="text-slate-300 hover:text-red-500 text-[9px] px-0.5">✕</button>
-                </div>
-              ))}
+            <h3 className={`text-[10px] font-black ${themeText} uppercase tracking-widest border-b pb-1`}>话筒配置 (个)</h3>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">手持无线</label>
+                <input type="number" value={logic.designState.params.micHandheld} onChange={e => logic.handleParamChange('micHandheld', parseInt(e.target.value) || 0)} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[11px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
+              </div>
+              <div>
+                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">鹅颈会议</label>
+                <input type="number" value={logic.designState.params.micGooseneck} onChange={e => logic.handleParamChange('micGooseneck', parseInt(e.target.value) || 0)} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[11px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
+              </div>
+              <div>
+                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">全向阵列</label>
+                <input type="number" value={logic.designState.params.micOmni} onChange={e => logic.handleParamChange('micOmni', parseInt(e.target.value) || 0)} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[11px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
+              </div>
+              <div>
+                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">领夹话筒</label>
+                <input type="number" value={logic.designState.params.micLavalier} onChange={e => logic.handleParamChange('micLavalier', parseInt(e.target.value) || 0)} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[11px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
+              </div>
+              <div className="col-span-2">
+                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">吊装话筒</label>
+                <input type="number" value={logic.designState.params.micCeiling} onChange={e => logic.handleParamChange('micCeiling', parseInt(e.target.value) || 0)} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[11px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
+              </div>
             </div>
           </div>
 

@@ -21,7 +21,11 @@ export const DEFAULT_PARAMS: AcousticParams = {
   hasMatrix: true,
   hasVideoConf: false,
   hasRecording: false,
-  mics: [{ id: '1', type: '手持无线话筒', count: 2 }],
+  micHandheld: 0,
+  micGooseneck: 0,
+  micOmni: 0,
+  micLavalier: 0,
+  micCeiling: 0,
   extraRequirements: ''
 };
 

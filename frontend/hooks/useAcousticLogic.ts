@@ -54,6 +54,97 @@ const buildItemsSignature = (items: EquipmentItem[]) => {
   );
 };
 
+const PARAM_KEY_ALIASES: Record<string, keyof AcousticParams> = {
+  length: 'length',
+  width: 'width',
+  height: 'height',
+  roomLength: 'length',
+  roomWidth: 'width',
+  roomHeight: 'height',
+  room_length: 'length',
+  room_width: 'width',
+  room_height: 'height',
+  长: 'length',
+  长度: 'length',
+  宽: 'width',
+  宽度: 'width',
+  高: 'height',
+  高度: 'height',
+  installHeight: 'height',
+  installationHeight: 'height',
+  stageToNearAudience: 'stageToNearAudience',
+  stageToFarAudience: 'stageToFarAudience',
+  stageWidth: 'stageWidth',
+  stageDepth: 'stageDepth',
+  台口至最近: 'stageToNearAudience',
+  台口至最远: 'stageToFarAudience',
+  台口宽度: 'stageWidth',
+  舞台深度: 'stageDepth',
+  micHandheld: 'micHandheld',
+  micGooseneck: 'micGooseneck',
+  micOmni: 'micOmni',
+  micLavalier: 'micLavalier',
+  micCeiling: 'micCeiling',
+  手持无线话筒: 'micHandheld',
+  鹅颈会议话筒: 'micGooseneck',
+  全向阵列话筒: 'micOmni',
+  领夹话筒: 'micLavalier',
+  吊装话筒: 'micCeiling',
+  手持话筒: 'micHandheld',
+  鹅颈话筒: 'micGooseneck',
+  全向话筒: 'micOmni'
+};
+
+const normalizeAssistantParams = (raw: Record<string, any>): Partial<AcousticParams> => {
+  const normalized: Partial<AcousticParams> = {};
+  Object.entries(raw || {}).forEach(([key, value]) => {
+    const mappedKey = PARAM_KEY_ALIASES[key] || (key as keyof AcousticParams);
+    if (!mappedKey) return;
+
+    if (typeof value === 'number') {
+      (normalized as any)[mappedKey] = value;
+      return;
+    }
+
+    if (typeof value === 'string') {
+      const maybeNum = Number(value);
+      (normalized as any)[mappedKey] = Number.isFinite(maybeNum) ? maybeNum : value;
+      return;
+    }
+
+    (normalized as any)[mappedKey] = value;
+  });
+  return normalized;
+};
+
+const extractAssistantParamPayload = (text: string): Record<string, any> | null => {
+  const markerRegex = /\[UPDATE_PARAM:\s*([\s\S]*?)\]/g;
+  const matches = [...text.matchAll(markerRegex)];
+  if (matches.length === 0) return null;
+
+  // 优先取最后一个标记，避免多轮补充时覆盖新值
+  const payload = matches[matches.length - 1][1]?.trim();
+  if (!payload) return null;
+
+  const cleaned = payload
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```$/i, '')
+    .trim();
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    // 兜底：兼容单引号 JSON
+    const singleQuoted = cleaned.replace(/'/g, '"');
+    try {
+      return JSON.parse(singleQuoted);
+    } catch {
+      return null;
+    }
+  }
+};
+
 
 // 👇 新增：工具函数
 const submitDesign = async (acousticIntent: any) => {
@@ -128,6 +219,10 @@ const useAcousticAssistant = (
         })
       });
 
+      if (!response.ok) {
+        throw new Error(`Assistant request failed: ${response.status}`);
+      }
+
       if (!response.body) throw new Error("No stream content");
 
       const reader = response.body.getReader();
@@ -161,27 +256,33 @@ const useAcousticAssistant = (
       }
 
       // 3. 处理参数提取 [UPDATE_PARAM: {...}]
-      const paramMatch = fullAiText.match(/\[UPDATE_PARAM:\s*({.*?})\]/);
-      if (paramMatch && paramMatch[1]) {
-        try {
-          const newVals = JSON.parse(paramMatch[1]);
-          setParams(prev => ({ ...prev, ...newVals }));
-          
-          // 静默移除标记，保持 UI 干净
-          const cleanText = fullAiText.replace(/\[UPDATE_PARAM:.*?\]/g, "").trim();
-          setChatHistory(prev => {
-            const updated = [...prev];
-            updated[updated.length - 1] = { ...updated[updated.length - 1], text: cleanText };
-            return updated;
-          });
-        } catch (e) {
-          console.error("AI Params parse failed:", e);
+      const extractedParams = extractAssistantParamPayload(fullAiText);
+      if (extractedParams) {
+        const normalized = normalizeAssistantParams(extractedParams);
+        if (Object.keys(normalized).length > 0) {
+          setParams(prev => ({ ...prev, ...normalized }));
         }
+
+        // 静默移除标记，保持 UI 干净
+        const cleanText = fullAiText.replace(/\[UPDATE_PARAM:[\s\S]*?\]/g, "").trim();
+        setChatHistory(prev => {
+          const updated = [...prev];
+          updated[updated.length - 1] = { ...updated[updated.length - 1], text: cleanText };
+          return updated;
+        });
       }
 
     } catch (err) {
       console.error("Assistant Error:", err);
-      setChatHistory(prev => [...prev, { role: 'ai', text: "抱歉，我的大脑暂时断网了，请稍后再试。", timestamp: new Date() }]);
+      setChatHistory(prev => {
+        const updated = [...prev];
+        // 失败时替换占位 AI 消息，避免出现空白气泡
+        updated[updated.length - 1] = {
+          ...updated[updated.length - 1],
+          text: "抱歉，我的大脑暂时断网了，请稍后再试。"
+        };
+        return updated;
+      });
     } finally {
       setIsAssistantLoading(false);
     }
@@ -676,26 +777,6 @@ export const useAcousticLogic = () => {
     setDesignState(prev => ({ ...prev, projectName: name }));
   };
 
-  const handleMicChange = (id: string, count: number) => {
-    setDesignState(prev => ({
-      ...prev,
-      params: { ...prev.params, mics: prev.params.mics.map(m => m.id === id ? { ...m, count } : m) }
-    }));
-  };
-
-  const addMic = () => {
-    setDesignState(prev => ({
-      ...prev,
-      params: { ...prev.params, mics: [...prev.params.mics, { id: Date.now().toString(), type: MIC_TYPES[0], count: 1 }] }
-    }));
-  };
-
-  const removeMic = (id: string) => {
-    setDesignState(prev => ({ ...prev, params: { ...prev.params, mics: prev.params.mics.filter(m => m.id !== id) } }));
-  };
-
-
-
   // --- 交互与设计逻辑 ---
   const handleSendMessage = async () => {
     if (!chatInputValue.trim() || isAssistantLoading) return;
@@ -805,7 +886,13 @@ if (designState.scenario === Scenario.LECTURE_HALL) {
       geometry, // ✅ 动态结构
     },
     processingSignals: {
-      mics: designState.params.mics,
+      mics: {
+        handheld: designState.params.micHandheld,
+        gooseneck: designState.params.micGooseneck,
+        omni: designState.params.micOmni,
+        lavalier: designState.params.micLavalier,
+        ceiling: designState.params.micCeiling,
+      },
       subsystems: {
         hasCentralControl: designState.params.hasCentralControl,
         hasMatrix: designState.params.hasMatrix,
@@ -1182,7 +1269,7 @@ const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
     currentUser,
     history,
     setHistory,
-    handleParamChange, handleMicChange, addMic, removeMic,
+    handleParamChange,
     handleUpdateProjectName, handleSendMessage, startDesign, saveEdit, handleLogout,
     fetchEquipmentDetail,
     getCachedEquipmentDetail,

@@ -94,7 +94,7 @@ let latestAcousticIntent = null;
 let latestDifyResult = null;
 
 // === 本地 LLM 配置 (例如 Ollama 或 LocalAI) ===
-const LOCAL_LLM_URL = process.env.LOCAL_LLM_URL || "http://115.231.236.153:11434/v1/chat/completions";
+const LOCAL_LLM_URL = process.env.LOCAL_LLM_URL || "http://127.0.0.1:11434/v1/chat/completions";
 const LOCAL_LLM_MODEL = process.env.LOCAL_LLM_MODEL || "qwen3:32b"; 
 
 app.post("/api/chat-assistant", async (req, res) => {
@@ -583,8 +583,8 @@ app.get('/health', (req, res) => {
 });
 
 // 启动 - 支持环境变量动态指定端口
-// 强制设置一个未被占用的端口 3003 (原 3002 被系统进程占用)
-const PORT = 3003;
+// 默认使用 3001，与 docker-compose/nginx upstream 保持一致
+const PORT = Number(process.env.PORT || 3001);
 const DIFY_INTENT_HOST = process.env.DIFY_INTENT_HOST || "115.231.236.153";
 const difyIntentUrl = `http://${DIFY_INTENT_HOST}:${PORT}/api/acoustic-intent/latest`;
 

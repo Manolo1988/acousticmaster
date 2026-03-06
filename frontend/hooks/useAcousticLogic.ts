@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import React from 'react';
 import {
   Scenario, Page, SolutionTab, ResultTab, AcousticParams, DesignState,
-  EquipmentItem, SolutionResult, User, AuthUser, HistoryRecord,
+  EquipmentItem, SolutionResult, User, AuthUser, HistoryRecord, MicConfig,
   TableType, DbInventoryItem, ChatMessage
 } from '../types';
 import { DEFAULT_PARAMS, MIC_TYPES } from '../constants';
@@ -85,6 +85,11 @@ const PARAM_KEY_ALIASES: Record<string, keyof AcousticParams> = {
   micOmni: 'micOmni',
   micLavalier: 'micLavalier',
   micCeiling: 'micCeiling',
+  mics: 'mics',
+  microphones: 'mics',
+  micList: 'mics',
+  话筒: 'mics',
+  话筒配置: 'mics',
   手持无线话筒: 'micHandheld',
   鹅颈会议话筒: 'micGooseneck',
   全向阵列话筒: 'micOmni',
@@ -107,6 +112,91 @@ const PARAM_KEY_ALIASES: Record<string, keyof AcousticParams> = {
   录播: 'hasRecording'
 };
 
+const MIC_TYPE_ALIASES: Record<string, string> = {
+  手持无线: '手持无线话筒',
+  手持: '手持无线话筒',
+  鹅颈: '鹅颈会议话筒',
+  全向阵列: '全向阵列话筒',
+  全向: '全向阵列话筒',
+  领夹: '领夹话筒',
+  吊装: '吊装话筒'
+};
+
+const MIC_TYPE_TO_PARAM_KEY: Record<string, keyof AcousticParams> = {
+  手持无线话筒: 'micHandheld',
+  鹅颈会议话筒: 'micGooseneck',
+  全向阵列话筒: 'micOmni',
+  领夹话筒: 'micLavalier',
+  吊装话筒: 'micCeiling'
+};
+
+const MIC_PARAM_TO_TYPE: Record<string, string> = {
+  micHandheld: '手持无线话筒',
+  micGooseneck: '鹅颈会议话筒',
+  micOmni: '全向阵列话筒',
+  micLavalier: '领夹话筒',
+  micCeiling: '吊装话筒'
+};
+
+const normalizeMicType = (raw: string) => {
+  const trimmed = raw.trim();
+  if (!trimmed) return MIC_TYPES[0];
+  const alias = MIC_TYPE_ALIASES[trimmed];
+  if (alias) return alias;
+  const exact = MIC_TYPES.find(t => t === trimmed);
+  if (exact) return exact;
+  const fuzzy = MIC_TYPES.find(t => t.includes(trimmed) || trimmed.includes(t));
+  return fuzzy || trimmed;
+};
+
+const normalizeMicListValue = (value: any): MicConfig[] => {
+  if (!Array.isArray(value)) return [];
+  return value.map((item, index) => {
+    const typeRaw = typeof item?.type === 'string'
+      ? item.type
+      : typeof item?.name === 'string'
+        ? item.name
+        : typeof item?.label === 'string'
+          ? item.label
+          : MIC_TYPES[0];
+    const countRaw = item?.count ?? item?.qty ?? item?.quantity ?? 1;
+    const countNum = typeof countRaw === 'number' ? countRaw : parseInt(String(countRaw), 10);
+    return {
+      id: typeof item?.id === 'string' ? item.id : `${Date.now()}-${index}`,
+      type: normalizeMicType(String(typeRaw)),
+      count: Number.isFinite(countNum) ? Math.max(0, countNum) : 1
+    };
+  });
+};
+
+const buildMicCounts = (mics: MicConfig[]) => {
+  const base = {
+    micHandheld: 0,
+    micGooseneck: 0,
+    micOmni: 0,
+    micLavalier: 0,
+    micCeiling: 0
+  };
+  mics.forEach(mic => {
+    const key = MIC_TYPE_TO_PARAM_KEY[mic.type];
+    if (key) {
+      base[key] += Number.isFinite(mic.count) ? mic.count : 0;
+    }
+  });
+  return base;
+};
+
+const buildMicListFromCounts = (params: AcousticParams): MicConfig[] => {
+  const list: MicConfig[] = [];
+  Object.entries(MIC_PARAM_TO_TYPE).forEach(([paramKey, type]) => {
+    const count = (params as any)[paramKey];
+    if (typeof count === 'number' && count > 0) {
+      list.push({ id: `${paramKey}-${list.length}`, type, count });
+    }
+  });
+  return list;
+};
+
 const normalizeAssistantParams = (raw: Record<string, any> | Record<string, any>[]): Partial<AcousticParams> => {
   const normalized: Partial<AcousticParams> = {};
   if (!raw) return normalized;
@@ -126,6 +216,13 @@ const normalizeAssistantParams = (raw: Record<string, any> | Record<string, any>
     pairs.forEach(([key, value]) => {
       const mappedKey = PARAM_KEY_ALIASES[key] || (key as keyof AcousticParams);
       if (!mappedKey) return;
+
+      if (mappedKey === 'mics') {
+        const list = normalizeMicListValue(value);
+        (normalized as any).mics = list;
+        Object.assign(normalized, buildMicCounts(list));
+        return;
+      }
 
       if (typeof value === 'boolean') {
         (normalized as any)[mappedKey] = value;
@@ -155,6 +252,19 @@ const normalizeAssistantParams = (raw: Record<string, any> | Record<string, any>
       (normalized as any)[mappedKey] = value;
     });
   });
+
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'mics')) {
+    const list: MicConfig[] = [];
+    Object.entries(MIC_PARAM_TO_TYPE).forEach(([paramKey, type]) => {
+      const count = (normalized as any)[paramKey];
+      if (typeof count === 'number' && count > 0) {
+        list.push({ id: `${Date.now()}-${list.length}`, type, count });
+      }
+    });
+    if (list.length) {
+      (normalized as any).mics = list;
+    }
+  }
 
   return normalized;
 };
@@ -829,7 +939,64 @@ export const useAcousticLogic = () => {
       setDesignState(prev => ({ ...prev, scenario: value }));
       return;
     }
+    if (key === 'mics') {
+      const list = normalizeMicListValue(value);
+      setDesignState(prev => ({
+        ...prev,
+        params: {
+          ...prev.params,
+          mics: list,
+          ...buildMicCounts(list)
+        }
+      }));
+      return;
+    }
     setDesignState(prev => ({ ...prev, params: { ...prev.params, [key]: value } }));
+  };
+
+  const addMic = () => {
+    setDesignState(prev => {
+      const nextMics = [...(prev.params.mics || []), { id: uuidv4(), type: MIC_TYPES[0], count: 1 }];
+      return {
+        ...prev,
+        params: {
+          ...prev.params,
+          mics: nextMics,
+          ...buildMicCounts(nextMics)
+        }
+      };
+    });
+  };
+
+  const removeMic = (id: string) => {
+    setDesignState(prev => {
+      const nextMics = (prev.params.mics || []).filter(mic => mic.id !== id);
+      return {
+        ...prev,
+        params: {
+          ...prev.params,
+          mics: nextMics,
+          ...buildMicCounts(nextMics)
+        }
+      };
+    });
+  };
+
+  const handleMicChange = (id: string, count: number) => {
+    const safeCount = Number.isFinite(count) ? Math.max(0, count) : 0;
+    setDesignState(prev => {
+      const nextMics = (prev.params.mics || []).map(mic =>
+        mic.id === id ? { ...mic, count: safeCount } : mic
+      );
+      return {
+        ...prev,
+        params: {
+          ...prev.params,
+          mics: nextMics,
+          ...buildMicCounts(nextMics)
+        }
+      };
+    });
   };
 
   const handleUpdateProjectName = (name: string) => {
@@ -945,13 +1112,9 @@ if (designState.scenario === Scenario.LECTURE_HALL) {
       geometry, // ✅ 动态结构
     },
     processingSignals: {
-      mics: {
-        handheld: designState.params.micHandheld,
-        gooseneck: designState.params.micGooseneck,
-        omni: designState.params.micOmni,
-        lavalier: designState.params.micLavalier,
-        ceiling: designState.params.micCeiling,
-      },
+      mics: (designState.params.mics && designState.params.mics.length)
+        ? designState.params.mics
+        : buildMicListFromCounts(designState.params),
       subsystems: {
         hasCentralControl: designState.params.hasCentralControl,
         hasMatrix: designState.params.hasMatrix,
@@ -1328,6 +1491,9 @@ const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
     currentUser,
     history,
     setHistory,
+    addMic,
+    removeMic,
+    handleMicChange,
     handleParamChange,
     handleUpdateProjectName, handleSendMessage, startDesign, saveEdit, handleLogout,
     fetchEquipmentDetail,

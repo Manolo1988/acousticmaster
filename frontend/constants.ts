@@ -21,6 +21,7 @@ export const DEFAULT_PARAMS: AcousticParams = {
   hasMatrix: false,
   hasVideoConf: false,
   hasRecording: false,
+  mics: [],
   micHandheld: 0,
   micGooseneck: 0,
   micOmni: 0,

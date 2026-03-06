@@ -598,7 +598,7 @@ export const useAcousticLogic = () => {
     params: { ...DEFAULT_PARAMS },
     blueprint: null,
     isDesigned: false,
-    chatHistory: [{ role: 'ai', text: '您好，协助您进行声学方案设计的专家已就绪。请描述您的场景需求（如长、宽、高），我会自动为您调整参数。', timestamp: new Date() }],
+    chatHistory: [{ role: 'ai', text: '您好，协助您进行声学方案设计的专家已就绪，您可以自主选择在左方进行手动填写或向我提问，我将引导你进行补充。请描述您的场景是会议室还是报告厅（左上方可以进行场景切换便于显示参数）？', timestamp: new Date() }],
     results: [],
     activeResultIndex: 0
   });

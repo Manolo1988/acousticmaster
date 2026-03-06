@@ -118,12 +118,13 @@ const normalizeAssistantParams = (raw: Record<string, any>): Partial<AcousticPar
 };
 
 const extractAssistantParamPayload = (text: string): Record<string, any> | null => {
-  const markerRegex = /\[UPDATE_PARAM:\s*([\s\S]*?)\]/g;
+  const markerRegex = /\[UPDATE_PARAM:\s*(\{[\s\S]*?\})\]/g;
   const matches = [...text.matchAll(markerRegex)];
   if (matches.length === 0) return null;
 
-  // 优先取最后一个标记，避免多轮补充时覆盖新值
-  const payload = matches[matches.length - 1][1]?.trim();
+  // 仅获取最后一个匹配项，回滚 State A
+  const lastMatch = matches[matches.length - 1];
+  const payload = lastMatch[1]?.trim();
   if (!payload) return null;
 
   const cleaned = payload
@@ -135,11 +136,12 @@ const extractAssistantParamPayload = (text: string): Record<string, any> | null 
   try {
     return JSON.parse(cleaned);
   } catch {
-    // 兜底：兼容单引号 JSON
-    const singleQuoted = cleaned.replace(/'/g, '"');
+    // 兜底：尝试兼容单引号 JSON
     try {
+      const singleQuoted = cleaned.replace(/'/g, '"');
       return JSON.parse(singleQuoted);
-    } catch {
+    } catch (e) {
+      console.warn("Failed to parse [UPDATE_PARAM] block:", cleaned, e);
       return null;
     }
   }

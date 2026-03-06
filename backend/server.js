@@ -100,14 +100,15 @@ const LOCAL_LLM_MODEL = process.env.LOCAL_LLM_MODEL || "qwen3:32b";
 app.post("/api/chat-assistant", async (req, res) => {
   const { message, history = [], currentParams = {} } = req.body;
 
-  const systemPrompt = `你是一位声学工程师。你的任务是引导用户补全声学方案所需的空间参数。
-当前参数：${JSON.stringify(currentParams)}
+  const systemPrompt = `你是一位声学工程师，负责引导用户通过对话补全声学方案所需的空间参数。
+当前参数状态：${JSON.stringify(currentParams)}
 
 指令：
-1. 严禁输出任何思考过程，绝对不允许输出 <think> 标签及其内容。
-2. 回复必须极简，每次只问一个关键问题，字数少于50字。
+1. 回复必须简短。
+2. 每次只问一个关键问题。
 3. 如果检测到用户提到了尺寸、类型等参数，必须在回复末尾输出 [UPDATE_PARAM: {"key": value}]。
-4. 确保对话连续，不要重复用户的上一句话。`;
+4. 麦克风字段名：micHandheld, micGooseneck, micOmni, micLavalier, micCeiling。
+5. 不要输出 <think> 标签，直接给出回复。`;
 
   try {
     // 设置 Server-Sent Events (SSE) 头部供流式输出

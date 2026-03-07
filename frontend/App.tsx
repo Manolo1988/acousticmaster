@@ -147,6 +147,24 @@ const App: React.FC = () => {
       </div>
 
       <div className="flex items-center space-x-4">
+        {/* 系统 AI 状态控制 */}
+        <div className="flex items-center space-x-2 mr-4 bg-slate-50 px-3 py-1 rounded-full border border-slate-100">
+          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">AI 引擎</span>
+          <div className="flex items-center">
+            <span className={`w-2 h-2 rounded-full mr-2 ${logic.isAiBackendRunning ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-rose-500'}`}></span>
+            <button 
+              onClick={() => logic.toggleAiBackend(logic.isAiBackendRunning ? 'stop' : 'start')}
+              className={`text-[10px] font-bold py-0.5 px-2 rounded transition-all ${
+                logic.isAiBackendRunning 
+                  ? 'bg-rose-50 text-rose-600 hover:bg-rose-100' 
+                  : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
+              }`}
+            >
+              {logic.isAiBackendRunning ? '关闭' : '开启'}
+            </button>
+          </div>
+        </div>
+
         {/* 用户头像与下拉菜单 */}
         <div className="relative" ref={profileRef}>
           <button
@@ -1561,6 +1579,20 @@ const App: React.FC = () => {
                     }`}>
                     {chat.role === 'user' ? (
                       chat.text
+                    ) : chat.text.includes("AI 引擎当前处于关闭状态") ? (
+                      <div className="space-y-3">
+                        <p className="font-bold text-rose-600 mb-1">{chat.text}</p>
+                        <button
+                          onClick={async () => {
+                            await logic.toggleAiBackend('start');
+                            // 额外检查一次状态
+                          }}
+                          className={`${themeBg} text-white px-4 py-2 rounded-xl text-[11px] font-black uppercase tracking-widest shadow-lg hover:scale-105 active:scale-95 transition-all flex items-center space-x-2`}
+                        >
+                          <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></span>
+                          <span>立即尝试开启 AI 引擎</span>
+                        </button>
+                      </div>
                     ) : (
                       <ReactMarkdown
                         remarkPlugins={[remarkGfm]}

@@ -22,6 +22,10 @@ declare global {
 const rawApiBase = import.meta.env.VITE_API_BASE ?? "";
 const API_BASE = rawApiBase.replace(/\/+$/, "");
 
+// 方案3：永远在线的后台守护服务器（监听4000端口）
+const SYSTEM_API_BASE = "http://115.231.236.153:4000";
+const AI_CHAT_API_BASE = "http://115.231.236.153:3003";
+
 const TABLE_NAME_MAP: Record<string, TableType> = {
   音箱: TableType.SPEAKER,
   线阵列配套: TableType.LINE_ARRAY,
@@ -360,7 +364,15 @@ const useAcousticAssistant = (
 ) => {
   const [isAssistantLoading, setIsAssistantLoading] = useState(false);
 
-  const sendMessageToAssistant = async (text: string, history: ChatMessage[]) => {
+  const sendMessageToAssistant = async (text: string, history: ChatMessage[], isBackendRunning: boolean | null) => {
+    if (isBackendRunning === false) {
+      setChatHistory(prev => [
+        ...prev,
+        { role: 'user', text, timestamp: new Date() },
+        { role: 'ai', text: "❌ AI 引擎当前处于关闭状态。请点击左上角的“AI 引擎”开关开启后再试。", timestamp: new Date() }
+      ]);
+      return;
+    }
     setIsAssistantLoading(true);
     
     // 1. 立即显示用户消息
@@ -373,7 +385,7 @@ const useAcousticAssistant = (
 
     let fullAiText = "";
     try {
-      const response = await fetch(`${API_BASE}/api/chat-assistant`, {
+      const response = await fetch(`${AI_CHAT_API_BASE}/api/chat-assistant`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -673,6 +685,44 @@ const parseDifyResponseToResults = (rawText: string): SolutionResult[] => {
 
 export const useAcousticLogic = () => {
   // --- 基础页面与 UI 状态 ---
+  const [isAiBackendRunning, setIsAiBackendRunning] = useState<boolean | null>(null);
+
+  const checkAiStatus = async () => {
+    try {
+      // 访问 4000 端口（即便 3003 挂了，4000 照常响应）
+      const res = await fetch(`${SYSTEM_API_BASE}/api/system/ai-status`);
+      const data = await res.json();
+      console.log("Check AI Status (via 4000):", data);
+      setIsAiBackendRunning(data.isRunning === true); 
+    } catch {
+      setIsAiBackendRunning(false);
+    }
+  };
+
+  const toggleAiBackend = async (action: 'start' | 'stop') => {
+    try {
+      // 通过 4000 端口的守护进程去执行脚本动作
+      const res = await fetch(`${SYSTEM_API_BASE}/api/system/ai-toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action })
+      });
+      if (res.ok) {
+        // 守护进程有 400ms-1000ms 的拉起耗时，延迟检查
+        setTimeout(checkAiStatus, 1000);
+        setTimeout(checkAiStatus, 3000); 
+      }
+    } catch (err) {
+      console.error("AI Toggle via Daemon failed:", err);
+    }
+  };
+
+  useEffect(() => {
+    checkAiStatus();
+    const timer = setInterval(checkAiStatus, 5000); // 5秒轮询一次状态
+    return () => clearInterval(timer);
+  }, []);
+
   const [currentPage, setCurrentPage] = useState<Page>(Page.SOLUTION);
   const [currentSolutionTab, setCurrentSolutionTab] = useState<SolutionTab>(SolutionTab.DESIGN);
   const [currentResultTab, setCurrentResultTab] = useState<ResultTab>(ResultTab.PLAN);
@@ -729,6 +779,10 @@ export const useAcousticLogic = () => {
       }));
     }
   );
+
+  const wrappedSendMessageToAssistant = (text: string) => {
+    return sendMessageToAssistant(text, designState.chatHistory, isAiBackendRunning);
+  };
 
   // --- [核心修改] 多表切换与主子表关联逻辑 ---
   const displayInventory = useMemo(() => {
@@ -1008,7 +1062,7 @@ export const useAcousticLogic = () => {
     if (!chatInputValue.trim() || isAssistantLoading) return;
     const msg = chatInputValue;
     setChatInputValue("");
-    await sendMessageToAssistant(msg, designState.chatHistory);
+    await sendMessageToAssistant(msg, designState.chatHistory, isAiBackendRunning);
   };
 
 
@@ -1502,6 +1556,7 @@ const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
     getInventoryOptions,
     replacePlanItem,
     buildItemsSignature,
+    isAiBackendRunning, toggleAiBackend, checkAiStatus,
     closeHistoryPreview: () => setPreviewHistoryItem(null)
   };
 };

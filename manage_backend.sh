@@ -1,22 +1,26 @@
 #!/bin/bash
 
+PROJECT_ROOT="/home/ubuntu/zdh"
+SERVER_PATTERN="node .*backend/server\\.js"
+
 # 配置
-PORT=3002
+PORT=3003
 MODEL="qwen2.5:7b"
 URL="http://127.0.0.1:11434/v1/chat/completions"
-LOG_FILE="server_3002.log"
+LOG_FILE="$PROJECT_ROOT/server_3003.log"
 
 start() {
     echo "🚀 正在启动声学 AI 后端服务 (端口: $PORT, 模型: $MODEL)..."
     # 先清理旧进程
-    pkill -f "node backend/server.js" || true
+    pkill -f "$SERVER_PATTERN" || true
     
     # 后台启动
+    cd "$PROJECT_ROOT" || exit 1
     PORT=$PORT \
     LOCAL_LLM_MODEL=$MODEL \
     LOCAL_LLM_URL=$URL \
     OLLAMA_KEEP_ALIVE=-1 \
-    nohup node backend/server.js > $LOG_FILE 2>&1 &
+    nohup node "$PROJECT_ROOT/backend/server.js" > "$LOG_FILE" 2>&1 &
     
     echo "✅ 服务已在后台运行。"
     echo "📂 日志文件: $LOG_FILE"
@@ -25,12 +29,12 @@ start() {
 
 stop() {
     echo "🛑 正在关闭声学 AI 后端服务..."
-    pkill -f "node backend/server.js"
+    pkill -f "$SERVER_PATTERN"
     echo "✅ 服务已停止。"
 }
 
 status() {
-    PID=$(pgrep -f "node backend/server.js")
+    PID=$(pgrep -f "$SERVER_PATTERN" | head -n 1)
     if [ -z "$PID" ]; then
         echo "❌ 服务当前状态: 已停止"
     else

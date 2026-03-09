@@ -20,7 +20,10 @@ declare global {
 }
 
 const rawApiBase = import.meta.env.VITE_API_BASE ?? "";
-const API_BASE = rawApiBase.replace(/\/+$/, "");
+const fallbackApiBase = import.meta.env.DEV ? "http://localhost:3002" : "";
+const API_BASE = (rawApiBase || fallbackApiBase).replace(/\/+$/, "");
+
+console.log(`🔗 Using API base: ${API_BASE}`);
 
 const TABLE_NAME_MAP: Record<string, TableType> = {
   音箱: TableType.SPEAKER,
@@ -56,21 +59,17 @@ const buildItemsSignature = (items: EquipmentItem[]) => {
 
 
 // 👇 新增：工具函数
-const submitDesign = async (acousticIntent: any) => {
+const submitDesign = async (acousticIntent: any, userInfo: { userId: number | null; guestId: string | null; username: string }) => {
   try {
-    const intentResponse = await fetch(`${API_BASE}/api/acoustic-intent`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ acousticIntent })
-    });
-
-    if (!intentResponse.ok) {
-      throw new Error(`Intent submission failed: ${intentResponse.status}`);
-    }
-
     const difyResponse = await fetch(`${API_BASE}/api/run-dify-chatflow`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" }
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        acousticIntent,
+        userId: userInfo.userId,
+        guestId: userInfo.guestId,
+        username: userInfo.username
+      })
     });
 
     if (!difyResponse.ok) {
@@ -717,7 +716,11 @@ if (designState.scenario === Scenario.LECTURE_HALL) {
   setIsProcessingAi(true);
 
   try {
-    const apiResult = await submitDesign(acousticIntent);
+    const apiResult = await submitDesign(acousticIntent, {
+      userId: currentUser.isGuest ? null : currentUser.id,
+      guestId: currentUser.isGuest ? currentUser.guestId : null,
+      username: currentUser.username
+    });
     const rawText = apiResult?.raw_answer ?? apiResult?.answer ?? apiResult?.data?.answer ?? '';
 
     // 🔑 解析结构化方案

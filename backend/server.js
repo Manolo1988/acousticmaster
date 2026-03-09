@@ -91,44 +91,48 @@ const parseJsonField = (value, fallback) => {
   }
 };
 
-let latestAcousticIntent = null;
-let latestDifyResult = null;
-
 app.post("/api/acoustic-intent", (req, res) => {
   const { acousticIntent } = req.body;
   if (!acousticIntent) {
     return res.status(400).json({ error: "Missing acousticIntent" });
   }
-  try {
-    latestAcousticIntent = JSON.parse(JSON.stringify(acousticIntent));
-    console.log("✅ Acoustic Intent saved:", latestAcousticIntent);
-    res.json(latestAcousticIntent);
-  } catch (err) {
-    res.status(500).json({ error: "Serialization failed" });
-  }
+  // Deprecated endpoint: keep for backward compatibility without storing shared state.
+  res.json({ ok: true });
 });
 
 // 🔥 修改：直接返回 Dify 的原始 answer，不做任何 JSON 解析
 app.post("/api/run-dify-chatflow", async (req, res) => {
-  if (!latestAcousticIntent) {
-    return res.status(400).json({ error: "No acoustic intent submitted yet." });
+  const { acousticIntent, userId, guestId, username } = req.body || {};
+  if (!acousticIntent) {
+    return res.status(400).json({ error: "Missing acousticIntent" });
   }
 
-  // === ⚠️ 替换为你自己的 Dify 信息 ===
-  const DIFY_API_KEY = "app-TUFsI5nY9v9e6ZEUXiNvISuZ"; // ← 已保留你的 key
-  const DIFY_CHAT_API_URL = "http://115.231.236.153:20000/v1/chat-messages"; // 自建地址
+  // === ⚠️ 替换为你自己的 Dify 信息（可用环境变量覆盖） ===
+  // const DIFY_API_KEY = "app-TUFsI5nY9v9e6ZEUXiNvISuZ"; // ← 已保留你的 key
+  const DIFY_API_KEY = process.env.DIFY_API_KEY || "app-NB3lEaGg14fyON5fYhENY1oV";
+  const DIFY_CHAT_API_URL = isProduction
+    ? process.env.DIFY_CHAT_API_URL || "http://115.231.236.153:20000/v1/chat-messages"
+    : "http://0.0.0.0:3002/v1/chat-messages"; // 自建地址
   const queryText = isProduction ? "请执行声学方案设计流程。" : "请执行声学方案设计流程（测试）。";
+  const maskKey = (key) => key ? `${key.slice(0, 4)}...${key.slice(-4)}` : "(empty)";
+  console.log(`🔐 Dify config: url=${DIFY_CHAT_API_URL}, key=${maskKey(DIFY_API_KEY)}`);
   console.log(`🎯 Running Dify Chatflow in ${isProduction ? 'production' : 'development'} mode with query: "${queryText}"`);
   try {
-    console.log("🚀 Calling Dify Chatflow with intent:", latestAcousticIntent);
+    const userTag = userId ? `user_${userId}` : guestId ? `guest_${guestId}` : `anon_${Date.now()}`;
+    const userLabel = username ? `${userTag}_${username}` : userTag;
+    const acousticIntentJson = JSON.stringify(acousticIntent);
+    console.log("🚀 Calling Dify Chatflow with intent:", acousticIntent);
 
     const response = await axios.post(
       DIFY_CHAT_API_URL,
       {
-        inputs: latestAcousticIntent,
+        inputs: {
+          acoustic_intent_json: acousticIntentJson,
+          acousticIntent: acousticIntentJson
+        },
         query: queryText, // 👈 改为非空（避免 400）
         response_mode: "blocking",
-        user: "acoustic_user_001"
+        user: userLabel
       },
       {
         headers: {
@@ -146,7 +150,6 @@ app.post("/api/run-dify-chatflow", async (req, res) => {
 
     // ✅ 关键修改：不再尝试解析 JSON，直接返回原始文本
     const output = { raw_answer: answerText };
-    latestDifyResult = output;
     console.log("✅ Raw Dify answer received (length: %d chars)", answerText.length);
 
     res.json(output); // 👈 前端通过 result.raw_answer 获取
@@ -498,15 +501,6 @@ app.delete("/api/history/:id", async (req, res) => {
   }
 });
 
-// （可选）调试接口
-app.get("/api/dify-result/latest", (req, res) => {
-  res.json(latestDifyResult || { message: "No result yet" });
-});
-
-app.get("/api/acoustic-intent/latest", (req, res) => {
-  res.json(latestAcousticIntent || {});
-});
-
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'UP', timestamp: new Date().toISOString() });
 });
@@ -516,11 +510,8 @@ app.get('/health', (req, res) => {
 const DEFAULT_TEST_PORT = Number(process.env.TEST_PORT || 3002);
 const DEFAULT_PROD_PORT = Number(process.env.PROD_PORT || 3001);
 const PORT = Number(process.env.PORT || (isProduction ? DEFAULT_PROD_PORT : DEFAULT_TEST_PORT));
-const DIFY_INTENT_HOST = process.env.DIFY_INTENT_HOST || "115.231.236.153";
-const difyIntentUrl = `http://${DIFY_INTENT_HOST}:${PORT}/api/acoustic-intent/latest`;
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🎧 Server running on http://0.0.0.0:${PORT}`);
   console.log(`🎯 Current environment: ${isProduction ? 'production' : 'development'}`);
-  console.log(`🤖 Dify should request: ${difyIntentUrl}`);
 });

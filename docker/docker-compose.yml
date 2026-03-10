@@ -3,7 +3,7 @@ services:
   acoustic-api:
     container_name: acoustic-api
     restart: always
-    build: 
+    build:
       context: ../backend
     environment:
       - NODE_ENV=production
@@ -11,6 +11,30 @@ services:
       - CORS_ORIGINS=http://115.231.236.153:8100
     ports:
       - "3001"
+    networks:
+      - backend
+
+  ai-daemon:
+    container_name: ai-daemon
+    restart: always
+    build:
+      context: ../backend
+    command: ["node", "daemon_v2.cjs"]
+    environment:
+      - NODE_ENV=production
+      - DOCKER_COMPOSE_MANAGED=true
+      - PROJECT_ROOT=/app
+      - AI_BACKEND_PORT=3003
+      - AI_DAEMON_PORT=4000
+      - LOCAL_LLM_MODEL=qwen2.5:7b
+      - LOCAL_LLM_URL=http://host.docker.internal:11434/v1/chat/completions
+      - OLLAMA_KEEP_ALIVE=-1
+      - CORS_ORIGINS=http://115.231.236.153:8100
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    expose:
+      - "3003"
+      - "4000"
     networks:
       - backend
 
@@ -26,6 +50,7 @@ services:
       - "8100:80"
     depends_on:
       - acoustic-api
+      - ai-daemon
     networks:
       - backend
 

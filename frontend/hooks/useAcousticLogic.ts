@@ -22,9 +22,8 @@ declare global {
 const rawApiBase = import.meta.env.VITE_API_BASE ?? "";
 const API_BASE = rawApiBase.replace(/\/+$/, "");
 
-// 方案3：永远在线的后台守护服务器（监听4000端口）
-const SYSTEM_API_BASE = "http://115.231.236.153:4000";
-const AI_CHAT_API_BASE = "http://115.231.236.153:3003";
+const SYSTEM_API_BASE = API_BASE;
+const AI_CHAT_API_BASE = API_BASE;
 
 const TABLE_NAME_MAP: Record<string, TableType> = {
   音箱: TableType.SPEAKER,

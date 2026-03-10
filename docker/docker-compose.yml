@@ -1,21 +1,21 @@
 services:
   # Node.js 应用服务（可横向扩展多个实例）
   acoustic-api:
-    container_name: acoustic-api-zdh
+    container_name: acoustic-api
     restart: always
-    build:
+    build: 
       context: ../backend
     environment:
       - NODE_ENV=production
       - PORT=3001
-      - CORS_ORIGINS=http://115.231.236.153:8101
+      - CORS_ORIGINS=http://115.231.236.153:8100
     ports:
-      - "3002:3001"
+      - "3001"
     networks:
       - backend
 
   acoustic-nginx:
-    container_name: acoustic-nginx-zdh
+    container_name: acoustic-nginx
     image: nginx:1.19-alpine
     restart: always
     volumes:
@@ -23,7 +23,7 @@ services:
       - ./nginx/conf:/etc/nginx/conf.d
       - ./nginx/html:/usr/share/nginx/html
     ports:
-      - "8101:80"
+      - "8100:80"
     depends_on:
       - acoustic-api
     networks:

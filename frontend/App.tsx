@@ -16,6 +16,7 @@ declare global {
 }
 
 type ResultView = 'TABLE' | 'WORD';
+const UI_SCALE = 1.5;
 
 const App: React.FC = () => {
   const logic = useAcousticLogic();
@@ -43,10 +44,8 @@ const App: React.FC = () => {
   const [replacementId, setReplacementId] = useState<number | ''>('');
 
   const [tempType, setTempType] = useState<TableType>(logic.activeTable);
-  // 获取当前方案
   const activeResult = logic.designState.results[logic.designState.activeResultIndex];
 
-  // 获取当前主题颜色配置
   const theme = logic.currentSolutionTab === SolutionTab.VERIFICATION
     ? VERIFY_THEME
     : SCENARIO_THEMES[logic.designState.scenario];
@@ -1257,7 +1256,16 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className={`flex flex-col h-screen ${theme.lightBg} overflow-hidden text-slate-900 font-sans`}>
+    <div className={`${theme.lightBg} h-screen overflow-auto text-slate-900 font-sans`}>
+      <div
+        className="flex flex-col min-h-screen"
+        style={{
+          transform: `scale(${UI_SCALE})`,
+          transformOrigin: 'top left',
+          width: `${100 / UI_SCALE}%`,
+          minHeight: `${100 / UI_SCALE}vh`
+        }}
+      >
       {renderTopNav()}
       <main className="flex-1 flex overflow-hidden">
         {logic.currentPage === Page.SOLUTION && (
@@ -1745,6 +1753,7 @@ const App: React.FC = () => {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 };

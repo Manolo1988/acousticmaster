@@ -6,9 +6,9 @@ export default defineConfig(({ mode }) => {
   // 加载环境变量（第二个参数填.env文件所在目录，这里是项目根目录）
   const env = loadEnv(mode, process.cwd());
   const devPort = Number(env.VITE_DEV_PORT) || 8101;
-  const apiTarget = env.VITE_DEV_API_TARGET || 'http://115.231.236.153:3002';
-  const aiChatTarget = env.VITE_DEV_AI_CHAT_TARGET || 'http://115.231.236.153:3003';
-  const aiSystemTarget = env.VITE_DEV_AI_SYSTEM_TARGET || 'http://115.231.236.153:4000';
+  const apiTarget = env.VITE_DEV_API_TARGET || 'http://127.0.0.1:8100';
+  const aiChatTarget = env.VITE_DEV_AI_CHAT_TARGET || 'http://127.0.0.1:8100';
+  const aiSystemTarget = env.VITE_DEV_AI_SYSTEM_TARGET || 'http://127.0.0.1:8100';
   
   return {
     server: {

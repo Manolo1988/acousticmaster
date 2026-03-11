@@ -2,7 +2,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Scenario, Page, SolutionTab, ResultTab, User, TableType, DbInventoryItem, HistoryRecord, EquipmentItem } from './types';
+import { Scenario, Page, SolutionTab, ResultTab, User, TableType, DbInventoryItem, HistoryRecord, EquipmentItem, AcousticParams } from './types';
 import { MIC_TYPES, SCENARIO_THEMES, VERIFY_THEME } from './constants';
 import Visualization from './components/Visualization';
 import { useAcousticLogic } from './hooks/useAcousticLogic';
@@ -243,6 +243,20 @@ const App: React.FC = () => {
   const renderSolutionSidebar = () => (
     <div className={`w-[290px] ${theme.lightBg} border-r border-slate-200 flex flex-col shrink-0`}>
       <div className="flex-1 overflow-y-auto p-3 flex flex-col space-y-3 scrollbar-hide">
+        <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2">
+          <div className="flex items-center justify-between border-b pb-1">
+            <h3 className={`text-[10px] font-black ${themeText} uppercase tracking-widest`}>项目名称</h3>
+            <span className="text-[9px] font-bold text-slate-400">用于导出文档</span>
+          </div>
+          <input
+            type="text"
+            value={logic.designState.projectName}
+            onChange={e => logic.handleUpdateProjectName(e.target.value)}
+            placeholder="请输入项目名称..."
+            className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-2 text-[12px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`}
+          />
+        </div>
+
         <div className={isBlueprintLocked ? 'pointer-events-none opacity-60' : ''}>
           <div className="bg-slate-200/40 p-0.5 rounded-lg flex border border-slate-200 shadow-inner">
             <button
@@ -911,15 +925,24 @@ const App: React.FC = () => {
   const renderHistoryPreview = () => {
     const item = logic.previewHistoryItem!;
     const scenarioLabel = item.scenario === Scenario.MEETING_ROOM ? '会议室' : '报告厅';
-    const params = item.params || {
+    const params: AcousticParams = item.params || {
       length: 0,
       width: 0,
       height: 0,
+      stageToNearAudience: 0,
+      stageToFarAudience: 0,
+      stageWidth: 0,
+      stageDepth: 0,
       mics: [],
       hasCentralControl: false,
       hasMatrix: false,
       hasVideoConf: false,
       hasRecording: false,
+      micHandheld: 0,
+      micGooseneck: 0,
+      micOmni: 0,
+      micLavalier: 0,
+      micCeiling: 0,
       extraRequirements: ''
     };
     const historyResults = Array.isArray(item.results) ? item.results : [];

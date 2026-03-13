@@ -1031,7 +1031,7 @@ const App: React.FC = () => {
             {(params.mics || []).map(mic => (
               <div key={mic.id} className="flex items-center justify-between bg-white border border-slate-100 rounded-lg px-3 py-2">
                 <span className="text-slate-500 font-bold">{mic.type}</span>
-                <span className="font-black text-slate-900">{mic.count} 只</span>
+                <span className="font-black text-slate-900">{mic.count} 套</span>
               </div>
             ))}
           </div>

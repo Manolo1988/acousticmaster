@@ -41,6 +41,7 @@ export interface AcousticParams {
   hasMatrix: boolean;
   hasVideoConf: boolean;
   hasRecording: boolean;
+  mics?: MicConfig[];
   // 各类型话筒数量
   micHandheld: number;
   micGooseneck: number;

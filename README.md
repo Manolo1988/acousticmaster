@@ -1,55 +1,87 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# 分支添加功能：AI 引擎增强版 (Feature/AI-Daemon) 启动指南
 
-# Run and deploy your AI Studio app
+本项目在原有架构基础上引入了 **AI 守护进程 (Daemon)** 模式，实现了 AI 引擎的一键启停控制与流式对话功能。
 
-This contains everything you need to run your app locally.
+## 1. 核心功能
 
-View your app in AI Studio: https://ai.studio/apps/drive/1r-FK-NFmK52s68Lsbk7JlThOaSFlUfXa
+- **AI 系统管理**：通过 UI 按钮直接控制 AI 后端进程（运行在 3003 端口）的开启与关闭。
+- **健康监控**：Daemon 守护进程（4000 端口）实时监控 AI 状态，确保服务的高可用。
+- **流式对话**：支持 AI 助手的实时响应，界面交互更流畅。
+- **统一路由**：无论在开发环境还是 Docker 部署，均通过统一的 `/api/system` 和 `/api/chat-assistant` 接口访问。
 
-##TodoList
+---
 
+## 2. 环境准备
 
+确保您的运行环境中已具备：
 
-#### 📥 输入
-- [ ] 🔹 输入参数后，有一个对话框，可解析品牌要求、音箱类型、音箱数量等要求，并体现在生成的方案中
-- [ ] 🔹 主页右侧的对话框，能以更人性化的方式问出所有需要的信息，然后生成方案（类似现有方式，但更灵活）
+- **Node.js**: v18+
+- **Docker & Docker Compose** (用于生产部署)
+- **Ollama**: (可选) 如果使用本地 LLM，请确保 Ollama 服务已启动且模型（如 `qwen2.5:7b`）已拉取。
 
-#### 📤 输出
-- [ ] 🔸 Dify 先生成设备方案 list 返回 UI，UI 上用户可进行修改（如删除设备、修改数量），点击右上角“生成正式报告”后，再把当前方案发送给 Dify
-- [ ] 🔸 由大模型根据设备、系统、排版要求，动态生成 Markdown 格式的文本（含图片），返回 UI 界面，由 UI 渲染成文档形式
+---
 
-#### 🗄️ 数据整理
-- [ ] 🔹 数据库重新整理，避免同一个设备因用途不同多次出现，可在 UI 界面直接进行数据管理
-- [ ] 🔹 考虑系统设备的级联情况（如同一型号的线阵列音箱和挂架、某品牌的一套矩阵系统）
+## 3. 启动方法 (开发模式)
 
-#### 📐 方案
-- [ ] 🔸 吸顶音箱由于放在头顶，排列方式不同，所以要有自己的方案
-- [ ] 🔸 考虑不规则形状（如扇形报告厅的音箱设计），以及座位位置覆盖的方案调整
-- [ ] 🔸 方案返回设备列表的同时，返回音箱设备悬挂的位置参数（位置、高度）
+推荐使用 Vite 开发服务器配合本地 Backend，以便实时调试代码。
 
-#### 🌐 用户访问
-- [ ] 🔹 采用后端直接向 Dify 发送请求的方式，而不是维护一个 latest 的状态
+### 第一步：启动 AI 守护进程
 
+在 `backend` 目录下通过 Node 启动守护进程：
 
+```bash
+cd backend
+node daemon_v2.cjs
+```
 
-## Run Locally
+> _注：守护进程将监听 **4000** 端口。它负责在您点击 UI 按钮时启动 3003 端口的 AI 后端。_
 
-**Prerequisites:**  Node.js
+### 第二步：启动前端 (Vite)
 
+在 `frontend` 目录下运行：
 
-1. Install dependencies:
-   `npm install`
-2.  Run the app: `node server.js` in /backend 
-3. use `npm run dev`  in /frontend to start node service
+```bash
+cd frontend
+npm run dev
+```
 
-当前是线上和测试双环境。线上前端在8100端口，测试前端是3000端口
+> _访问地址：[http://115.231.236.153:8101](http://115.231.236.153:8101)_
 
-## 测试代码上线
+---
 
-1. 在 backend 目录运行 docker compose down 停止当前服务，运行 docker compose up -d --build 编译当前代码并且重启后端服务
-2. 在 frontend 目录运行 npm run build 在 frontend/dist 文件夹下生成了新的 assets文件夹 和 index.html 
-3. 把这两个替换 docker/nginx/html里的文件，或者在主目录下运行 ./deploy_frontend.sh
-4. 刷新浏览器页面就可以了 
+## 4. 启动方法 (Docker 生产部署)
 
+该模式下，Nginx 会自动处理所有服务的路由转发。
+
+### 一键启动
+
+```bash
+cd docker
+docker-compose up -d --build
+```
+
+> _访问地址：[http://115.231.236.153:8100](http://115.231.236.153:8100)_
+
+### 服务说明
+
+- **8100 端口**：外部统一入口 (Nginx)。
+- **ai-daemon 服务**：容器内运行，负责管理 AI 业务生命周期。
+
+---
+
+## 5. 架构说明 (端口关系)
+
+| 服务         | 端口      | 说明                              |
+| :----------- | :-------- | :-------------------------------- |
+| Frontend Dev | 8101      | Vite 开发服务器                   |
+| Nginx Prod   | 8100      | Docker 生产入口                   |
+| AI Daemon    | 4000      | 控制中心（查询状态、启停 AI）     |
+| AI Backend   | 3003      | AI 核心逻辑（被 Daemon 动态管理） |
+| Main API     | 3002/3001 | 基础业务 API                      |
+
+---
+
+## 6. 常见问题
+
+- **端口冲突**：若提示 8101 被占用，请执行 `fuser -k 8101/tcp`。
+- **AI 无法点击**：请检查 `backend/daemon_v2.cjs` 是否已启动，且 `PROJECT_ROOT` 路径配置正确。

@@ -24,12 +24,13 @@ WORKDIR /app
 COPY --from=builder --chown=nodejs:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=nodejs:nodejs /app/package*.json ./
 COPY --from=builder --chown=nodejs:nodejs /app/server.js ./
+COPY --from=builder --chown=nodejs:nodejs /app/daemon_v2.cjs ./
 
 # 切换到非root用户
 USER nodejs
 
 # 暴露端口
-EXPOSE 3001
+EXPOSE 3001 3003 4000
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \

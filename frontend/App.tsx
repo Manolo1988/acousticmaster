@@ -2,7 +2,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Scenario, Page, SolutionTab, ResultTab, User, TableType, DbInventoryItem, HistoryRecord, EquipmentItem } from './types';
+import { Scenario, Page, SolutionTab, ResultTab, User, TableType, DbInventoryItem, HistoryRecord, EquipmentItem, AcousticParams } from './types';
 import { MIC_TYPES, SCENARIO_THEMES, VERIFY_THEME } from './constants';
 import Visualization from './components/Visualization';
 import { useAcousticLogic } from './hooks/useAcousticLogic';
@@ -16,6 +16,7 @@ declare global {
 }
 
 type ResultView = 'TABLE' | 'WORD';
+const UI_SCALE = 1.5;
 
 const App: React.FC = () => {
   const logic = useAcousticLogic();
@@ -43,10 +44,8 @@ const App: React.FC = () => {
   const [replacementId, setReplacementId] = useState<number | ''>('');
 
   const [tempType, setTempType] = useState<TableType>(logic.activeTable);
-  // 获取当前方案
   const activeResult = logic.designState.results[logic.designState.activeResultIndex];
 
-  // 获取当前主题颜色配置
   const theme = logic.currentSolutionTab === SolutionTab.VERIFICATION
     ? VERIFY_THEME
     : SCENARIO_THEMES[logic.designState.scenario];
@@ -147,6 +146,24 @@ const App: React.FC = () => {
       </div>
 
       <div className="flex items-center space-x-4">
+        {/* 系统 AI 状态控制 */}
+        <div className="flex items-center space-x-2 mr-4 bg-slate-50 px-3 py-1 rounded-full border border-slate-100">
+          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">AI 引擎</span>
+          <div className="flex items-center">
+            <span className={`w-2 h-2 rounded-full mr-2 ${logic.isAiBackendRunning ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-rose-500'}`}></span>
+            <button 
+              onClick={() => logic.toggleAiBackend(logic.isAiBackendRunning ? 'stop' : 'start')}
+              className={`text-[10px] font-bold py-0.5 px-2 rounded transition-all ${
+                logic.isAiBackendRunning 
+                  ? 'bg-rose-50 text-rose-600 hover:bg-rose-100' 
+                  : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
+              }`}
+            >
+              {logic.isAiBackendRunning ? '关闭' : '开启'}
+            </button>
+          </div>
+        </div>
+
         {/* 用户头像与下拉菜单 */}
         <div className="relative" ref={profileRef}>
           <button
@@ -225,6 +242,20 @@ const App: React.FC = () => {
   const renderSolutionSidebar = () => (
     <div className={`w-[290px] ${theme.lightBg} border-r border-slate-200 flex flex-col shrink-0`}>
       <div className="flex-1 overflow-y-auto p-3 flex flex-col space-y-3 scrollbar-hide">
+        <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2">
+          <div className="flex items-center justify-between border-b pb-1">
+            <h3 className={`text-[10px] font-black ${themeText} uppercase tracking-widest`}>项目名称</h3>
+            <span className="text-[9px] font-bold text-slate-400">用于导出文档</span>
+          </div>
+          <input
+            type="text"
+            value={logic.designState.projectName}
+            onChange={e => logic.handleUpdateProjectName(e.target.value)}
+            placeholder="请输入项目名称..."
+            className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-2 text-[12px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`}
+          />
+        </div>
+
         <div className={isBlueprintLocked ? 'pointer-events-none opacity-60' : ''}>
           <div className="bg-slate-200/40 p-0.5 rounded-lg flex border border-slate-200 shadow-inner">
             <button
@@ -280,28 +311,20 @@ const App: React.FC = () => {
           </div>
 
           <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2 mt-3">
-            <h3 className={`text-[10px] font-black ${themeText} uppercase tracking-widest border-b pb-1`}>话筒配置 (个)</h3>
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">手持无线</label>
-                <input type="number" value={logic.designState.params.micHandheld} onChange={e => logic.handleParamChange('micHandheld', parseInt(e.target.value) || 0)} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[11px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
-              </div>
-              <div>
-                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">鹅颈会议</label>
-                <input type="number" value={logic.designState.params.micGooseneck} onChange={e => logic.handleParamChange('micGooseneck', parseInt(e.target.value) || 0)} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[11px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
-              </div>
-              <div>
-                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">全向阵列</label>
-                <input type="number" value={logic.designState.params.micOmni} onChange={e => logic.handleParamChange('micOmni', parseInt(e.target.value) || 0)} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[11px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
-              </div>
-              <div>
-                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">领夹话筒</label>
-                <input type="number" value={logic.designState.params.micLavalier} onChange={e => logic.handleParamChange('micLavalier', parseInt(e.target.value) || 0)} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[11px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
-              </div>
-              <div className="col-span-2">
-                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">吊装话筒</label>
-                <input type="number" value={logic.designState.params.micCeiling} onChange={e => logic.handleParamChange('micCeiling', parseInt(e.target.value) || 0)} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[11px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
-              </div>
+            <div className="flex items-center justify-between border-b pb-1">
+              <h3 className={`text-[10px] font-black ${themeText} uppercase tracking-widest`}>话筒配置</h3>
+              <button onClick={logic.addMic} className={`text-[8px] font-black px-1.5 py-0.5 rounded border ${themeText} ${themeBorder} bg-slate-50 hover:bg-white transition-colors`}>+ 添加</button>
+            </div>
+            <div className="space-y-1.5">
+              {logic.designState.params.mics.map(m => (
+                <div key={m.id} className="flex items-center space-x-1.5 group">
+                  <select value={m.type} onChange={e => logic.handleParamChange('mics', logic.designState.params.mics.map(mic => mic.id === m.id ? { ...mic, type: e.target.value } : mic))} className="flex-1 bg-slate-50 border border-slate-100 rounded px-1.5 py-1 text-[11px] font-bold outline-none">
+                    {MIC_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                  <input type="number" value={m.count} onChange={e => logic.handleMicChange(m.id, parseInt(e.target.value))} className={`w-8 bg-white border border-slate-200 rounded py-1 text-center text-[11px] font-bold ${themeText} outline-none`} />
+                  <button onClick={() => logic.removeMic(m.id)} className="text-slate-300 hover:text-red-500 text-[9px] px-0.5">✕</button>
+                </div>
+              ))}
             </div>
           </div>
 
@@ -901,15 +924,24 @@ const App: React.FC = () => {
   const renderHistoryPreview = () => {
     const item = logic.previewHistoryItem!;
     const scenarioLabel = item.scenario === Scenario.MEETING_ROOM ? '会议室' : '报告厅';
-    const params = item.params || {
+    const params: AcousticParams = item.params || {
       length: 0,
       width: 0,
       height: 0,
+      stageToNearAudience: 0,
+      stageToFarAudience: 0,
+      stageWidth: 0,
+      stageDepth: 0,
       mics: [],
       hasCentralControl: false,
       hasMatrix: false,
       hasVideoConf: false,
       hasRecording: false,
+      micHandheld: 0,
+      micGooseneck: 0,
+      micOmni: 0,
+      micLavalier: 0,
+      micCeiling: 0,
       extraRequirements: ''
     };
     const historyResults = Array.isArray(item.results) ? item.results : [];
@@ -999,7 +1031,7 @@ const App: React.FC = () => {
             {(params.mics || []).map(mic => (
               <div key={mic.id} className="flex items-center justify-between bg-white border border-slate-100 rounded-lg px-3 py-2">
                 <span className="text-slate-500 font-bold">{mic.type}</span>
-                <span className="font-black text-slate-900">{mic.count} 只</span>
+                <span className="font-black text-slate-900">{mic.count} 套</span>
               </div>
             ))}
           </div>
@@ -1224,7 +1256,16 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className={`flex flex-col h-screen ${theme.lightBg} overflow-hidden text-slate-900 font-sans`}>
+    <div className={`${theme.lightBg} h-screen overflow-auto text-slate-900 font-sans`}>
+      <div
+        className="flex flex-col min-h-screen"
+        style={{
+          transform: `scale(${UI_SCALE})`,
+          transformOrigin: 'top left',
+          width: `${100 / UI_SCALE}%`,
+          minHeight: `${100 / UI_SCALE}vh`
+        }}
+      >
       {renderTopNav()}
       <main className="flex-1 flex overflow-hidden">
         {logic.currentPage === Page.SOLUTION && (
@@ -1569,6 +1610,20 @@ const App: React.FC = () => {
                     }`}>
                     {chat.role === 'user' ? (
                       chat.text
+                    ) : chat.text.includes("AI 引擎当前处于关闭状态") ? (
+                      <div className="space-y-3">
+                        <p className="font-bold text-rose-600 mb-1">{chat.text}</p>
+                        <button
+                          onClick={async () => {
+                            await logic.toggleAiBackend('start');
+                            // 额外检查一次状态
+                          }}
+                          className={`${themeBg} text-white px-4 py-2 rounded-xl text-[11px] font-black uppercase tracking-widest shadow-lg hover:scale-105 active:scale-95 transition-all flex items-center space-x-2`}
+                        >
+                          <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></span>
+                          <span>立即尝试开启 AI 引擎</span>
+                        </button>
+                      </div>
                     ) : (
                       <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
@@ -1698,6 +1753,7 @@ const App: React.FC = () => {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 };

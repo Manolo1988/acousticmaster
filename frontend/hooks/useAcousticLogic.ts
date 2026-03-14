@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import React from 'react';
 import {
   Scenario, Page, SolutionTab, ResultTab, AcousticParams, DesignState,
-  EquipmentItem, SolutionResult, User, AuthUser, HistoryRecord,
+  EquipmentItem, SolutionResult, User, AuthUser, HistoryRecord, MicConfig,
   TableType, DbInventoryItem, ChatMessage
 } from '../types';
 import { DEFAULT_PARAMS, MIC_TYPES } from '../constants';
@@ -24,6 +24,9 @@ const fallbackApiBase = import.meta.env.DEV ? "http://localhost:3002" : "";
 const API_BASE = (rawApiBase || fallbackApiBase).replace(/\/+$/, "");
 
 console.log(`🔗 Using API base: ${API_BASE}`);
+
+const SYSTEM_API_BASE = API_BASE;
+const AI_CHAT_API_BASE = API_BASE;
 
 const TABLE_NAME_MAP: Record<string, TableType> = {
   音箱: TableType.SPEAKER,
@@ -88,6 +91,11 @@ const PARAM_KEY_ALIASES: Record<string, keyof AcousticParams> = {
   micOmni: 'micOmni',
   micLavalier: 'micLavalier',
   micCeiling: 'micCeiling',
+  mics: 'mics',
+  microphones: 'mics',
+  micList: 'mics',
+  话筒: 'mics',
+  话筒配置: 'mics',
   手持无线话筒: 'micHandheld',
   鹅颈会议话筒: 'micGooseneck',
   全向阵列话筒: 'micOmni',
@@ -110,6 +118,91 @@ const PARAM_KEY_ALIASES: Record<string, keyof AcousticParams> = {
   录播: 'hasRecording'
 };
 
+const MIC_TYPE_ALIASES: Record<string, string> = {
+  手持无线: '手持无线话筒',
+  手持: '手持无线话筒',
+  鹅颈: '鹅颈会议话筒',
+  全向阵列: '全向阵列话筒',
+  全向: '全向阵列话筒',
+  领夹: '领夹话筒',
+  吊装: '吊装话筒'
+};
+
+const MIC_TYPE_TO_PARAM_KEY: Record<string, keyof AcousticParams> = {
+  手持无线话筒: 'micHandheld',
+  鹅颈会议话筒: 'micGooseneck',
+  全向阵列话筒: 'micOmni',
+  领夹话筒: 'micLavalier',
+  吊装话筒: 'micCeiling'
+};
+
+const MIC_PARAM_TO_TYPE: Record<string, string> = {
+  micHandheld: '手持无线话筒',
+  micGooseneck: '鹅颈会议话筒',
+  micOmni: '全向阵列话筒',
+  micLavalier: '领夹话筒',
+  micCeiling: '吊装话筒'
+};
+
+const normalizeMicType = (raw: string) => {
+  const trimmed = raw.trim();
+  if (!trimmed) return MIC_TYPES[0];
+  const alias = MIC_TYPE_ALIASES[trimmed];
+  if (alias) return alias;
+  const exact = MIC_TYPES.find(t => t === trimmed);
+  if (exact) return exact;
+  const fuzzy = MIC_TYPES.find(t => t.includes(trimmed) || trimmed.includes(t));
+  return fuzzy || trimmed;
+};
+
+const normalizeMicListValue = (value: any): MicConfig[] => {
+  if (!Array.isArray(value)) return [];
+  return value.map((item, index) => {
+    const typeRaw = typeof item?.type === 'string'
+      ? item.type
+      : typeof item?.name === 'string'
+        ? item.name
+        : typeof item?.label === 'string'
+          ? item.label
+          : MIC_TYPES[0];
+    const countRaw = item?.count ?? item?.qty ?? item?.quantity ?? 1;
+    const countNum = typeof countRaw === 'number' ? countRaw : parseInt(String(countRaw), 10);
+    return {
+      id: typeof item?.id === 'string' ? item.id : `${Date.now()}-${index}`,
+      type: normalizeMicType(String(typeRaw)),
+      count: Number.isFinite(countNum) ? Math.max(0, countNum) : 1
+    };
+  });
+};
+
+const buildMicCounts = (mics: MicConfig[]) => {
+  const base = {
+    micHandheld: 0,
+    micGooseneck: 0,
+    micOmni: 0,
+    micLavalier: 0,
+    micCeiling: 0
+  };
+  mics.forEach(mic => {
+    const key = MIC_TYPE_TO_PARAM_KEY[mic.type];
+    if (key) {
+      base[key] += Number.isFinite(mic.count) ? mic.count : 0;
+    }
+  });
+  return base;
+};
+
+const buildMicListFromCounts = (params: AcousticParams): MicConfig[] => {
+  const list: MicConfig[] = [];
+  Object.entries(MIC_PARAM_TO_TYPE).forEach(([paramKey, type]) => {
+    const count = (params as any)[paramKey];
+    if (typeof count === 'number' && count > 0) {
+      list.push({ id: `${paramKey}-${list.length}`, type, count });
+    }
+  });
+  return list;
+};
+
 const normalizeAssistantParams = (raw: Record<string, any> | Record<string, any>[]): Partial<AcousticParams> => {
   const normalized: Partial<AcousticParams> = {};
   if (!raw) return normalized;
@@ -129,6 +222,13 @@ const normalizeAssistantParams = (raw: Record<string, any> | Record<string, any>
     pairs.forEach(([key, value]) => {
       const mappedKey = PARAM_KEY_ALIASES[key] || (key as keyof AcousticParams);
       if (!mappedKey) return;
+
+      if (mappedKey === 'mics') {
+        const list = normalizeMicListValue(value);
+        (normalized as any).mics = list;
+        Object.assign(normalized, buildMicCounts(list));
+        return;
+      }
 
       if (typeof value === 'boolean') {
         (normalized as any)[mappedKey] = value;
@@ -158,6 +258,19 @@ const normalizeAssistantParams = (raw: Record<string, any> | Record<string, any>
       (normalized as any)[mappedKey] = value;
     });
   });
+
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'mics')) {
+    const list: MicConfig[] = [];
+    Object.entries(MIC_PARAM_TO_TYPE).forEach(([paramKey, type]) => {
+      const count = (normalized as any)[paramKey];
+      if (typeof count === 'number' && count > 0) {
+        list.push({ id: `${Date.now()}-${list.length}`, type, count });
+      }
+    });
+    if (list.length) {
+      (normalized as any).mics = list;
+    }
+  }
 
   return normalized;
 };
@@ -249,7 +362,15 @@ const useAcousticAssistant = (
 ) => {
   const [isAssistantLoading, setIsAssistantLoading] = useState(false);
 
-  const sendMessageToAssistant = async (text: string, history: ChatMessage[]) => {
+  const sendMessageToAssistant = async (text: string, history: ChatMessage[], isBackendRunning: boolean | null) => {
+    if (isBackendRunning === false) {
+      setChatHistory(prev => [
+        ...prev,
+        { role: 'user', text, timestamp: new Date() },
+        { role: 'ai', text: "❌ AI 引擎当前处于关闭状态。请点击左上角的“AI 引擎”开关开启后再试。", timestamp: new Date() }
+      ]);
+      return;
+    }
     setIsAssistantLoading(true);
     
     // 1. 立即显示用户消息
@@ -262,7 +383,7 @@ const useAcousticAssistant = (
 
     let fullAiText = "";
     try {
-      const response = await fetch(`${API_BASE}/api/chat-assistant`, {
+      const response = await fetch(`${AI_CHAT_API_BASE}/api/chat-assistant`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -562,6 +683,44 @@ const parseDifyResponseToResults = (rawText: string): SolutionResult[] => {
 
 export const useAcousticLogic = () => {
   // --- 基础页面与 UI 状态 ---
+  const [isAiBackendRunning, setIsAiBackendRunning] = useState<boolean | null>(null);
+
+  const checkAiStatus = async () => {
+    try {
+      // 访问 4000 端口（即便 3003 挂了，4000 照常响应）
+      const res = await fetch(`${SYSTEM_API_BASE}/api/system/ai-status`);
+      const data = await res.json();
+      console.log("Check AI Status (via 4000):", data);
+      setIsAiBackendRunning(data.isRunning === true); 
+    } catch {
+      setIsAiBackendRunning(false);
+    }
+  };
+
+  const toggleAiBackend = async (action: 'start' | 'stop') => {
+    try {
+      // 通过 4000 端口的守护进程去执行脚本动作
+      const res = await fetch(`${SYSTEM_API_BASE}/api/system/ai-toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action })
+      });
+      if (res.ok) {
+        // 守护进程有 400ms-1000ms 的拉起耗时，延迟检查
+        setTimeout(checkAiStatus, 1000);
+        setTimeout(checkAiStatus, 3000); 
+      }
+    } catch (err) {
+      console.error("AI Toggle via Daemon failed:", err);
+    }
+  };
+
+  useEffect(() => {
+    checkAiStatus();
+    const timer = setInterval(checkAiStatus, 5000); // 5秒轮询一次状态
+    return () => clearInterval(timer);
+  }, []);
+
   const [currentPage, setCurrentPage] = useState<Page>(Page.SOLUTION);
   const [currentSolutionTab, setCurrentSolutionTab] = useState<SolutionTab>(SolutionTab.DESIGN);
   const [currentResultTab, setCurrentResultTab] = useState<ResultTab>(ResultTab.PLAN);
@@ -618,6 +777,10 @@ export const useAcousticLogic = () => {
       }));
     }
   );
+
+  const wrappedSendMessageToAssistant = (text: string) => {
+    return sendMessageToAssistant(text, designState.chatHistory, isAiBackendRunning);
+  };
 
   // --- [核心修改] 多表切换与主子表关联逻辑 ---
   const displayInventory = useMemo(() => {
@@ -828,7 +991,64 @@ export const useAcousticLogic = () => {
       setDesignState(prev => ({ ...prev, scenario: value }));
       return;
     }
+    if (key === 'mics') {
+      const list = normalizeMicListValue(value);
+      setDesignState(prev => ({
+        ...prev,
+        params: {
+          ...prev.params,
+          mics: list,
+          ...buildMicCounts(list)
+        }
+      }));
+      return;
+    }
     setDesignState(prev => ({ ...prev, params: { ...prev.params, [key]: value } }));
+  };
+
+  const addMic = () => {
+    setDesignState(prev => {
+      const nextMics = [...(prev.params.mics || []), { id: uuidv4(), type: MIC_TYPES[0], count: 1 }];
+      return {
+        ...prev,
+        params: {
+          ...prev.params,
+          mics: nextMics,
+          ...buildMicCounts(nextMics)
+        }
+      };
+    });
+  };
+
+  const removeMic = (id: string) => {
+    setDesignState(prev => {
+      const nextMics = (prev.params.mics || []).filter(mic => mic.id !== id);
+      return {
+        ...prev,
+        params: {
+          ...prev.params,
+          mics: nextMics,
+          ...buildMicCounts(nextMics)
+        }
+      };
+    });
+  };
+
+  const handleMicChange = (id: string, count: number) => {
+    const safeCount = Number.isFinite(count) ? Math.max(0, count) : 0;
+    setDesignState(prev => {
+      const nextMics = (prev.params.mics || []).map(mic =>
+        mic.id === id ? { ...mic, count: safeCount } : mic
+      );
+      return {
+        ...prev,
+        params: {
+          ...prev.params,
+          mics: nextMics,
+          ...buildMicCounts(nextMics)
+        }
+      };
+    });
   };
 
   const handleUpdateProjectName = (name: string) => {
@@ -840,7 +1060,7 @@ export const useAcousticLogic = () => {
     if (!chatInputValue.trim() || isAssistantLoading) return;
     const msg = chatInputValue;
     setChatInputValue("");
-    await sendMessageToAssistant(msg, designState.chatHistory);
+    await sendMessageToAssistant(msg, designState.chatHistory, isAiBackendRunning);
   };
 
 
@@ -944,13 +1164,9 @@ if (designState.scenario === Scenario.LECTURE_HALL) {
       geometry, // ✅ 动态结构
     },
     processingSignals: {
-      mics: {
-        handheld: designState.params.micHandheld,
-        gooseneck: designState.params.micGooseneck,
-        omni: designState.params.micOmni,
-        lavalier: designState.params.micLavalier,
-        ceiling: designState.params.micCeiling,
-      },
+      mics: (designState.params.mics && designState.params.mics.length)
+        ? designState.params.mics
+        : buildMicListFromCounts(designState.params),
       subsystems: {
         hasCentralControl: designState.params.hasCentralControl,
         hasMatrix: designState.params.hasMatrix,
@@ -1331,6 +1547,9 @@ const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
     currentUser,
     history,
     setHistory,
+    addMic,
+    removeMic,
+    handleMicChange,
     handleParamChange,
     handleUpdateProjectName, handleSendMessage, startDesign, saveEdit, handleLogout,
     fetchEquipmentDetail,
@@ -1339,6 +1558,7 @@ const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
     getInventoryOptions,
     replacePlanItem,
     buildItemsSignature,
+    isAiBackendRunning, toggleAiBackend, checkAiStatus,
     closeHistoryPreview: () => setPreviewHistoryItem(null)
   };
 };

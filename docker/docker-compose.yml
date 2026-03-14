@@ -1,23 +1,47 @@
 services:
   # Node.js 应用服务（可横向扩展多个实例）
   acoustic-api:
-    container_name: acoustic-api-zdh
+    container_name: acoustic-api
     restart: always
     build:
       context: ../backend
     environment:
       - NODE_ENV=production
       - PORT=3001
-      - CORS_ORIGINS=http://115.231.236.153:8101
+      - CORS_ORIGINS=http://115.231.236.153:8100
       - DIFY_API_KEY=app-NB3lEaGg14fyON5fYhENY1oV
       - DIFY_CHAT_API_URL=${DIFY_CHAT_API_URL:-http://115.231.236.153:20000/v1/chat-messages}
     ports:
-      - "3002:3001"
+      - "3001"
+    networks:
+      - backend
+
+  ai-daemon:
+    container_name: ai-daemon
+    restart: always
+    build:
+      context: ../backend
+    command: ["node", "daemon_v2.cjs"]
+    environment:
+      - NODE_ENV=production
+      - DOCKER_COMPOSE_MANAGED=true
+      - PROJECT_ROOT=/app
+      - AI_BACKEND_PORT=3003
+      - AI_DAEMON_PORT=4000
+      - LOCAL_LLM_MODEL=qwen2.5:7b
+      - LOCAL_LLM_URL=http://host.docker.internal:11434/v1/chat/completions
+      - OLLAMA_KEEP_ALIVE=-1
+      - CORS_ORIGINS=http://115.231.236.153:8100
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    expose:
+      - "3003"
+      - "4000"
     networks:
       - backend
 
   acoustic-nginx:
-    container_name: acoustic-nginx-zdh
+    container_name: acoustic-nginx
     image: nginx:1.19-alpine
     restart: always
     volumes:
@@ -25,9 +49,10 @@ services:
       - ./nginx/conf:/etc/nginx/conf.d
       - ./nginx/html:/usr/share/nginx/html
     ports:
-      - "8101:80"
+      - "8100:80"
     depends_on:
       - acoustic-api
+      - ai-daemon
     networks:
       - backend
 

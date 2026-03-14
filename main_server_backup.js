@@ -9,7 +9,6 @@ import { exec } from "child_process";
 const app = express();
 const defaultCorsOrigins = [
   "http://115.231.236.153:8100",
-  "http://115.231.236.153:8101",
   "http://115.231.236.153:3000",
   "http://localhost:3000",
   "http://127.0.0.1:3000"
@@ -22,14 +21,42 @@ const corsOrigins = (process.env.CORS_ORIGINS || "")
 app.use(
   cors({
     origin: (origin, callback) => {
-      // 允许所有来源请求，彻底解决测试环境的 CORS 拦截问题
-      return callback(null, true);
+      if (!origin) return callback(null, true);
+      const allowed = corsOrigins.length > 0 ? corsOrigins : defaultCorsOrigins;
+      if (allowed.includes(origin)) return callback(null, true);
+      return callback(new Error("CORS not allowed"), false);
     },
     credentials: true,
     optionsSuccessStatus: 204
   })
 );
 app.use(express.json());
+
+// --- AI 系统管理接口 (由容器向宿主机发起操作) ---
+const SCRIPT_PATH = "/home/ubuntu/zdh/manage_backend.sh";
+
+app.get("/api/system/ai-status", (req, res) => {
+  // 注意：在 Docker 容器内执行需要确保该路径已挂载且容器有执行权限
+  exec(`${SCRIPT_PATH} status`, (error, stdout, stderr) => {
+    const isRunning = stdout.includes("正在运行");
+    res.json({ isRunning, raw: stdout });
+  });
+});
+
+app.post("/api/system/ai-toggle", (req, res) => {
+  const { action } = req.body;
+  if (!['start', 'stop'].includes(action)) {
+    return res.status(400).json({ error: "Invalid action" });
+  }
+
+  // 这里的执行实际上是在容器内调用的，如果 SCRIPT_PATH 是宿主机路径，需要确保 docker 挂载了该脚本
+  exec(`${SCRIPT_PATH} ${action}`, (error, stdout, stderr) => {
+    if (error) {
+      return res.status(500).json({ error: stderr || error.message });
+    }
+    res.json({ success: true, message: stdout });
+  });
+});
 
 const DB_CONFIG = {
   host: process.env.DB_HOST || "115.231.236.153",
@@ -94,177 +121,41 @@ const parseJsonField = (value, fallback) => {
 let latestAcousticIntent = null;
 let latestDifyResult = null;
 
-// === 本地 LLM 配置 (例如 Ollama 或 LocalAI) ===
-const LOCAL_LLM_URL = process.env.LOCAL_LLM_URL || "http://127.0.0.1:11434/v1/chat/completions";
-const LOCAL_LLM_MODEL = process.env.LOCAL_LLM_MODEL || "qwen3:32b"; 
-
-// --- 系统管理接口 ---
-const SCRIPT_PATH = "/app/scripts/manage_backend.sh";
-
-app.get("/api/system/ai-status", (req, res) => {
-  exec(`${SCRIPT_PATH} status`, (error, stdout, stderr) => {
-    const isRunning = stdout.includes("正在运行");
-    res.json({ isRunning, raw: stdout });
-  });
-});
-
-app.post("/api/system/ai-toggle", (req, res) => {
-  const { action } = req.body; // 'start' or 'stop'
-  console.log(`[AI-TOGGLE] Received action: ${action}`);
-
-  if (!['start', 'stop'].includes(action)) {
-    return res.status(400).json({ error: "Invalid action" });
-  }
-
-  // 特殊逻辑：如果是停止，先返回响应，再执行停止，防止服务端进程被杀导致连接中断
-  if (action === 'stop') {
-    res.json({ success: true, message: "Stopping service..." });
-    setTimeout(() => {
-      console.log("[AI-TOGGLE] Executing stop script...");
-      exec(`${SCRIPT_PATH} stop`);
-    }, 500);
-    return;
-  }
-
-  // 如果是开启
-  if (action === 'start') {
-    // 检查是否已经在运行
-    exec(`${SCRIPT_PATH} status`, (err, stdout) => {
-      if (stdout.includes("正在运行")) {
-        return res.json({ success: true, message: "Service is already running." });
-      }
-      
-      // 如果没运行（实际上这种逻辑很难在当前进程执行，因为如果没运行，接口就不会响应）
-      // 所以 'start' 逻辑通常是给另一个独立管理进程用的，或者这里做个 restart
-      exec(`${SCRIPT_PATH} start`, (error, stdout, stderr) => {
-        if (error) return res.status(500).json({ error: stderr || error.message });
-        res.json({ success: true, message: stdout });
-      });
-    });
-    return;
-  }
-
-  res.status(400).json({ error: "Unsupported operation" });
-});
-
-app.post("/api/chat-assistant", async (req, res) => {
-  const { message, history = [], currentParams = {} } = req.body;
-
-  const systemPrompt = `你是一位专业的声学专家，负责引导用户补齐声学方案所需的参数。
-当前场景：${currentParams.scenario === 'MEETING_ROOM' ? '会议室' : (currentParams.scenario === 'LECTURE_HALL' ? '报告厅' : '未定')}
-当前参数完整状态：${JSON.stringify(currentParams)}
-
-指令：
-1. **第一步（场景确认）**：如果场景未定，请先确认用户是“会议室”还是“报告厅”。
-2. **第二步（差异化询问）**：
-   - **如果是会议室**：忽略所有舞台相关参数（stageWidth, stageDepth 等），只询问长、宽、高、话筒配置及子系统。
-   - **如果是报告厅**：除了基本长宽高和话筒外，还需要引导用户提供舞台参数（stageWidth, stageDepth, stageToNearAudience, stageToFarAudience）。
-3. **对话阶段**：简洁专业。在此阶段**不需要**输出 [UPDATE_PARAM] 标记。
-4. **总结与更新时机**：只有当所有针对该场景的关键参数都已确认，且确认无其他需求时，才执行：
-   - **最开头**一次性输出所有参数标记：[UPDATE_PARAM: {"key": "length", "value": 10}][UPDATE_PARAM: {"key": "scenario", "value": "MEETING_ROOM"}]...
-   - **然后**给出详细清晰的参数总结清单。
-   - **最后**指引用户说若信息未更新请输入更新全部参数，若信息没问题则点击页面下方的“启动方案设计”按钮。
-5. 键名参考：length, width, height, micHandheld, micGooseneck, micOmni, micLavalier, micCeiling, hasCentralControl, hasMatrix, hasVideoConf, hasRecording。
-6. 不要输出 <think> 标签。`;
-
-  try {
-    // 设置 Server-Sent Events (SSE) 头部供流式输出
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-
-    const response = await axios.post(LOCAL_LLM_URL, {
-      model: LOCAL_LLM_MODEL,
-      messages: [
-        { role: "system", content: systemPrompt },
-        ...history,
-        { role: "user", content: message }
-      ],
-      temperature: 0.1, 
-      stream: true, 
-      options: {
-        num_ctx: 2048,
-        stop: ["<think>", "</think>", "|im_end|"], 
-        num_predict: 100
-      }
-    }, { 
-      timeout: 120000,
-      responseType: 'stream' 
-    });
-
-    response.data.on('data', chunk => {
-      const payload = chunk.toString();
-      const lines = payload.split('\n');
-      for (const line of lines) {
-        if (!line.trim() || line.includes('[DONE]')) continue;
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.replace('data: ', ''));
-            const content = data.choices[0]?.delta?.content || "";
-            if (content) {
-              res.write(`data: ${JSON.stringify({ content })}\n\n`);
-            }
-          } catch (e) {
-            // 解析失败时忽略
-          }
-        }
-      }
-    });
-
-    response.data.on('end', () => {
-      res.write('data: [DONE]\n\n');
-      res.end();
-    });
-
-  } catch (error) {
-    console.error("❌ Local LLM Stream failed:", error.message);
-    res.write(`data: ${JSON.stringify({ error: "Local LLM service unavailable" })}\n\n`);
-    res.end();
-  }
-});
-
 app.post("/api/acoustic-intent", (req, res) => {
   const { acousticIntent } = req.body;
   if (!acousticIntent) {
     return res.status(400).json({ error: "Missing acousticIntent" });
   }
-  // Deprecated endpoint: keep for backward compatibility without storing shared state.
-  res.json({ ok: true });
+  try {
+    latestAcousticIntent = JSON.parse(JSON.stringify(acousticIntent));
+    console.log("✅ Acoustic Intent saved:", latestAcousticIntent);
+    res.json(latestAcousticIntent);
+  } catch (err) {
+    res.status(500).json({ error: "Serialization failed" });
+  }
 });
 
 // 🔥 修改：直接返回 Dify 的原始 answer，不做任何 JSON 解析
 app.post("/api/run-dify-chatflow", async (req, res) => {
-  const { acousticIntent, userId, guestId, username } = req.body || {};
-  if (!acousticIntent) {
-    return res.status(400).json({ error: "Missing acousticIntent" });
+  if (!latestAcousticIntent) {
+    return res.status(400).json({ error: "No acoustic intent submitted yet." });
   }
 
-  // === ⚠️ 替换为你自己的 Dify 信息（可用环境变量覆盖） ===
-  // const DIFY_API_KEY = "app-TUFsI5nY9v9e6ZEUXiNvISuZ"; // ← 已保留你的 key
-  const DIFY_API_KEY = process.env.DIFY_API_KEY || "app-NB3lEaGg14fyON5fYhENY1oV";
-  const DIFY_CHAT_API_URL = isProduction
-    ? process.env.DIFY_CHAT_API_URL || "http://115.231.236.153:20000/v1/chat-messages"
-    : "http://0.0.0.0:3002/v1/chat-messages"; // 自建地址
+  // === ⚠️ 替换为你自己的 Dify 信息 ===
+  const DIFY_API_KEY = "app-TUFsI5nY9v9e6ZEUXiNvISuZ"; // ← 已保留你的 key
+  const DIFY_CHAT_API_URL = "http://115.231.236.153:20000/v1/chat-messages"; // 自建地址
   const queryText = isProduction ? "请执行声学方案设计流程。" : "请执行声学方案设计流程（测试）。";
-  const maskKey = (key) => key ? `${key.slice(0, 4)}...${key.slice(-4)}` : "(empty)";
-  console.log(`🔐 Dify config: url=${DIFY_CHAT_API_URL}, key=${maskKey(DIFY_API_KEY)}`);
   console.log(`🎯 Running Dify Chatflow in ${isProduction ? 'production' : 'development'} mode with query: "${queryText}"`);
   try {
-    const userTag = userId ? `user_${userId}` : guestId ? `guest_${guestId}` : `anon_${Date.now()}`;
-    const userLabel = username ? `${userTag}_${username}` : userTag;
-    const acousticIntentJson = JSON.stringify(acousticIntent);
-    console.log("🚀 Calling Dify Chatflow with intent:", acousticIntent);
+    console.log("🚀 Calling Dify Chatflow with intent:", latestAcousticIntent);
 
     const response = await axios.post(
       DIFY_CHAT_API_URL,
       {
-        inputs: {
-          acoustic_intent_json: acousticIntentJson,
-          acousticIntent: acousticIntentJson
-        },
+        inputs: latestAcousticIntent,
         query: queryText, // 👈 改为非空（避免 400）
         response_mode: "blocking",
-        user: userLabel
+        user: "acoustic_user_001"
       },
       {
         headers: {
@@ -282,6 +173,7 @@ app.post("/api/run-dify-chatflow", async (req, res) => {
 
     // ✅ 关键修改：不再尝试解析 JSON，直接返回原始文本
     const output = { raw_answer: answerText };
+    latestDifyResult = output;
     console.log("✅ Raw Dify answer received (length: %d chars)", answerText.length);
 
     res.json(output); // 👈 前端通过 result.raw_answer 获取
@@ -633,6 +525,15 @@ app.delete("/api/history/:id", async (req, res) => {
   }
 });
 
+// （可选）调试接口
+app.get("/api/dify-result/latest", (req, res) => {
+  res.json(latestDifyResult || { message: "No result yet" });
+});
+
+app.get("/api/acoustic-intent/latest", (req, res) => {
+  res.json(latestAcousticIntent || {});
+});
+
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'UP', timestamp: new Date().toISOString() });
 });
@@ -642,11 +543,11 @@ app.get('/health', (req, res) => {
 const DEFAULT_TEST_PORT = Number(process.env.TEST_PORT || 3002);
 const DEFAULT_PROD_PORT = Number(process.env.PROD_PORT || 3001);
 const PORT = Number(process.env.PORT || (isProduction ? DEFAULT_PROD_PORT : DEFAULT_TEST_PORT));
-// 默认使用 3001，与 docker-compose/nginx upstream 保持一致
 const DIFY_INTENT_HOST = process.env.DIFY_INTENT_HOST || "115.231.236.153";
 const difyIntentUrl = `http://${DIFY_INTENT_HOST}:${PORT}/api/acoustic-intent/latest`;
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🎧 Server running on http://0.0.0.0:${PORT}`);
   console.log(`🎯 Current environment: ${isProduction ? 'production' : 'development'}`);
+  console.log(`🤖 Dify should request: ${difyIntentUrl}`);
 });

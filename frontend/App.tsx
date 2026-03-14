@@ -1,5 +1,7 @@
 
 import React, { useRef, useEffect, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Scenario, Page, SolutionTab, ResultTab, User, TableType, DbInventoryItem, HistoryRecord, EquipmentItem } from './types';
 import { MIC_TYPES, SCENARIO_THEMES, VERIFY_THEME } from './constants';
 import Visualization from './components/Visualization';
@@ -278,20 +280,28 @@ const App: React.FC = () => {
           </div>
 
           <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2 mt-3">
-            <div className="flex items-center justify-between border-b pb-1">
-              <h3 className={`text-[10px] font-black ${themeText} uppercase tracking-widest`}>话筒配置</h3>
-              <button onClick={logic.addMic} className={`text-[8px] font-black px-1.5 py-0.5 rounded border ${themeText} ${themeBorder} bg-slate-50 hover:bg-white transition-colors`}>+ 添加</button>
-            </div>
-            <div className="space-y-1.5">
-              {logic.designState.params.mics.map(m => (
-                <div key={m.id} className="flex items-center space-x-1.5 group">
-                  <select value={m.type} onChange={e => logic.handleParamChange('mics', logic.designState.params.mics.map(mic => mic.id === m.id ? { ...mic, type: e.target.value } : mic))} className="flex-1 bg-slate-50 border border-slate-100 rounded px-1.5 py-1 text-[11px] font-bold outline-none">
-                    {MIC_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                  <input type="number" value={m.count} onChange={e => logic.handleMicChange(m.id, parseInt(e.target.value))} className={`w-8 bg-white border border-slate-200 rounded py-1 text-center text-[11px] font-bold ${themeText} outline-none`} />
-                  <button onClick={() => logic.removeMic(m.id)} className="text-slate-300 hover:text-red-500 text-[9px] px-0.5">✕</button>
-                </div>
-              ))}
+            <h3 className={`text-[10px] font-black ${themeText} uppercase tracking-widest border-b pb-1`}>话筒配置 (个)</h3>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">手持无线</label>
+                <input type="number" value={logic.designState.params.micHandheld} onChange={e => logic.handleParamChange('micHandheld', parseInt(e.target.value) || 0)} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[11px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
+              </div>
+              <div>
+                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">鹅颈会议</label>
+                <input type="number" value={logic.designState.params.micGooseneck} onChange={e => logic.handleParamChange('micGooseneck', parseInt(e.target.value) || 0)} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[11px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
+              </div>
+              <div>
+                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">全向阵列</label>
+                <input type="number" value={logic.designState.params.micOmni} onChange={e => logic.handleParamChange('micOmni', parseInt(e.target.value) || 0)} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[11px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
+              </div>
+              <div>
+                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">领夹话筒</label>
+                <input type="number" value={logic.designState.params.micLavalier} onChange={e => logic.handleParamChange('micLavalier', parseInt(e.target.value) || 0)} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[11px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
+              </div>
+              <div className="col-span-2">
+                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">吊装话筒</label>
+                <input type="number" value={logic.designState.params.micCeiling} onChange={e => logic.handleParamChange('micCeiling', parseInt(e.target.value) || 0)} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[11px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
+              </div>
             </div>
           </div>
 
@@ -1553,9 +1563,30 @@ const App: React.FC = () => {
             <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50 scrollbar-hide">
               {logic.designState.chatHistory.map((chat, idx) => (
                 <div key={idx} className={`flex ${chat.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[85%] p-3 rounded-2xl text-[12px] leading-relaxed shadow-sm ${chat.role === 'user' ? `${themeBg} text-white rounded-tr-none` : 'bg-white text-slate-700 border border-slate-100 rounded-tl-none'
+                  <div className={`max-w-[90%] p-3.5 rounded-2xl text-[12px] leading-relaxed shadow-sm ${chat.role === 'user'
+                    ? `${themeBg} text-white rounded-tr-none`
+                    : 'bg-white text-slate-700 border border-slate-100 rounded-tl-none prose prose-slate prose-xs max-w-none'
                     }`}>
-                    {chat.text}
+                    {chat.role === 'user' ? (
+                      chat.text
+                    ) : (
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={{
+                          table: ({ node, ...props }) => (
+                            <div className="overflow-x-auto my-2">
+                              <table className="min-w-full border shadow-sm rounded-lg text-[10px]" {...props} />
+                            </div>
+                          ),
+                          th: ({ node, ...props }) => <th className="border px-2 py-1 bg-slate-50 font-black text-slate-900" {...props} />,
+                          td: ({ node, ...props }) => <td className="border px-2 py-1" {...props} />,
+                          code: ({ node, ...props }) => <code className="bg-slate-100 px-1 rounded text-pink-600 font-mono" {...props} />,
+                          p: ({ node, ...props }) => <p className="mb-2 last:mb-0" {...props} />,
+                        }}
+                      >
+                        {chat.text}
+                      </ReactMarkdown>
+                    )}
                   </div>
                 </div>
               ))}

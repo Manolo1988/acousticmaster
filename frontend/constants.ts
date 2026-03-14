@@ -10,18 +10,22 @@ export const MIC_TYPES = [
 ];
 
 export const DEFAULT_PARAMS: AcousticParams = {
-  length: 30,
-  width: 20,
-  height: 10,
-  stageToNearAudience: 2,
-  stageToFarAudience: 23,
-  stageWidth: 10,
-  stageDepth: 3,
-  hasCentralControl: true,
-  hasMatrix: true,
+  length: 0,
+  width: 0,
+  height: 0,
+  stageToNearAudience: 0,
+  stageToFarAudience: 0,
+  stageWidth: 0,
+  stageDepth: 0,
+  hasCentralControl: false,
+  hasMatrix: false,
   hasVideoConf: false,
   hasRecording: false,
-  mics: [{ id: '1', type: '手持无线话筒', count: 2 }],
+  micHandheld: 0,
+  micGooseneck: 0,
+  micOmni: 0,
+  micLavalier: 0,
+  micCeiling: 0,
   extraRequirements: ''
 };
 

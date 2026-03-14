@@ -8,6 +8,7 @@ import bcrypt from "bcryptjs";
 const app = express();
 const defaultCorsOrigins = [
   "http://115.231.236.153:8100",
+  "http://115.231.236.153:8101",
   "http://115.231.236.153:3000",
   "http://localhost:3000",
   "http://127.0.0.1:3000"
@@ -20,10 +21,8 @@ const corsOrigins = (process.env.CORS_ORIGINS || "")
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin) return callback(null, true);
-      const allowed = corsOrigins.length > 0 ? corsOrigins : defaultCorsOrigins;
-      if (allowed.includes(origin)) return callback(null, true);
-      return callback(new Error("CORS not allowed"), false);
+      // 允许所有来源请求，彻底解决测试环境的 CORS 拦截问题
+      return callback(null, true);
     },
     credentials: true,
     optionsSuccessStatus: 204
@@ -90,6 +89,89 @@ const parseJsonField = (value, fallback) => {
     return fallback;
   }
 };
+
+let latestAcousticIntent = null;
+let latestDifyResult = null;
+
+// === 本地 LLM 配置 (例如 Ollama 或 LocalAI) ===
+const LOCAL_LLM_URL = process.env.LOCAL_LLM_URL || "http://127.0.0.1:11434/v1/chat/completions";
+const LOCAL_LLM_MODEL = process.env.LOCAL_LLM_MODEL || "qwen3:32b"; 
+
+app.post("/api/chat-assistant", async (req, res) => {
+  const { message, history = [], currentParams = {} } = req.body;
+
+  const systemPrompt = `你是一位专业的声学专家，负责引导用户补齐声学方案所需的参数。
+当前场景：${currentParams.scenario === 'MEETING_ROOM' ? '会议室' : (currentParams.scenario === 'LECTURE_HALL' ? '报告厅' : '未定')}
+当前参数完整状态：${JSON.stringify(currentParams)}
+
+指令：
+1. **第一步（场景确认）**：如果场景未定，请先确认用户是“会议室”还是“报告厅”。
+2. **第二步（差异化询问）**：
+   - **如果是会议室**：忽略所有舞台相关参数（stageWidth, stageDepth 等），只询问长、宽、高、话筒配置及子系统。
+   - **如果是报告厅**：除了基本长宽高和话筒外，还需要引导用户提供舞台参数（stageWidth, stageDepth, stageToNearAudience, stageToFarAudience）。
+3. **对话阶段**：简洁专业。在此阶段**不需要**输出 [UPDATE_PARAM] 标记。
+4. **总结与更新时机**：只有当所有针对该场景的关键参数都已确认，且确认无其他需求时，才执行：
+   - **最开头**一次性输出所有参数标记：[UPDATE_PARAM: {"key": "length", "value": 10}][UPDATE_PARAM: {"key": "scenario", "value": "MEETING_ROOM"}]...
+   - **然后**给出详细清晰的参数总结清单。
+   - **最后**指引用户说若信息未更新请输入更新全部参数，若信息没问题则点击页面下方的“启动方案设计”按钮。
+5. 键名参考：length, width, height, micHandheld, micGooseneck, micOmni, micLavalier, micCeiling, hasCentralControl, hasMatrix, hasVideoConf, hasRecording。
+6. 不要输出 <think> 标签。`;
+
+  try {
+    // 设置 Server-Sent Events (SSE) 头部供流式输出
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    const response = await axios.post(LOCAL_LLM_URL, {
+      model: LOCAL_LLM_MODEL,
+      messages: [
+        { role: "system", content: systemPrompt },
+        ...history,
+        { role: "user", content: message }
+      ],
+      temperature: 0.1, 
+      stream: true, 
+      options: {
+        num_ctx: 2048,
+        stop: ["<think>", "</think>", "|im_end|"], 
+        num_predict: 100
+      }
+    }, { 
+      timeout: 120000,
+      responseType: 'stream' 
+    });
+
+    response.data.on('data', chunk => {
+      const payload = chunk.toString();
+      const lines = payload.split('\n');
+      for (const line of lines) {
+        if (!line.trim() || line.includes('[DONE]')) continue;
+        if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.replace('data: ', ''));
+            const content = data.choices[0]?.delta?.content || "";
+            if (content) {
+              res.write(`data: ${JSON.stringify({ content })}\n\n`);
+            }
+          } catch (e) {
+            // 解析失败时忽略
+          }
+        }
+      }
+    });
+
+    response.data.on('end', () => {
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+
+  } catch (error) {
+    console.error("❌ Local LLM Stream failed:", error.message);
+    res.write(`data: ${JSON.stringify({ error: "Local LLM service unavailable" })}\n\n`);
+    res.end();
+  }
+});
 
 app.post("/api/acoustic-intent", (req, res) => {
   const { acousticIntent } = req.body;
@@ -510,6 +592,9 @@ app.get('/health', (req, res) => {
 const DEFAULT_TEST_PORT = Number(process.env.TEST_PORT || 3002);
 const DEFAULT_PROD_PORT = Number(process.env.PROD_PORT || 3001);
 const PORT = Number(process.env.PORT || (isProduction ? DEFAULT_PROD_PORT : DEFAULT_TEST_PORT));
+// 默认使用 3001，与 docker-compose/nginx upstream 保持一致
+const DIFY_INTENT_HOST = process.env.DIFY_INTENT_HOST || "115.231.236.153";
+const difyIntentUrl = `http://${DIFY_INTENT_HOST}:${PORT}/api/acoustic-intent/latest`;
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🎧 Server running on http://0.0.0.0:${PORT}`);

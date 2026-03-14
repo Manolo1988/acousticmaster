@@ -3,7 +3,7 @@ import React from 'react';
 import {
   Scenario, Page, SolutionTab, ResultTab, AcousticParams, DesignState,
   EquipmentItem, SolutionResult, User, AuthUser, HistoryRecord,
-  TableType, DbInventoryItem
+  TableType, DbInventoryItem, ChatMessage
 } from '../types';
 import { DEFAULT_PARAMS, MIC_TYPES } from '../constants';
 import { v4 as uuidv4 } from 'uuid';
@@ -57,6 +57,151 @@ const buildItemsSignature = (items: EquipmentItem[]) => {
   );
 };
 
+const PARAM_KEY_ALIASES: Record<string, keyof AcousticParams> = {
+  length: 'length',
+  width: 'width',
+  height: 'height',
+  roomLength: 'length',
+  roomWidth: 'width',
+  roomHeight: 'height',
+  room_length: 'length',
+  room_width: 'width',
+  room_height: 'height',
+  长: 'length',
+  长度: 'length',
+  宽: 'width',
+  宽度: 'width',
+  高: 'height',
+  高度: 'height',
+  installHeight: 'height',
+  installationHeight: 'height',
+  stageToNearAudience: 'stageToNearAudience',
+  stageToFarAudience: 'stageToFarAudience',
+  stageWidth: 'stageWidth',
+  stageDepth: 'stageDepth',
+  台口至最近: 'stageToNearAudience',
+  台口至最远: 'stageToFarAudience',
+  台口宽度: 'stageWidth',
+  舞台深度: 'stageDepth',
+  micHandheld: 'micHandheld',
+  micGooseneck: 'micGooseneck',
+  micOmni: 'micOmni',
+  micLavalier: 'micLavalier',
+  micCeiling: 'micCeiling',
+  手持无线话筒: 'micHandheld',
+  鹅颈会议话筒: 'micGooseneck',
+  全向阵列话筒: 'micOmni',
+  领夹话筒: 'micLavalier',
+  吊装话筒: 'micCeiling',
+  手持话筒: 'micHandheld',
+  鹅颈话筒: 'micGooseneck',
+  全向话筒: 'micOmni',
+  hasCentralControl: 'hasCentralControl',
+  hasMatrix: 'hasMatrix',
+  hasVideoConf: 'hasVideoConf',
+  hasRecording: 'hasRecording',
+  中控系统: 'hasCentralControl',
+  矩阵系统: 'hasMatrix',
+  视频会议: 'hasVideoConf',
+  录播系统: 'hasRecording',
+  中控: 'hasCentralControl',
+  矩阵: 'hasMatrix',
+  视讯: 'hasVideoConf',
+  录播: 'hasRecording'
+};
+
+const normalizeAssistantParams = (raw: Record<string, any> | Record<string, any>[]): Partial<AcousticParams> => {
+  const normalized: Partial<AcousticParams> = {};
+  if (!raw) return normalized;
+
+  // Normalize single object into an array for uniform processing
+  const items = Array.isArray(raw) ? raw : [raw];
+
+  items.forEach(item => {
+    // Handle both {"key": "length", "value": 20} and {"length": 20} formats
+    const pairs: [string, any][] = [];
+    if (item.key && item.hasOwnProperty('value')) {
+      pairs.push([item.key, item.value]);
+    } else {
+      pairs.push(...Object.entries(item));
+    }
+
+    pairs.forEach(([key, value]) => {
+      const mappedKey = PARAM_KEY_ALIASES[key] || (key as keyof AcousticParams);
+      if (!mappedKey) return;
+
+      if (typeof value === 'boolean') {
+        (normalized as any)[mappedKey] = value;
+        return;
+      }
+
+      if (typeof value === 'number') {
+        (normalized as any)[mappedKey] = value;
+        return;
+      }
+
+      if (typeof value === 'string') {
+        const lowerVal = value.toLowerCase();
+        if (lowerVal === 'true') {
+          (normalized as any)[mappedKey] = true;
+          return;
+        }
+        if (lowerVal === 'false') {
+          (normalized as any)[mappedKey] = false;
+          return;
+        }
+        const maybeNum = Number(value);
+        (normalized as any)[mappedKey] = Number.isFinite(maybeNum) ? maybeNum : value;
+        return;
+      }
+
+      (normalized as any)[mappedKey] = value;
+    });
+  });
+
+  return normalized;
+};
+
+const extractAssistantParamPayloads = (text: string): (Record<string, any> | Record<string, any>[])[] => {
+  // 更加宽容的正则，不强制要求外层有方括号/花括号，只要被 [UPDATE_PARAM: ...] 包裹
+  const markerRegex = /\[UPDATE_PARAM:\s*([\s\S]*?)\]/g;
+  const matches = [...text.matchAll(markerRegex)];
+  
+  return matches.map(match => {
+    let rawContent = match[1]?.trim();
+    if (!rawContent) return null;
+
+    // 1. 尝试清理 Markdown 代码块
+    let cleaned = rawContent
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/```$/i, '')
+      .trim();
+
+    // 2. 尝试直接解析
+    try {
+      return JSON.parse(cleaned);
+    } catch {
+      // 3. 兜底处理：如果 AI 输出了 {"key": "length", "value": 7}, {"key": "width", "value": 4} 这种非标准数组
+      // 将其包裹成数组再尝试
+      if (cleaned.includes('},{') || (cleaned.includes('"value":') && !cleaned.startsWith('[') && !cleaned.startsWith('{'))) {
+        try {
+          return JSON.parse(`[${cleaned}]`);
+        } catch { /* ignore */ }
+      }
+
+      // 4. 再次兜底：处理单引号
+      try {
+        const singleQuoted = cleaned.replace(/'/g, '"');
+        return JSON.parse(singleQuoted);
+      } catch (e) {
+        console.warn("Failed to parse [UPDATE_PARAM] block:", cleaned, e);
+        return null;
+      }
+    }
+  }).flat().filter((p): p is any => p !== null && typeof p === 'object');
+};
+
 
 // 👇 新增：工具函数
 const submitDesign = async (acousticIntent: any, userInfo: { userId: number | null; guestId: string | null; username: string }) => {
@@ -88,9 +233,121 @@ const formatDifyResult = (result: any): string => {
   if (result?.raw_answer) {
     return result.raw_answer;
   }
+  if (result?.answer) {
+    return result.answer;
+  }
   return '❌ 方案生成失败，请检查后端日志。';
 };
 
+// ========================================
+// 新增：本地 LLM 对话支持及自动参数提取
+// ========================================
+const useAcousticAssistant = (
+  params: AcousticParams, 
+  setParams: React.Dispatch<React.SetStateAction<AcousticParams>>,
+  setChatHistory: React.Dispatch<React.SetStateAction<ChatMessage[]>>
+) => {
+  const [isAssistantLoading, setIsAssistantLoading] = useState(false);
+
+  const sendMessageToAssistant = async (text: string, history: ChatMessage[]) => {
+    setIsAssistantLoading(true);
+    
+    // 1. 立即显示用户消息
+    const userMsg: ChatMessage = { role: 'user', text, timestamp: new Date() };
+    setChatHistory(prev => [...prev, userMsg]);
+
+    // 2. 创建占位 AI 消息（后续流式更新）
+    const aiId = Date.now().toString();
+    setChatHistory(prev => [...prev, { role: 'ai', text: "", timestamp: new Date() }]);
+
+    let fullAiText = "";
+    try {
+      const response = await fetch(`${API_BASE}/api/chat-assistant`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: text,
+          history: history.map(h => ({ role: h.role === 'ai' ? 'assistant' : 'user', content: h.text })),
+          currentParams: params
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Assistant request failed: ${response.status}`);
+      }
+
+      if (!response.body) throw new Error("No stream content");
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+        
+        for (const line of lines) {
+          if (!line.startsWith('data: ') || line.includes('[DONE]')) continue;
+          
+          try {
+            const data = JSON.parse(line.replace('data: ', ''));
+            if (data.content) {
+              fullAiText += data.content;
+              // 流式更新最后一条消息
+              setChatHistory(prev => {
+                const updated = [...prev];
+                updated[updated.length - 1] = { ...updated[updated.length - 1], text: fullAiText };
+                return updated;
+              });
+            }
+          } catch (e) {
+            console.warn("SSE parse error", e);
+          }
+        }
+      }
+
+      // 3. 处理参数提取 [UPDATE_PARAM: {...}]
+      const extractedPayloads = extractAssistantParamPayloads(fullAiText);
+      if (extractedPayloads.length > 0) {
+        // 合并所有提取到的参数
+        const combinedNormalized = extractedPayloads.reduce((acc, payload) => {
+          const normalized = normalizeAssistantParams(payload);
+          return { ...acc, ...normalized };
+        }, {});
+
+        if (Object.keys(combinedNormalized).length > 0) {
+          setParams(prev => ({ ...prev, ...combinedNormalized }));
+        }
+
+        // 静默移除标记，保持 UI 干净
+        const cleanText = fullAiText.replace(/\[UPDATE_PARAM:[\s\S]*?\]/g, "").trim();
+        setChatHistory(prev => {
+          const updated = [...prev];
+          updated[updated.length - 1] = { ...updated[updated.length - 1], text: cleanText };
+          return updated;
+        });
+      }
+
+    } catch (err) {
+      console.error("Assistant Error:", err);
+      setChatHistory(prev => {
+        const updated = [...prev];
+        // 失败时替换占位 AI 消息，避免出现空白气泡
+        updated[updated.length - 1] = {
+          ...updated[updated.length - 1],
+          text: "抱歉，我的大脑暂时断网了，请稍后再试。"
+        };
+        return updated;
+      });
+    } finally {
+      setIsAssistantLoading(false);
+    }
+  };
+
+  return { sendMessageToAssistant, isAssistantLoading };
+};
 
 // ========================================
 // 新增：Dify 响应解析器（动态支持任意数量方案）
@@ -335,16 +592,32 @@ export const useAcousticLogic = () => {
   });
   const defaultProjectName = `声学项目_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}_01`;
   const [designState, setDesignState] = useState<DesignState>({
-  
     projectName: defaultProjectName,
     scenario: Scenario.MEETING_ROOM,
     params: { ...DEFAULT_PARAMS },
     blueprint: null,
     isDesigned: false,
-    chatHistory: [{ role: 'ai', text: '您好，我是您的声学助理。请描述您的场景需求，我会自动同步参数并优化方案。', timestamp: new Date() }],
+    chatHistory: [{ role: 'ai', text: '您好，协助您进行声学方案设计的专家已就绪，您可以自主选择在左方进行手动填写或向我提问，我将引导你进行补充。请描述您的场景是会议室还是报告厅（左上方可以进行场景切换便于显示参数）？', timestamp: new Date() }],
     results: [],
     activeResultIndex: 0
   });
+
+  // --- 注入本地 LLM 助理逻辑 ---
+  const { sendMessageToAssistant, isAssistantLoading } = useAcousticAssistant(
+    designState.params,
+    (updater: any) => {
+      setDesignState(prev => ({
+        ...prev,
+        params: typeof updater === 'function' ? updater(prev.params) : { ...prev.params, ...updater }
+      }));
+    },
+    (updater: any) => {
+      setDesignState(prev => ({
+        ...prev,
+        chatHistory: typeof updater === 'function' ? updater(prev.chatHistory) : updater
+      }));
+    }
+  );
 
   // --- [核心修改] 多表切换与主子表关联逻辑 ---
   const displayInventory = useMemo(() => {
@@ -562,39 +835,12 @@ export const useAcousticLogic = () => {
     setDesignState(prev => ({ ...prev, projectName: name }));
   };
 
-  const handleMicChange = (id: string, count: number) => {
-    setDesignState(prev => ({
-      ...prev,
-      params: { ...prev.params, mics: prev.params.mics.map(m => m.id === id ? { ...m, count } : m) }
-    }));
-  };
-
-  const addMic = () => {
-    setDesignState(prev => ({
-      ...prev,
-      params: { ...prev.params, mics: [...prev.params.mics, { id: Date.now().toString(), type: MIC_TYPES[0], count: 1 }] }
-    }));
-  };
-
-  const removeMic = (id: string) => {
-    setDesignState(prev => ({ ...prev, params: { ...prev.params, mics: prev.params.mics.filter(m => m.id !== id) } }));
-  };
-
-
-
   // --- 交互与设计逻辑 ---
   const handleSendMessage = async () => {
-    if (!chatInputValue.trim() || isProcessingAi) return;
-    const userMsg = chatInputValue;
+    if (!chatInputValue.trim() || isAssistantLoading) return;
+    const msg = chatInputValue;
     setChatInputValue("");
-    setDesignState(prev => ({
-      ...prev,
-      chatHistory: [
-        ...prev.chatHistory,
-        { role: 'user', text: userMsg, timestamp: new Date() },
-        { role: 'ai', text: '已收到需求，请手动调整参数后点击“启动方案设计”。', timestamp: new Date() }
-      ]
-    }));
+    await sendMessageToAssistant(msg, designState.chatHistory);
   };
 
 
@@ -698,7 +944,13 @@ if (designState.scenario === Scenario.LECTURE_HALL) {
       geometry, // ✅ 动态结构
     },
     processingSignals: {
-      mics: designState.params.mics,
+      mics: {
+        handheld: designState.params.micHandheld,
+        gooseneck: designState.params.micGooseneck,
+        omni: designState.params.micOmni,
+        lavalier: designState.params.micLavalier,
+        ceiling: designState.params.micCeiling,
+      },
       subsystems: {
         hasCentralControl: designState.params.hasCentralControl,
         hasMatrix: designState.params.hasMatrix,
@@ -1079,7 +1331,7 @@ const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
     currentUser,
     history,
     setHistory,
-    handleParamChange, handleMicChange, addMic, removeMic,
+    handleParamChange,
     handleUpdateProjectName, handleSendMessage, startDesign, saveEdit, handleLogout,
     fetchEquipmentDetail,
     getCachedEquipmentDetail,

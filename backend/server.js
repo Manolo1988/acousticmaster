@@ -175,6 +175,9 @@ app.post("/api/system/ai-toggle", (req, res) => {
 
 app.post("/api/chat-assistant", async (req, res) => {
   const { message, history = [], currentParams = {} } = req.body;
+  const micTypeHint = Array.isArray(currentParams.micTypeOptions) && currentParams.micTypeOptions.length > 0
+    ? currentParams.micTypeOptions.join('、')
+    : '手持无线话筒、鹅颈会议话筒、全向阵列话筒、领夹话筒、吊装话筒';
 
   const systemPrompt = `你是一位专业的声学专家，负责引导用户补齐声学方案所需的参数。
 当前场景：${currentParams.scenario === 'MEETING_ROOM' ? '会议室' : (currentParams.scenario === 'LECTURE_HALL' ? '报告厅' : '未定')}
@@ -194,7 +197,8 @@ app.post("/api/chat-assistant", async (req, res) => {
 6. 不要输出 <think> 标签。
 7. 当你引导用户填写话筒配置时，必须先提示默认建议：
   - 报告厅默认：手领（型号 KU102）2个，鹅颈话筒（型号 KU204）2个。
-  - 会议室默认：手领（型号 KU102）2个。`;
+  - 会议室默认：手领（型号 KU102）2个。
+8. 话筒类型优先使用以下数据库可选项：${micTypeHint}。`;
 
   try {
     // 设置 Server-Sent Events (SSE) 头部供流式输出

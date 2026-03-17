@@ -55,6 +55,14 @@ npm run dev
 
 ### 一键启动
 
+前端更新：
+```bash
+cd frontend
+npm run build
+```
+然后运行 deploy_fronted.sh
+
+后端更新：
 ```bash
 cd docker
 docker-compose up -d --build

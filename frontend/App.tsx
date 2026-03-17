@@ -3,7 +3,7 @@ import React, { useRef, useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Scenario, Page, SolutionTab, ResultTab, User, TableType, DbInventoryItem, HistoryRecord, EquipmentItem, AcousticParams } from './types';
-import { MIC_TYPES, SCENARIO_THEMES, VERIFY_THEME } from './constants';
+import { SCENARIO_THEMES, VERIFY_THEME } from './constants';
 import Visualization from './components/Visualization';
 import { useAcousticLogic } from './hooks/useAcousticLogic';
 
@@ -16,7 +16,6 @@ declare global {
 }
 
 type ResultView = 'TABLE' | 'WORD';
-const UI_SCALE = 1.5;
 
 type FieldType = 'text' | 'number' | 'select';
 type FieldConfig = {
@@ -96,6 +95,9 @@ const TABLE_FIELD_CONFIG: Record<TableType, FieldConfig[]> = {
 
 const App: React.FC = () => {
   const logic = useAcousticLogic();
+  const isAdminUser = String(logic.currentUser?.role || '').trim() === '管理员'
+    || String(logic.currentUser?.role || '').toLowerCase() === 'admin'
+    || String(logic.currentUser?.role || '').includes('管理员');
   const [activeResultView, setActiveResultView] = useState<ResultView>('TABLE');
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -118,6 +120,8 @@ const App: React.FC = () => {
   const [exportDialogType, setExportDialogType] = useState<'EXCEL' | 'WORD' | null>(null);
   const [detailDialog, setDetailDialog] = useState<{ resIdx: number; itemIdx: number; item: EquipmentItem; detail: DbInventoryItem | null; table: TableType | null } | null>(null);
   const [replacementId, setReplacementId] = useState<number | ''>('');
+  const [editingOptions, setEditingOptions] = useState<DbInventoryItem[]>([]);
+  const [isReplacementPickerOpen, setIsReplacementPickerOpen] = useState(false);
 
   const [tempType, setTempType] = useState<TableType>(logic.activeTable);
   const activeResult = logic.designState.results[logic.designState.activeResultIndex];
@@ -145,7 +149,7 @@ const App: React.FC = () => {
   const reportUpToDate = !!(activeResult?.lastReportSignature && activeResult.lastReportSignature === logic.buildItemsSignature(activeResult.items));
   const hasGeneratedReport = reportUpToDate || !!activeResult?.wordLink;
   const hasWordExport = reportUpToDate;
-  const hasExcelExport = reportUpToDate;
+  const hasExcelExport = logic.designState.results.length > 0;
   const wordPreviewUrl = activeResult?.wordLink?.startsWith('https://')
     ? `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(activeResult.wordLink)}`
     : '';
@@ -211,6 +215,14 @@ const App: React.FC = () => {
     return payload;
   };
 
+  const resolvePlanItemTable = (type: string): TableType | null => {
+    if (Object.values(TableType).includes(type as TableType)) return type as TableType;
+    if (type === '功放' || type.includes('定阻功放')) return TableType.AMPLIFIER;
+    if (type.includes('音箱')) return TableType.SPEAKER;
+    if (['中控系统', '矩阵', '视频会议系统', '录播系统'].includes(type)) return TableType.FIXED_SCENE_EXTRA;
+    return TableType.PERIPHERAL;
+  };
+
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logic.designState.chatHistory, logic.isChatOpen]);
@@ -249,7 +261,7 @@ const App: React.FC = () => {
         <nav className="flex space-x-5 h-11">
           {(Object.values(Page) as Page[]).filter(p => {
             if (p === Page.MANAGEMENT || p === Page.USERS) {
-              return logic.currentUser.role === '管理员';
+              return isAdminUser;
             }
             return true;
           }).map(p => (
@@ -356,8 +368,8 @@ const App: React.FC = () => {
   );
 
   const renderSolutionSidebar = () => (
-    <div className={`w-[290px] ${theme.lightBg} border-r border-slate-200 flex flex-col shrink-0`}>
-      <div className="flex-1 overflow-y-auto p-3 flex flex-col space-y-3 scrollbar-hide">
+    <div className={`w-[290px] ${theme.lightBg} border-r border-slate-200 flex flex-col shrink-0 min-h-0 h-full overflow-hidden`}>
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-3 flex flex-col space-y-3">
         <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2">
           <div className="flex items-center justify-between border-b pb-1">
             <h3 className={`text-[10px] font-black ${themeText} uppercase tracking-widest`}>项目名称</h3>
@@ -431,11 +443,11 @@ const App: React.FC = () => {
               <h3 className={`text-[10px] font-black ${themeText} uppercase tracking-widest`}>话筒配置</h3>
               <button onClick={logic.addMic} className={`text-[8px] font-black px-1.5 py-0.5 rounded border ${themeText} ${themeBorder} bg-slate-50 hover:bg-white transition-colors`}>+ 添加</button>
             </div>
-            <div className="space-y-1.5">
+            <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
               {logic.designState.params.mics.map(m => (
                 <div key={m.id} className="flex items-center space-x-1.5 group">
                   <select value={m.type} onChange={e => logic.handleParamChange('mics', logic.designState.params.mics.map(mic => mic.id === m.id ? { ...mic, type: e.target.value } : mic))} className="flex-1 bg-slate-50 border border-slate-100 rounded px-1.5 py-1 text-[11px] font-bold outline-none">
-                    {MIC_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                    {logic.micTypeOptions.map(t => <option key={t} value={t}>{t}</option>)}
                   </select>
                   <input type="number" value={m.count} onChange={e => logic.handleMicChange(m.id, parseInt(e.target.value))} className={`w-8 bg-white border border-slate-200 rounded py-1 text-center text-[11px] font-bold ${themeText} outline-none`} />
                   <button onClick={() => logic.removeMic(m.id)} className="text-slate-300 hover:text-red-500 text-[9px] px-0.5">✕</button>
@@ -539,7 +551,7 @@ const App: React.FC = () => {
           </div>
         )
       ) : (
-        <div className="flex-1 flex flex-col p-5 space-y-4 overflow-y-auto scrollbar-hide">
+        <div className="flex-1 flex flex-col p-5 space-y-4 overflow-y-auto">
           <div className="flex justify-between items-center border-b pb-3 shrink-0">
             <div className="flex items-center space-x-3">
               <div className="flex items-baseline space-x-2">
@@ -644,16 +656,18 @@ const App: React.FC = () => {
           <div className="space-y-3 flex-1 flex flex-col">
             <div className="flex justify-between items-center shrink-0">
               <div className="flex flex-col space-y-1">
-                <div className="flex space-x-1">
-                  {logic.designState.results.map((res, idx) => (
-                    <button
-                      key={res.id}
-                      onClick={() => { logic.setDesignState(prev => ({ ...prev, activeResultIndex: idx })); }}
-                      className={`px-3 py-1.5 rounded-md text-[10px] font-black transition-all ${logic.designState.activeResultIndex === idx ? `bg-slate-900 text-white shadow-md` : 'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}
-                    >
-                      {res.title}
-                    </button>
-                  ))}
+                <div className="max-w-[60vw] overflow-x-auto pb-1">
+                  <div className="flex space-x-1 min-w-max">
+                    {logic.designState.results.map((res, idx) => (
+                      <button
+                        key={res.id}
+                        onClick={() => { logic.setDesignState(prev => ({ ...prev, activeResultIndex: idx })); }}
+                        className={`px-3 py-1.5 rounded-md text-[10px] font-black transition-all whitespace-nowrap ${logic.designState.activeResultIndex === idx ? `bg-slate-900 text-white shadow-md` : 'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}
+                      >
+                        {res.title}
+                      </button>
+                    ))}
+                  </div>
                 </div>
                 <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest py-1">
                   总价：<span className="text-slate-900">¥{activeTotalPrice.toLocaleString()}</span>
@@ -705,17 +719,7 @@ const App: React.FC = () => {
                               <td className="px-5 py-2.5 text-right space-x-3 pr-5">
                                 <button
                                   onClick={async () => {
-                                    const table = Object.values(TableType).includes(item.type as TableType)
-                                      ? (item.type as TableType)
-                                      : item.type === '功放'
-                                        ? TableType.AMPLIFIER
-                                        : item.type === '线阵列配套'
-                                          ? TableType.SPEAKER
-                                          : item.type === '周边设备'
-                                            ? TableType.PERIPHERAL
-                                          : ['中控系统', '矩阵', '视频会议系统', '录播系统'].includes(item.type)
-                                            ? TableType.FIXED_SCENE_EXTRA
-                                              : null;
+                                    const table = resolvePlanItemTable(item.type);
 
                                     if (table) {
                                       await logic.ensureInventoryOptions(table);
@@ -729,7 +733,38 @@ const App: React.FC = () => {
                                 >
                                   详细
                                 </button>
-                                <button onClick={() => logic.setEditingItem({ resIdx: logic.designState.activeResultIndex, itemIdx: idx, item: { ...item } })} className={`${themeText} font-bold hover:underline`}>编辑</button>
+                                <button
+                                  onClick={async () => {
+                                    const table = resolvePlanItemTable(item.type);
+                                    const currentDetail = await logic.fetchEquipmentDetail(item);
+                                    const targetDetailType = String(currentDetail?.类型 || item.type || '').trim();
+                                    if (table) {
+                                      await logic.ensureInventoryOptions(table);
+                                      let options = logic.getInventoryOptions(table);
+                                      if (table === TableType.FIXED_SCENE_EXTRA) {
+                                        await logic.ensureInventoryOptions(TableType.NON_FIXED_SCENE_EXTRA);
+                                        options = [
+                                          ...options,
+                                          ...logic.getInventoryOptions(TableType.NON_FIXED_SCENE_EXTRA)
+                                        ];
+                                      }
+                                      if (targetDetailType) {
+                                        options = options.filter((opt) => {
+                                          const rowType = String(opt.类型 || '').trim();
+                                          return rowType ? rowType === targetDetailType : true;
+                                        });
+                                      }
+                                      setEditingOptions(options);
+                                    } else {
+                                      setEditingOptions([]);
+                                    }
+                                    setIsReplacementPickerOpen(false);
+                                    logic.setEditingItem({ resIdx: logic.designState.activeResultIndex, itemIdx: idx, item: { ...item } });
+                                  }}
+                                  className={`${themeText} font-bold hover:underline`}
+                                >
+                                  编辑
+                                </button>
                                 <button onClick={() => logic.deleteItem(logic.designState.activeResultIndex, idx)} className="text-slate-300 hover:text-red-500 font-bold">删除</button>
                               </td>
                             </tr>
@@ -867,9 +902,9 @@ const App: React.FC = () => {
   const renderManagementView = () => (
     <div className="flex-1 flex overflow-hidden bg-white">
       {/* 左侧设备目录 (对应 image_557afb) */}
-      <div className="w-56 bg-slate-50 border-r border-slate-200 flex flex-col p-4 shrink-0">
+      <div className="w-56 bg-slate-50 border-r border-slate-200 flex flex-col p-4 shrink-0 min-h-0">
         <h2 className="text-xs font-black text-slate-900 uppercase tracking-widest mb-6 px-2">设备目录</h2>
-        <nav className="space-y-1">
+        <nav className="space-y-1 flex-1 min-h-0 overflow-y-auto pr-1">
           {Object.values(TableType).map((t) => (
             <button key={t} onClick={() => logic.setActiveTable(t)}
               className={`w-full text-left px-4 py-2.5 rounded-xl text-[11px] font-bold transition-all ${logic.activeTable === t ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500 hover:bg-slate-100'
@@ -913,7 +948,7 @@ const App: React.FC = () => {
           </select>
         </div>
 
-        <div className="flex-1 overflow-auto">
+        <div className="flex-1 min-h-0 overflow-auto">
           <table className="w-full text-left text-[11px]">
             <thead className="sticky top-0 bg-white border-b">
               <tr>
@@ -959,52 +994,54 @@ const App: React.FC = () => {
     </div>
   );
   const renderHistoryView = () => (
-    <div className="flex-1 flex flex-col p-6 overflow-y-auto bg-white">
+    <div className="flex-1 flex flex-col p-6 overflow-hidden bg-white">
       <div className="mb-8">
         <h2 className="text-2xl font-black text-slate-900 tracking-tight uppercase">历史设计档案</h2>
         <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">回顾及重新载入之前的设计成果</p>
       </div>
 
-      <div className="bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-sm">
-        <table className="w-full text-left text-[11px]">
-          <thead className="bg-slate-50 border-b">
-            <tr>
-              <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">项目名称</th>
-              <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">设计时间</th>
-              <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">场景类型</th>
-              <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">状态</th>
-              <th className="px-6 py-4 text-right pr-6 font-black text-slate-400 uppercase tracking-widest">操作</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {logic.history.map(h => (
-              <tr key={h.id} className="hover:bg-slate-50 transition-colors group">
-                <td className="px-6 py-4 font-black text-slate-900">{h.projectName}</td>
-                <td className="px-6 py-4 text-slate-400 font-mono">{new Date(h.createdAt).toISOString().slice(0, 10)}</td>
-                <td className="px-6 py-4">
-                  <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${h.scenario === Scenario.MEETING_ROOM ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'
-                    }`}>{h.scenario === Scenario.MEETING_ROOM ? '会议室' : '报告厅'}</span>
-                </td>
-                <td className="px-6 py-4">
-                  <div className="flex items-center space-x-1.5">
-                    <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></div>
-                    <span className="text-emerald-600 font-bold">已完成</span>
-                  </div>
-                </td>
-                <td className="px-6 py-4 text-right pr-6 space-x-4">
-                  <button onClick={() => logic.setPreviewHistoryItem(h)} className="text-blue-600 font-black hover:underline uppercase tracking-widest text-[9px]">详情预览</button>
-                  <button onClick={() => setEditingHistory(h)} className="text-slate-500 font-black hover:underline uppercase tracking-widest text-[9px]">编辑</button>
-                  <button onClick={() => logic.deleteHistoryRecord(h.id)} className="text-red-400 font-black hover:text-red-600 transition-colors uppercase tracking-widest text-[9px]">删除</button>
-                </td>
-              </tr>
-            ))}
-            {logic.history.length === 0 && (
+      <div className="flex-1 min-h-0 bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-sm flex flex-col">
+        <div className="flex-1 min-h-0 overflow-auto">
+          <table className="w-full text-left text-[11px]">
+            <thead className="sticky top-0 bg-slate-50 border-b z-10">
               <tr>
-                <td colSpan={5} className="py-20 text-center text-slate-300 font-black uppercase italic">暂无历史设计记录</td>
+                <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">项目名称</th>
+                <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">设计时间</th>
+                <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">场景类型</th>
+                <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">状态</th>
+                <th className="px-6 py-4 text-right pr-6 font-black text-slate-400 uppercase tracking-widest">操作</th>
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {logic.history.map(h => (
+                <tr key={h.id} className="hover:bg-slate-50 transition-colors group">
+                  <td className="px-6 py-4 font-black text-slate-900">{h.projectName}</td>
+                  <td className="px-6 py-4 text-slate-400 font-mono">{new Date(h.createdAt).toISOString().slice(0, 10)}</td>
+                  <td className="px-6 py-4">
+                    <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${h.scenario === Scenario.MEETING_ROOM ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'
+                      }`}>{h.scenario === Scenario.MEETING_ROOM ? '会议室' : '报告厅'}</span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className="flex items-center space-x-1.5">
+                      <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></div>
+                      <span className="text-emerald-600 font-bold">已完成</span>
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 text-right pr-6 space-x-4">
+                    <button onClick={() => logic.setPreviewHistoryItem(h)} className="text-blue-600 font-black hover:underline uppercase tracking-widest text-[9px]">详情预览</button>
+                    <button onClick={() => setEditingHistory(h)} className="text-slate-500 font-black hover:underline uppercase tracking-widest text-[9px]">编辑</button>
+                    <button onClick={() => logic.deleteHistoryRecord(h.id)} className="text-red-400 font-black hover:text-red-600 transition-colors uppercase tracking-widest text-[9px]">删除</button>
+                  </td>
+                </tr>
+              ))}
+              {logic.history.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="py-20 text-center text-slate-300 font-black uppercase italic">暂无历史设计记录</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
@@ -1237,7 +1274,7 @@ const App: React.FC = () => {
 
       {/* 用户列表表格 */}
       <div className="flex-1 bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm flex flex-col">
-        <div className="flex-1 overflow-auto scrollbar-hide">
+        <div className="flex-1 overflow-auto">
           <table className="w-full text-left text-[11px]">
             <thead className="sticky top-0 bg-slate-50 border-b z-10">
               <tr>
@@ -1344,18 +1381,10 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className={`${theme.lightBg} h-screen overflow-auto text-slate-900 font-sans`}>
-      <div
-        className="flex flex-col min-h-screen"
-        style={{
-          transform: `scale(${UI_SCALE})`,
-          transformOrigin: 'top left',
-          width: `${100 / UI_SCALE}%`,
-          minHeight: `${100 / UI_SCALE}vh`
-        }}
-      >
+    <div className={`${theme.lightBg} h-screen overflow-hidden text-slate-900 font-sans`}>
+      <div className="flex flex-col h-full min-h-0">
       {renderTopNav()}
-      <main className="flex-1 flex overflow-hidden">
+      <main className="flex-1 flex overflow-hidden min-h-0">
         {logic.currentPage === Page.SOLUTION && (
           <>
             {renderSolutionSidebar()}
@@ -1724,12 +1753,91 @@ const App: React.FC = () => {
               <button onClick={() => logic.setEditingItem(null)} className="text-white/60 hover:text-white transition-colors">✕</button>
             </div>
             <div className="p-6 space-y-4">
-              <input type="text" value={logic.editingItem.item.name} onChange={e => logic.setEditingItem({ ...logic.editingItem!, item: { ...logic.editingItem!.item, name: e.target.value } })} className="w-full bg-slate-50 border border-slate-100 rounded-xl px-4 py-2.5 text-xs font-bold outline-none" />
-              <input type="number" value={logic.editingItem.item.quantity} onChange={e => logic.setEditingItem({ ...logic.editingItem!, item: { ...logic.editingItem!.item, quantity: parseInt(e.target.value) || 0 } })} className="w-full bg-slate-50 border border-slate-100 rounded-xl px-4 py-2.5 text-xs font-bold outline-none" />
+              <div className="grid grid-cols-1 gap-3 text-[12px]">
+                <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
+                  <div className="text-[10px] text-slate-400 font-black">设备分类</div>
+                  <div className="font-bold text-slate-800">{logic.editingItem.item.type || '-'}</div>
+                </div>
+                <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
+                  <div className="text-[10px] text-slate-400 font-black">设备名称</div>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="font-bold text-slate-800">{logic.editingItem.item.name || '-'}</div>
+                    <button
+                      onClick={() => setIsReplacementPickerOpen(true)}
+                      className="w-7 h-7 rounded-lg border border-slate-200 text-slate-600 hover:bg-white flex items-center justify-center"
+                      title="替换同类型设备"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 7h11m0 0l-3-3m3 3l-3 3M20 17H9m0 0l3-3m-3 3l3 3"/></svg>
+                    </button>
+                  </div>
+                </div>
+                <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
+                  <div className="text-[10px] text-slate-400 font-black">型号</div>
+                  <div className="font-bold text-slate-800">{logic.editingItem.item.model || '-'}</div>
+                </div>
+                <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
+                  <div className="text-[10px] text-slate-400 font-black">品牌</div>
+                  <div className="font-bold text-slate-800">{logic.editingItem.item.brand || '-'}</div>
+                </div>
+                <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
+                  <div className="text-[10px] text-slate-400 font-black">单价</div>
+                  <div className="font-bold text-slate-800">¥{Number(logic.editingItem.item.unitPrice || 0).toLocaleString()}</div>
+                </div>
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-500">数量</label>
+                <input type="number" value={logic.editingItem.item.quantity} onChange={e => logic.setEditingItem({ ...logic.editingItem!, item: { ...logic.editingItem!.item, quantity: parseInt(e.target.value) || 0 } })} className="w-full bg-slate-50 border border-slate-100 rounded-xl px-4 py-2.5 text-xs font-bold outline-none" />
+              </div>
             </div>
             <div className="p-6 bg-slate-50 border-t border-slate-100 flex space-x-3">
-              <button onClick={() => logic.setEditingItem(null)} className="flex-1 py-3 rounded-xl border border-slate-200 text-[11px] font-black uppercase tracking-widest text-slate-500">取消</button>
+              <button onClick={() => { logic.setEditingItem(null); setEditingOptions([]); setIsReplacementPickerOpen(false); }} className="flex-1 py-3 rounded-xl border border-slate-200 text-[11px] font-black uppercase tracking-widest text-slate-500">取消</button>
               <button onClick={logic.saveEdit} className={`flex-1 py-3 rounded-xl ${themeBg} text-white shadow-lg text-[11px] font-black uppercase tracking-widest hover:brightness-110`}>保存更改</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {logic.editingItem && isReplacementPickerOpen && (
+        <div className="fixed inset-0 z-[410] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden">
+            <div className={`px-6 py-4 ${themeBg} text-white flex items-center justify-between`}>
+              <h3 className="text-sm font-black uppercase tracking-widest">选择同类型设备</h3>
+              <button onClick={() => setIsReplacementPickerOpen(false)} className="text-white/60 hover:text-white transition-colors">✕</button>
+            </div>
+            <div className="p-6 space-y-3 max-h-[65vh] overflow-y-auto">
+              {editingOptions.length === 0 ? (
+                <div className="text-[12px] text-slate-400 font-bold">数据库中未找到同类型设备。</div>
+              ) : (
+                editingOptions.map((opt) => (
+                  <div key={opt.id} className="border border-slate-100 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-[12px] font-black text-slate-900 truncate">{opt.产品名称 || '-'}</div>
+                      <div className="text-[11px] text-slate-500 truncate">{opt.品牌 || '-'} / {opt.型号 || '-'}</div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        logic.setEditingItem({
+                          ...logic.editingItem!,
+                          item: {
+                            ...logic.editingItem!.item,
+                            name: opt.产品名称 || logic.editingItem!.item.name,
+                            model: opt.型号 || logic.editingItem!.item.model,
+                            brand: opt.品牌 || logic.editingItem!.item.brand,
+                            unitPrice: Number(opt.市场价) || logic.editingItem!.item.unitPrice || 0
+                          }
+                        });
+                        setIsReplacementPickerOpen(false);
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-[10px] font-black"
+                    >
+                      选择
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex justify-end">
+              <button onClick={() => setIsReplacementPickerOpen(false)} className="px-4 py-2 rounded-lg border border-slate-200 text-[11px] font-black text-slate-500">取消</button>
             </div>
           </div>
         </div>

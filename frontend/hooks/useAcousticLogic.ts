@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import React from 'react';
 import {
   Scenario, Page, SolutionTab, ResultTab, AcousticParams, DesignState,
@@ -7,6 +7,7 @@ import {
 } from '../types';
 import { DEFAULT_PARAMS, MIC_TYPES } from '../constants';
 import { v4 as uuidv4 } from 'uuid';
+import * as XLSX from 'xlsx';
 
 // Type declaration for import.meta.env
 declare global {
@@ -67,6 +68,8 @@ const buildItemsSignature = (items: EquipmentItem[]) => {
     }))
   );
 };
+
+const SUBSYSTEM_DEVICE_TYPES = new Set(['中控系统', '矩阵', '视频会议系统', '录播系统']);
 
 const PARAM_KEY_ALIASES: Record<string, keyof AcousticParams> = {
   length: 'length',
@@ -364,8 +367,39 @@ const stripThinkTags = (text: string) => {
   if (!text) return '';
   return text
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
     .replace(/<\/?think>/gi, '')
+    .replace(/<\/?thinking>/gi, '')
+    .replace(/思考过程[:：]?[\s\S]*$/g, '')
     .trim();
+};
+
+const detectScenarioFromAssistant = (
+  text: string,
+  payloads: (Record<string, any> | Record<string, any>[])[]
+) => {
+  for (const payload of payloads) {
+    const list = Array.isArray(payload) ? payload : [payload];
+    for (const entry of list) {
+      const key = String((entry as any).key || '').toLowerCase();
+      const value = String((entry as any).value || (entry as any).scenario || '').toUpperCase();
+      if (key === 'scenario' || Object.prototype.hasOwnProperty.call(entry, 'scenario')) {
+        if (value.includes('LECTURE_HALL') || value.includes('REPORT') || value.includes('报告厅')) {
+          return Scenario.LECTURE_HALL;
+        }
+        if (value.includes('MEETING_ROOM') || value.includes('MEETING') || value.includes('会议室')) {
+          return Scenario.MEETING_ROOM;
+        }
+      }
+    }
+  }
+
+  const normalized = stripThinkTags(text);
+  if (/确定|确认为|判断为|建议采用/.test(normalized)) {
+    if (/报告厅/.test(normalized)) return Scenario.LECTURE_HALL;
+    if (/会议室/.test(normalized)) return Scenario.MEETING_ROOM;
+  }
+  return null;
 };
 
 // ========================================
@@ -374,11 +408,18 @@ const stripThinkTags = (text: string) => {
 const useAcousticAssistant = (
   params: AcousticParams, 
   setParams: React.Dispatch<React.SetStateAction<AcousticParams>>,
-  setChatHistory: React.Dispatch<React.SetStateAction<ChatMessage[]>>
+  setChatHistory: React.Dispatch<React.SetStateAction<ChatMessage[]>>,
+  onScenarioConfirmed: (scenario: Scenario) => void,
+  assistantScenario: Scenario | null
 ) => {
   const [isAssistantLoading, setIsAssistantLoading] = useState(false);
 
-  const sendMessageToAssistant = async (text: string, history: ChatMessage[], isBackendRunning: boolean | null) => {
+  const sendMessageToAssistant = async (
+    text: string,
+    history: ChatMessage[],
+    isBackendRunning: boolean | null,
+    assistantContext?: { scenario?: Scenario; micTypeOptions?: string[] }
+  ) => {
     if (isBackendRunning === false) {
       setChatHistory(prev => [
         ...prev,
@@ -405,7 +446,11 @@ const useAcousticAssistant = (
         body: JSON.stringify({
           message: text,
           history: history.map(h => ({ role: h.role === 'ai' ? 'assistant' : 'user', content: h.text })),
-          currentParams: params
+          currentParams: {
+            ...params,
+            scenario: assistantScenario || undefined,
+            micTypeOptions: assistantContext?.micTypeOptions || []
+          }
         })
       });
 
@@ -448,6 +493,10 @@ const useAcousticAssistant = (
 
       // 3. 处理参数提取 [UPDATE_PARAM: {...}]
       const extractedPayloads = extractAssistantParamPayloads(fullAiText);
+      const scenarioByAssistant = detectScenarioFromAssistant(fullAiText, extractedPayloads as any);
+      if (scenarioByAssistant) {
+        onScenarioConfirmed(scenarioByAssistant);
+      }
       if (extractedPayloads.length > 0) {
         // 合并所有提取到的参数
         const combinedNormalized = extractedPayloads.reduce((acc, payload) => {
@@ -703,6 +752,7 @@ const parseDifyResponseToResults = (rawText: string): SolutionResult[] => {
 export const useAcousticLogic = () => {
   // --- 基础页面与 UI 状态 ---
   const [isAiBackendRunning, setIsAiBackendRunning] = useState<boolean | null>(null);
+  const aiAutoStartAttemptedRef = useRef(false);
 
   const checkAiStatus = async () => {
     try {
@@ -740,6 +790,13 @@ export const useAcousticLogic = () => {
     return () => clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    if (isAiBackendRunning === false && !aiAutoStartAttemptedRef.current) {
+      aiAutoStartAttemptedRef.current = true;
+      toggleAiBackend('start');
+    }
+  }, [isAiBackendRunning]);
+
   const [currentPage, setCurrentPage] = useState<Page>(Page.SOLUTION);
   const [currentSolutionTab, setCurrentSolutionTab] = useState<SolutionTab>(SolutionTab.DESIGN);
   const [currentResultTab, setCurrentResultTab] = useState<ResultTab>(ResultTab.PLAN);
@@ -760,6 +817,8 @@ export const useAcousticLogic = () => {
   const [equipmentDetailCache, setEquipmentDetailCache] = useState<Record<string, DbInventoryItem>>({});
   const [inventoryOptionsByTable, setInventoryOptionsByTable] = useState<Record<string, DbInventoryItem[]>>({});
   const [history, setHistory] = useState<HistoryRecord[]>([]);
+  const [micTypeOptions, setMicTypeOptions] = useState<string[]>(MIC_TYPES);
+  const [assistantScenario, setAssistantScenario] = useState<Scenario | null>(null);
   const [currentUser, setCurrentUser] = useState<AuthUser>({
     id: 0,
     username: '游客',
@@ -769,6 +828,10 @@ export const useAcousticLogic = () => {
     isGuest: true
   });
   const defaultProjectName = `声学项目_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}_01`;
+  const isAdminUser = (user: AuthUser) => {
+    const role = String(user?.role || '').trim();
+    return role === '管理员' || role.toLowerCase() === 'admin' || role.includes('管理员');
+  };
   const [designState, setDesignState] = useState<DesignState>({
     projectName: defaultProjectName,
     scenario: Scenario.MEETING_ROOM,
@@ -794,11 +857,18 @@ export const useAcousticLogic = () => {
         ...prev,
         chatHistory: typeof updater === 'function' ? updater(prev.chatHistory) : updater
       }));
-    }
+    },
+    (scenario: Scenario) => {
+      setAssistantScenario(scenario);
+      setDesignState(prev => ({ ...prev, scenario }));
+    },
+    assistantScenario
   );
 
   const wrappedSendMessageToAssistant = (text: string) => {
-    return sendMessageToAssistant(text, designState.chatHistory, isAiBackendRunning);
+    return sendMessageToAssistant(text, designState.chatHistory, isAiBackendRunning, {
+      micTypeOptions
+    });
   };
 
   // --- [核心修改] 多表切换与主子表关联逻辑 ---
@@ -895,35 +965,83 @@ export const useAcousticLogic = () => {
     }
   };
 
+  const resolveDetailTableCandidates = (type: string): TableType[] => {
+    if (!type) return [TableType.PERIPHERAL];
+    if (type === TableType.SPEAKER) return [TableType.SPEAKER];
+    if (type === TableType.AMPLIFIER || type === '功放') return [TableType.AMPLIFIER];
+    if (type === TableType.PERIPHERAL) return [TableType.PERIPHERAL];
+    if (type === TableType.FIXED_SCENE_EXTRA) return [TableType.FIXED_SCENE_EXTRA, TableType.NON_FIXED_SCENE_EXTRA];
+    if (type === TableType.NON_FIXED_SCENE_EXTRA) return [TableType.NON_FIXED_SCENE_EXTRA, TableType.FIXED_SCENE_EXTRA];
+    if (SUBSYSTEM_DEVICE_TYPES.has(type)) {
+      return [TableType.FIXED_SCENE_EXTRA, TableType.NON_FIXED_SCENE_EXTRA];
+    }
+    if (type.includes('定阻功放') || type.includes('功放')) {
+      return [TableType.AMPLIFIER];
+    }
+    if (type.includes('音箱')) {
+      return [TableType.SPEAKER];
+    }
+    return [TableType.PERIPHERAL];
+  };
+
   const getCachedEquipmentDetail = (item: EquipmentItem) => {
-    const table = normalizeTableName(item.type);
-    if (!table) return null;
-    const key = buildEquipmentKey(table, item.model, item.name);
-    return equipmentDetailCache[key] || null;
+    const tables = resolveDetailTableCandidates(item.type);
+    for (const table of tables) {
+      const key = buildEquipmentKey(table, item.model, item.name);
+      if (equipmentDetailCache[key]) return equipmentDetailCache[key];
+    }
+    return null;
   };
 
   const fetchEquipmentDetail = async (item: EquipmentItem) => {
-    const table = normalizeTableName(item.type);
-    if (!table) return null;
-    const key = buildEquipmentKey(table, item.model, item.name);
-    if (equipmentDetailCache[key]) return equipmentDetailCache[key];
+    const tables = resolveDetailTableCandidates(item.type);
+    for (const table of tables) {
+      const key = buildEquipmentKey(table, item.model, item.name);
+      if (equipmentDetailCache[key]) return equipmentDetailCache[key];
 
-    const params = new URLSearchParams();
-    if (item.model) params.set('model', item.model);
-    if (item.name) params.set('name', item.name);
-
-    try {
-      const response = await fetch(`${API_BASE}/api/inventory/${encodeURIComponent(table)}/detail?${params.toString()}`);
-      if (!response.ok) return null;
-      const detail = await response.json();
-      if (detail) {
-        setEquipmentDetailCache(prev => ({ ...prev, [key]: detail }));
-        return detail as DbInventoryItem;
+      const params = new URLSearchParams();
+      if (item.model) {
+        params.set('model', item.model);
+      } else if (item.name) {
+        params.set('name', item.name);
+      } else {
+        continue;
       }
-    } catch (error) {
-      console.error('❌ Failed to fetch equipment detail:', error);
+
+      try {
+        const response = await fetch(`${API_BASE}/api/inventory/${encodeURIComponent(table)}/detail?${params.toString()}`);
+        if (!response.ok) continue;
+        const detail = await response.json();
+        if (detail) {
+          setEquipmentDetailCache(prev => ({ ...prev, [key]: detail }));
+          return detail as DbInventoryItem;
+        }
+      } catch (error) {
+        console.error('❌ Failed to fetch equipment detail:', error);
+      }
     }
     return null;
+  };
+
+  const fetchMicTypeOptions = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/inventory/${encodeURIComponent(TableType.PERIPHERAL)}`);
+      if (!response.ok) throw new Error(`Fetch mic types failed: ${response.status}`);
+      const data = await response.json();
+      const rows: DbInventoryItem[] = Array.isArray(data) ? data : [];
+      const options = Array.from(new Set(
+        rows
+          .filter((row) => row.类型 === '话筒' || String(row.产品名称 || '').includes('话筒'))
+          .map((row) => String(row.产品名称 || '').trim())
+          .filter(Boolean)
+      ));
+      if (options.length > 0) {
+        setMicTypeOptions(options);
+      }
+    } catch (error) {
+      console.error('❌ Failed to fetch mic types:', error);
+      setMicTypeOptions(MIC_TYPES);
+    }
   };
 
   const ensureInventoryOptions = async (table: TableType) => {
@@ -967,6 +1085,10 @@ export const useAcousticLogic = () => {
     fetchInventoryByTable(activeTable);
   }, [activeTable]);
 
+  useEffect(() => {
+    fetchMicTypeOptions();
+  }, []);
+
   const fetchUsers = async () => {
     try {
       const response = await fetch(`${API_BASE}/api/users`);
@@ -996,10 +1118,10 @@ export const useAcousticLogic = () => {
 
   useEffect(() => {
     fetchHistory(currentUser);
-    if (currentUser.role === '管理员') {
+    if (isAdminUser(currentUser)) {
       fetchUsers();
     }
-    if (currentPage === Page.MANAGEMENT && currentUser.role !== '管理员') {
+    if ((currentPage === Page.MANAGEMENT || currentPage === Page.USERS) && !isAdminUser(currentUser)) {
       setCurrentPage(Page.SOLUTION);
     }
   }, [currentUser]);
@@ -1027,7 +1149,8 @@ export const useAcousticLogic = () => {
 
   const addMic = () => {
     setDesignState(prev => {
-      const nextMics = [...(prev.params.mics || []), { id: uuidv4(), type: MIC_TYPES[0], count: 1 }];
+      const defaultMicType = micTypeOptions[0] || MIC_TYPES[0];
+      const nextMics = [...(prev.params.mics || []), { id: uuidv4(), type: defaultMicType, count: 1 }];
       return {
         ...prev,
         params: {
@@ -1079,7 +1202,9 @@ export const useAcousticLogic = () => {
     if (!chatInputValue.trim() || isAssistantLoading) return;
     const msg = chatInputValue;
     setChatInputValue("");
-    await sendMessageToAssistant(msg, designState.chatHistory, isAiBackendRunning);
+    await sendMessageToAssistant(msg, designState.chatHistory, isAiBackendRunning, {
+      micTypeOptions
+    });
   };
 
 
@@ -1223,17 +1348,35 @@ if (designState.scenario === Scenario.LECTURE_HALL) {
 
     // 🔑 解析结构化方案
     const parsedResults = parseDifyResponseToResults(rawText);
+    const enrichedResults = await Promise.all(
+      parsedResults.map(async (res) => {
+        const enrichedItems = await Promise.all(
+          res.items.map(async (item) => {
+            const detail = await fetchEquipmentDetail(item);
+            if (!detail) return item;
+            return {
+              ...item,
+              name: detail.产品名称 || item.name,
+              model: detail.型号 || item.model,
+              brand: detail.品牌 || item.brand,
+              unitPrice: Number(detail.市场价) || item.unitPrice || 0
+            };
+          })
+        );
+        return { ...res, items: enrichedItems };
+      })
+    );
 
     setDesignState((prev) => ({
       ...prev,
       isDesigned: true,
-      results: parsedResults,
+      results: enrichedResults,
       activeResultIndex: 0,
       chatHistory: [
         ...prev.chatHistory,
         {
           role: 'ai',
-          text: parsedResults.length > 0
+          text: enrichedResults.length > 0
             ? '方案已经设计完成请查看列表'
             : '❌ 方案生成失败，请检查后端日志。',
           timestamp: new Date(),
@@ -1250,7 +1393,7 @@ if (designState.scenario === Scenario.LECTURE_HALL) {
       projectName: designState.projectName,
       scenario: designState.scenario,
       params: designState.params,
-      results: parsedResults.map((res) => ({
+      results: enrichedResults.map((res) => ({
         ...res,
         simulationImage: '',
         wordLink: res.wordLink || '',
@@ -1440,6 +1583,36 @@ const handleDownload = (type: 'EXCEL' | 'WORD' | 'PNG', scope: 'CURRENT' | 'ALL'
     ? [designState.results[designState.activeResultIndex]].filter(Boolean)
     : designState.results;
 
+  if (type === 'EXCEL') {
+    const rows: Array<Record<string, string | number>> = [];
+    results.forEach((res) => {
+      res.items.forEach((item) => {
+        const unitPrice = Number(item.unitPrice || 0);
+        const qty = Number(item.quantity || 0);
+        rows.push({
+          方案: res.title,
+          设备分类: item.type || '',
+          品牌: item.brand || '',
+          产品名称: item.name || '',
+          型号: item.model || '',
+          数量: qty,
+          单价: unitPrice,
+          小计: unitPrice * qty
+        });
+      });
+    });
+    if (rows.length === 0) {
+      alert('当前没有可导出的设备数据。');
+      return;
+    }
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, '设备清单');
+    const fileName = `${designState.projectName || '声学方案'}_${scope === 'CURRENT' ? '当前方案' : '全部方案'}_设备清单.xlsx`;
+    XLSX.writeFile(workbook, fileName);
+    return;
+  }
+
   const missing: string[] = [];
   results.forEach(res => {
     const link = type === 'WORD' ? res.wordLink : res.excelLink;
@@ -1579,6 +1752,7 @@ const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
     currentUser,
     history,
     setHistory,
+    micTypeOptions,
     addMic,
     removeMic,
     handleMicChange,

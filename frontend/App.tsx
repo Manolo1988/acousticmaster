@@ -18,6 +18,82 @@ declare global {
 type ResultView = 'TABLE' | 'WORD';
 const UI_SCALE = 1.5;
 
+type FieldType = 'text' | 'number' | 'select';
+type FieldConfig = {
+  key: string;
+  label: string;
+  type: FieldType;
+  required?: boolean;
+  options?: string[];
+  placeholder?: string;
+  defaultValue?: string | number;
+};
+
+const FIXED_SCENES = [
+  '400人以上报告厅',
+  '300-400人报告厅',
+  '60-80平方会议室',
+  '30-60平方会议室',
+  '30平方以下会议室'
+];
+
+const NON_FIXED_SCENES = ['270平方以上', '90-270平方', '90平方以下'];
+const SPEAKER_TYPES = ['全频音箱', '线阵列音箱', '台唇音箱', '拉声像音箱', '返听音箱', '超低音箱'];
+const PERIPHERAL_TYPES = ['调音台', '电源时序器', '音频处理器', '话筒', '天线放大系统'];
+const EXTRA_DEVICE_TYPES = ['中控系统', '矩阵', '视频会议系统', '录播系统'];
+
+const TABLE_FIELD_CONFIG: Record<TableType, FieldConfig[]> = {
+  [TableType.FIXED_COMBINATION]: [
+    { key: '场景', label: '场景', type: 'select', options: FIXED_SCENES, required: true },
+    { key: '类型', label: '类型', type: 'select', options: SPEAKER_TYPES, required: true },
+    { key: '型号', label: '型号', type: 'text', required: true, placeholder: '型号（与音箱表一致）' }
+  ],
+  [TableType.SPEAKER]: [
+    { key: '类型', label: '类型', type: 'select', options: SPEAKER_TYPES, required: true },
+    { key: '品牌', label: '品牌', type: 'text', required: true },
+    { key: '产品名称', label: '产品名称', type: 'text', required: true },
+    { key: '型号', label: '型号', type: 'text', required: true },
+    { key: '市场价', label: '市场价', type: 'number', required: true, defaultValue: 0 },
+    { key: '额定阻抗', label: '额定阻抗', type: 'text', placeholder: '如 8Ω' },
+    { key: '额定功率', label: '额定功率', type: 'text', placeholder: '如 200W' },
+    { key: '灵敏度', label: '灵敏度', type: 'text', placeholder: '如 93dB' },
+    { key: '最大声压级', label: '最大声压级', type: 'text', placeholder: '如 120dB' },
+    { key: '覆盖角', label: '覆盖角', type: 'text', placeholder: '如 90°×60°' },
+    { key: '面高', label: '面高', type: 'number', placeholder: '单位米，如 0.4' }
+  ],
+  [TableType.AMPLIFIER]: [
+    { key: '类型', label: '类型', type: 'text', required: true, defaultValue: '定阻功放' },
+    { key: '产品名称', label: '产品名称', type: 'text', required: true },
+    { key: '型号', label: '型号', type: 'text', required: true },
+    { key: '市场价', label: '市场价', type: 'number', required: true, defaultValue: 0 },
+    { key: '额定功率', label: '额定功率', type: 'text', required: true },
+    { key: '额定阻抗', label: '额定阻抗', type: 'text', required: true },
+    { key: '通道数', label: '通道数', type: 'text', required: true }
+  ],
+  [TableType.PERIPHERAL]: [
+    { key: '类型', label: '类型', type: 'select', options: PERIPHERAL_TYPES, required: true },
+    { key: '产品名称', label: '产品名称', type: 'text', required: true },
+    { key: '型号', label: '型号', type: 'text', required: true },
+    { key: '输入通道', label: '输入通道', type: 'number' },
+    { key: '输出通道', label: '输出通道', type: 'number' },
+    { key: '市场价', label: '市场价', type: 'number', required: true, defaultValue: 0 }
+  ],
+  [TableType.FIXED_SCENE_EXTRA]: [
+    { key: '场景', label: '场景', type: 'select', options: FIXED_SCENES, required: true },
+    { key: '类型', label: '类型', type: 'select', options: EXTRA_DEVICE_TYPES, required: true },
+    { key: '产品名称', label: '产品名称', type: 'text', required: true },
+    { key: '型号', label: '型号', type: 'text', required: true },
+    { key: '数量', label: '数量', type: 'number', required: true, defaultValue: 1 }
+  ],
+  [TableType.NON_FIXED_SCENE_EXTRA]: [
+    { key: '场景', label: '场景', type: 'select', options: NON_FIXED_SCENES, required: true },
+    { key: '类型', label: '类型', type: 'select', options: EXTRA_DEVICE_TYPES, required: true },
+    { key: '产品名称', label: '产品名称', type: 'text', required: true },
+    { key: '型号', label: '型号', type: 'text', required: true },
+    { key: '数量', label: '数量', type: 'number', required: true, defaultValue: 1 }
+  ]
+};
+
 const App: React.FC = () => {
   const logic = useAcousticLogic();
   const [activeResultView, setActiveResultView] = useState<ResultView>('TABLE');
@@ -93,6 +169,46 @@ const App: React.FC = () => {
         {logic.sortConfig.direction === 'asc' ? '▲' : '▼'}
       </span>
     );
+  };
+
+  const getFieldsByTable = (table: TableType) => TABLE_FIELD_CONFIG[table] || [];
+
+  const getDisplayColumns = (table: TableType, rows: DbInventoryItem[]) => {
+    const preferred = getFieldsByTable(table).map((f) => f.key);
+    const dynamic = new Set<string>();
+    rows.forEach((row) => {
+      Object.keys(row || {}).forEach((key) => {
+        if (key !== 'id' && key !== 'isChild') {
+          dynamic.add(key);
+        }
+      });
+    });
+    const merged = [...preferred, ...Array.from(dynamic).filter((k) => !preferred.includes(k))];
+    return merged;
+  };
+
+  const buildPayloadFromForm = (prefix: string, table: TableType) => {
+    const payload: Record<string, any> = {};
+    const fields = getFieldsByTable(table);
+    fields.forEach((field) => {
+      const element = document.getElementById(`${prefix}-${field.key}`) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null;
+      if (!element) return;
+      let value: any = element.value;
+      if (field.type === 'number') {
+        value = value === '' ? null : Number(value);
+        if (!Number.isFinite(value)) value = null;
+      }
+      if (typeof value === 'string') value = value.trim();
+      if (value === '' || value === null) {
+        if (field.required) {
+          value = field.defaultValue ?? (field.type === 'number' ? 0 : '');
+        } else {
+          return;
+        }
+      }
+      payload[field.key] = value;
+    });
+    return payload;
   };
 
   useEffect(() => {
@@ -594,11 +710,11 @@ const App: React.FC = () => {
                                       : item.type === '功放'
                                         ? TableType.AMPLIFIER
                                         : item.type === '线阵列配套'
-                                          ? TableType.LINE_ARRAY
+                                          ? TableType.SPEAKER
                                           : item.type === '周边设备'
                                             ? TableType.PERIPHERAL
-                                            : item.type === '其他设备'
-                                              ? TableType.OTHER
+                                          : ['中控系统', '矩阵', '视频会议系统', '录播系统'].includes(item.type)
+                                            ? TableType.FIXED_SCENE_EXTRA
                                               : null;
 
                                     if (table) {
@@ -801,54 +917,26 @@ const App: React.FC = () => {
           <table className="w-full text-left text-[11px]">
             <thead className="sticky top-0 bg-white border-b">
               <tr>
-                <th className="px-6 py-4 font-black text-slate-400">
-                  <button onClick={() => toggleSort('品牌')} className="flex items-center">
-                    品牌{renderSortArrow('品牌')}
-                  </button>
-                </th>
-                <th className="px-6 py-4 font-black text-slate-400">产品名称</th>
-                <th className="px-6 py-4 font-black text-slate-400">型号</th>
-                <th className="px-6 py-4 font-black text-slate-400">
-                  <button onClick={() => toggleSort('市场价')} className="flex items-center">
-                    市场价{renderSortArrow('市场价')}
-                  </button>
-                </th>
-                {logic.activeTable === TableType.SPEAKER ? (
-                  <>
-                    <th className="px-6 py-4 font-black text-slate-400">额定功率</th>
-                    <th className="px-6 py-4 font-black text-slate-400">
-                      <button onClick={() => toggleSort('最大声压级')} className="flex items-center">
-                        最大声压级{renderSortArrow('最大声压级')}
-                      </button>
-                    </th>
-                  </>
-                ) : (
-                  <>
-                    <th className="px-6 py-4 font-black text-slate-400">描述</th>
-                    <th className="px-6 py-4 font-black text-slate-400">场景</th>
-                  </>
-                )}
+                {getDisplayColumns(logic.activeTable, logic.inventory).map((col) => (
+                  <th key={col} className="px-6 py-4 font-black text-slate-400">
+                    {col}
+                  </th>
+                ))}
                 <th className="px-6 py-4 text-right pr-6">管理</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
               {logic.inventory.map((item) => (
                 <tr key={item.id} className="hover:bg-slate-50">
-                  <td className="px-6 py-4 font-bold">{item.品牌}</td>
-                  <td className="px-6 py-4">{item.产品名称}</td>
-                  <td className="px-6 py-4 font-mono text-slate-400">{item.型号}</td>
-                  <td className="px-6 py-4 font-black text-slate-900">¥{item.市场价}</td>
-                  {logic.activeTable === TableType.SPEAKER ? (
-                    <>
-                      <td className="px-6 py-4">{item.额定功率}</td>
-                      <td className="px-6 py-4">{item.最大声压级}</td>
-                    </>
-                  ) : (
-                    <>
-                      <td className="px-6 py-4 truncate max-w-[150px]">{item.描述}</td>
-                      <td className="px-6 py-4">{item.场景}</td>
-                    </>
-                  )}
+                  {getDisplayColumns(logic.activeTable, logic.inventory).map((col) => {
+                    const value = (item as any)[col];
+                    const displayValue = Array.isArray(value) ? value.join(' / ') : (value ?? '');
+                    return (
+                      <td key={`${item.id}-${col}`} className="px-6 py-4 text-slate-700">
+                        {col === '市场价' && displayValue !== '' ? `¥${displayValue}` : String(displayValue)}
+                      </td>
+                    );
+                  })}
                   <td className="px-6 py-4 text-right pr-6 space-x-2">
                     <button onClick={() => setEditingEq(item)} className="text-blue-600 font-bold">编辑</button>
                     <button
@@ -1312,35 +1400,30 @@ const App: React.FC = () => {
               <div className="space-y-4">
                 <label className="text-[10px] font-black text-slate-400 uppercase ml-1">第二步：填写设备属性</label>
                 <div className="grid grid-cols-2 gap-4">
-                  {/* 无论什么类型都有的通用基础项 */}
-                  <input id="new-brand" placeholder="品牌 (必填)" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" />
-                  <input id="new-name" placeholder="产品名称 (必填)" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" />
-                  <input id="new-model" placeholder="型号" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" />
-                  <input id="new-price" type="number" placeholder="市场价 (¥)" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" />
-
-                  {/* --- 动态字段渲染逻辑 --- */}
-                  {tempType === TableType.SPEAKER ? (
-                    <>
-                      {/* 音箱特有项 */}
-                      <input id="new-res" placeholder="额定阻抗" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none" />
-                      <input id="new-pwr" placeholder="额定功率" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none" />
-                      <input id="new-sens" placeholder="灵敏度" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none" />
-                      <input id="new-spl" placeholder="最大声压级" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none" />
-                      <input id="new-cov" placeholder="覆盖角" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none" />
-                      <input id="new-usage" placeholder="主要用途" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none" />
-                    </>
-                  ) : (
-                    <>
-                      {/* 其他设备特有项 */}
-                      <input id="new-type" placeholder="具体子类型 (如：数字音频处理器)" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none" />
-                      <select id="new-scene" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none">
-                        <option value="通用">适用场景：通用</option>
-                        <option value="会议室">适用场景：会议室</option>
-                        <option value="报告厅">适用场景：报告厅</option>
-                      </select>
-                      <textarea id="new-desc" placeholder="请输入详细描述或备注信息..." className="col-span-2 w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-[12px] h-24 resize-none outline-none focus:bg-white" />
-                    </>
-                  )}
+                  {getFieldsByTable(tempType).map((field) => (
+                    <div key={`new-${field.key}`} className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-500 ml-1">{field.label}</label>
+                      {field.type === 'select' ? (
+                        <select
+                          id={`new-${field.key}`}
+                          defaultValue={field.options?.[0] || ''}
+                          className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none"
+                        >
+                          {(field.options || []).map((opt) => (
+                            <option key={opt} value={opt}>{opt}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          id={`new-${field.key}`}
+                          type={field.type === 'number' ? 'number' : 'text'}
+                          defaultValue={field.defaultValue ?? ''}
+                          placeholder={field.placeholder || `${field.label}${field.required ? ' (必填)' : ''}`}
+                          className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none"
+                        />
+                      )}
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
@@ -1350,21 +1433,7 @@ const App: React.FC = () => {
               <button onClick={() => setIsAddingEq(false)} className="flex-1 py-3.5 rounded-2xl border text-slate-400 font-black text-[11px] uppercase tracking-widest hover:bg-slate-50 transition-all">取消</button>
               <button
                 onClick={() => {
-                  const payload = {
-                    类型: tempType,
-                    品牌: (document.getElementById('new-brand') as HTMLInputElement).value,
-                    产品名称: (document.getElementById('new-name') as HTMLInputElement).value,
-                    型号: (document.getElementById('new-model') as HTMLInputElement).value,
-                    市场价: parseFloat((document.getElementById('new-price') as HTMLInputElement).value) || 0,
-                    // 根据当前 tempType 收集对应的特定字段
-                    ...(tempType === TableType.SPEAKER ? {
-                      额定功率: (document.getElementById('new-pwr') as HTMLInputElement).value,
-                      最大声压级: (document.getElementById('new-spl') as HTMLInputElement).value,
-                    } : {
-                      描述: (document.getElementById('new-desc') as HTMLTextAreaElement).value,
-                      场景: (document.getElementById('new-scene') as HTMLSelectElement).value,
-                    })
-                  };
+                  const payload = buildPayloadFromForm('new', tempType);
                   logic.handleSaveEquipment(tempType, payload);
                   setIsAddingEq(false);
                 }}
@@ -1387,31 +1456,30 @@ const App: React.FC = () => {
 
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
-                <input id="edit-brand" defaultValue={editingEq.品牌} placeholder="品牌" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" />
-                <input id="edit-name" defaultValue={editingEq.产品名称} placeholder="产品名称" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" />
-                <input id="edit-model" defaultValue={editingEq.型号} placeholder="型号" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" />
-                <input id="edit-price" defaultValue={editingEq.市场价} type="number" placeholder="市场价" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none" />
-
-                {logic.activeTable === TableType.SPEAKER ? (
-                  <>
-                    <input id="edit-res" defaultValue={editingEq.额定阻抗} placeholder="额定阻抗" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none" />
-                    <input id="edit-pwr" defaultValue={editingEq.额定功率} placeholder="额定功率" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none" />
-                    <input id="edit-sens" defaultValue={editingEq.灵敏度} placeholder="灵敏度" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none" />
-                    <input id="edit-spl" defaultValue={editingEq.最大声压级} placeholder="最大声压级" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none" />
-                    <input id="edit-cov" defaultValue={editingEq.覆盖角} placeholder="覆盖角" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none" />
-                    <input id="edit-usage" defaultValue={editingEq.用途} placeholder="主要用途" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none" />
-                  </>
-                ) : (
-                  <>
-                    <input id="edit-type" defaultValue={editingEq.类型} placeholder="具体子类型" className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none" />
-                    <select id="edit-scene" defaultValue={editingEq.场景 || '通用'} className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none">
-                      <option value="通用">适用场景：通用</option>
-                      <option value="会议室">适用场景：会议室</option>
-                      <option value="报告厅">适用场景：报告厅</option>
-                    </select>
-                    <textarea id="edit-desc" defaultValue={editingEq.描述} placeholder="请输入详细描述或备注信息..." className="col-span-2 w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-[12px] h-24 resize-none outline-none focus:bg-white" />
-                  </>
-                )}
+                {getFieldsByTable(logic.activeTable).map((field) => (
+                  <div key={`edit-${field.key}`} className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-500 ml-1">{field.label}</label>
+                    {field.type === 'select' ? (
+                      <select
+                        id={`edit-${field.key}`}
+                        defaultValue={String((editingEq as any)[field.key] ?? field.options?.[0] ?? '')}
+                        className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none"
+                      >
+                        {(field.options || []).map((opt) => (
+                          <option key={opt} value={opt}>{opt}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        id={`edit-${field.key}`}
+                        type={field.type === 'number' ? 'number' : 'text'}
+                        defaultValue={String((editingEq as any)[field.key] ?? field.defaultValue ?? '')}
+                        placeholder={field.placeholder || field.label}
+                        className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none"
+                      />
+                    )}
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -1419,24 +1487,7 @@ const App: React.FC = () => {
               <button onClick={() => setEditingEq(null)} className="flex-1 py-3.5 rounded-2xl border text-slate-400 font-black text-[11px] uppercase tracking-widest hover:bg-slate-50 transition-all">取消</button>
               <button
                 onClick={() => {
-                  const payload = {
-                    品牌: (document.getElementById('edit-brand') as HTMLInputElement).value,
-                    产品名称: (document.getElementById('edit-name') as HTMLInputElement).value,
-                    型号: (document.getElementById('edit-model') as HTMLInputElement).value,
-                    市场价: parseFloat((document.getElementById('edit-price') as HTMLInputElement).value) || 0,
-                    ...(logic.activeTable === TableType.SPEAKER ? {
-                      额定阻抗: (document.getElementById('edit-res') as HTMLInputElement).value,
-                      额定功率: (document.getElementById('edit-pwr') as HTMLInputElement).value,
-                      灵敏度: (document.getElementById('edit-sens') as HTMLInputElement).value,
-                      最大声压级: (document.getElementById('edit-spl') as HTMLInputElement).value,
-                      覆盖角: (document.getElementById('edit-cov') as HTMLInputElement).value,
-                      用途: (document.getElementById('edit-usage') as HTMLInputElement).value,
-                    } : {
-                      类型: (document.getElementById('edit-type') as HTMLInputElement).value,
-                      场景: (document.getElementById('edit-scene') as HTMLSelectElement).value,
-                      描述: (document.getElementById('edit-desc') as HTMLTextAreaElement).value,
-                    })
-                  };
+                  const payload = buildPayloadFromForm('edit', logic.activeTable);
                   logic.updateInventoryItem(logic.activeTable, editingEq.id, payload);
                   setEditingEq(null);
                 }}

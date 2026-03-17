@@ -1,6 +1,7 @@
 #!/bin/bash
 
-PROJECT_ROOT="/home/ubuntu/zdh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="${PROJECT_ROOT:-$SCRIPT_DIR}"
 SERVER_PATTERN="node .*backend/server\\.js"
 
 # 配置

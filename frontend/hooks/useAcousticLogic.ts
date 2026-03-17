@@ -12,6 +12,7 @@ import { v4 as uuidv4 } from 'uuid';
 declare global {
   interface ImportMetaEnv {
     readonly VITE_API_BASE?: string;
+    readonly DEV?: boolean;
     // add other env variables here if needed
   }
   interface ImportMeta {
@@ -29,12 +30,19 @@ const SYSTEM_API_BASE = API_BASE;
 const AI_CHAT_API_BASE = API_BASE;
 
 const TABLE_NAME_MAP: Record<string, TableType> = {
+  固定搭配: TableType.FIXED_COMBINATION,
   音箱: TableType.SPEAKER,
-  线阵列配套: TableType.LINE_ARRAY,
+  线阵列配套: TableType.SPEAKER,
   定阻功放: TableType.AMPLIFIER,
   功放: TableType.AMPLIFIER,
   周边设备: TableType.PERIPHERAL,
-  其他设备: TableType.OTHER
+  固定搭配场景剩余周边设备: TableType.FIXED_SCENE_EXTRA,
+  非固定搭配场景剩余周边设备: TableType.NON_FIXED_SCENE_EXTRA,
+  其他设备: TableType.FIXED_SCENE_EXTRA,
+  中控系统: TableType.FIXED_SCENE_EXTRA,
+  矩阵: TableType.FIXED_SCENE_EXTRA,
+  视频会议系统: TableType.FIXED_SCENE_EXTRA,
+  录播系统: TableType.FIXED_SCENE_EXTRA
 };
 
 const normalizeTableName = (type: string): TableType | null => {
@@ -352,6 +360,14 @@ const formatDifyResult = (result: any): string => {
   return '❌ 方案生成失败，请检查后端日志。';
 };
 
+const stripThinkTags = (text: string) => {
+  if (!text) return '';
+  return text
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<\/?think>/gi, '')
+    .trim();
+};
+
 // ========================================
 // 新增：本地 LLM 对话支持及自动参数提取
 // ========================================
@@ -416,10 +432,11 @@ const useAcousticAssistant = (
             const data = JSON.parse(line.replace('data: ', ''));
             if (data.content) {
               fullAiText += data.content;
+              const safeText = stripThinkTags(fullAiText);
               // 流式更新最后一条消息
               setChatHistory(prev => {
                 const updated = [...prev];
-                updated[updated.length - 1] = { ...updated[updated.length - 1], text: fullAiText };
+                updated[updated.length - 1] = { ...updated[updated.length - 1], text: safeText };
                 return updated;
               });
             }
@@ -443,7 +460,9 @@ const useAcousticAssistant = (
         }
 
         // 静默移除标记，保持 UI 干净
-        const cleanText = fullAiText.replace(/\[UPDATE_PARAM:[\s\S]*?\]/g, "").trim();
+        const cleanText = stripThinkTags(
+          fullAiText.replace(/\[UPDATE_PARAM:[\s\S]*?\]/g, "")
+        );
         setChatHistory(prev => {
           const updated = [...prev];
           updated[updated.length - 1] = { ...updated[updated.length - 1], text: cleanText };
@@ -1181,6 +1200,17 @@ if (designState.scenario === Scenario.LECTURE_HALL) {
   };
 
   console.log("🎯 Acoustic Intent:", acousticIntent);
+  setDesignState(prev => ({
+    ...prev,
+    chatHistory: [
+      ...prev.chatHistory,
+      {
+        role: 'ai',
+        text: '方案制定中，请稍等',
+        timestamp: new Date(),
+      },
+    ],
+  }));
   setIsProcessingAi(true);
 
   try {
@@ -1203,7 +1233,9 @@ if (designState.scenario === Scenario.LECTURE_HALL) {
         ...prev.chatHistory,
         {
           role: 'ai',
-          text: rawText || '❌ 方案生成失败，请检查后端日志。',
+          text: parsedResults.length > 0
+            ? '方案已经设计完成请查看列表'
+            : '❌ 方案生成失败，请检查后端日志。',
           timestamp: new Date(),
         },
       ],

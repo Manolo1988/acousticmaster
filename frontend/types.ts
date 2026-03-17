@@ -139,11 +139,12 @@ export interface HistoryRecord {
 }
 
 export enum TableType {
+  FIXED_COMBINATION = '固定搭配',
   SPEAKER = '音箱',
-  LINE_ARRAY = '线阵列配套',
   AMPLIFIER = '定阻功放',
   PERIPHERAL = '周边设备',
-  OTHER = '其他设备'
+  FIXED_SCENE_EXTRA = '固定搭配场景剩余周边设备',
+  NON_FIXED_SCENE_EXTRA = '非固定搭配场景剩余周边设备'
 }
 export interface DbInventoryItem {
   id: number; // 数据库 int 类型，解决 string 冲突

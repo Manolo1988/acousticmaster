@@ -5,6 +5,7 @@ import axios from "axios";
 import mysql from "mysql2/promise";
 import bcrypt from "bcryptjs";
 import { exec } from "child_process";
+import { existsSync } from "fs";
 
 const app = express();
 const defaultCorsOrigins = [
@@ -36,7 +37,7 @@ const DB_CONFIG = {
   port: Number(process.env.DB_PORT || 3306),
   user: process.env.DB_USER || "user1",
   password: process.env.DB_PASSWORD || "UasbecrD1!1",
-  database: process.env.DB_NAME || "longdata_new",
+  database: process.env.DB_NAME || "equipment",
   charset: "utf8mb4",
   connectionLimit: 10
 };
@@ -44,11 +45,12 @@ const DB_CONFIG = {
 const pool = mysql.createPool(DB_CONFIG);
 const isProduction = process.env.NODE_ENV === 'production';
 const ALLOWED_TABLES = new Set([
+  "固定搭配",
   "音箱",
-  "线阵列配套",
   "定阻功放",
   "周边设备",
-  "其他设备"
+  "固定搭配场景剩余周边设备",
+  "非固定搭配场景剩余周边设备"
 ]);
 
 const getSafeTableName = (table) => {
@@ -99,10 +101,29 @@ const LOCAL_LLM_URL = process.env.LOCAL_LLM_URL || "http://127.0.0.1:11434/v1/ch
 const LOCAL_LLM_MODEL = process.env.LOCAL_LLM_MODEL || "qwen3:32b"; 
 
 // --- 系统管理接口 ---
-const SCRIPT_PATH = "/app/scripts/manage_backend.sh";
+const SCRIPT_PATH_CANDIDATES = [
+  process.env.MANAGE_BACKEND_SCRIPT,
+  "/app/scripts/manage_backend.sh",
+  "/app/manage_backend.sh",
+  "/home/ubuntu/sunlong/acousticmaster/manage_backend.sh",
+  "/home/ubuntu/zdh/manage_backend.sh"
+].filter(Boolean);
+
+const SCRIPT_PATH = SCRIPT_PATH_CANDIDATES.find((candidate) => existsSync(candidate)) || SCRIPT_PATH_CANDIDATES[0];
+const hasManageScript = !!SCRIPT_PATH && existsSync(SCRIPT_PATH);
+
+const runManageScript = (action, callback) => {
+  if (!hasManageScript) {
+    return callback(new Error(`manage_backend.sh not found. candidates=${SCRIPT_PATH_CANDIDATES.join(",")}`), "", "");
+  }
+  exec(`bash \"${SCRIPT_PATH}\" ${action}`, callback);
+};
 
 app.get("/api/system/ai-status", (req, res) => {
-  exec(`${SCRIPT_PATH} status`, (error, stdout, stderr) => {
+  runManageScript("status", (error, stdout, stderr) => {
+    if (error) {
+      return res.status(500).json({ error: stderr || error.message });
+    }
     const isRunning = stdout.includes("正在运行");
     res.json({ isRunning, raw: stdout });
   });
@@ -121,7 +142,9 @@ app.post("/api/system/ai-toggle", (req, res) => {
     res.json({ success: true, message: "Stopping service..." });
     setTimeout(() => {
       console.log("[AI-TOGGLE] Executing stop script...");
-      exec(`${SCRIPT_PATH} stop`);
+      runManageScript("stop", () => {
+        // intentionally ignore async stop result to avoid blocking current response
+      });
     }, 500);
     return;
   }
@@ -129,14 +152,17 @@ app.post("/api/system/ai-toggle", (req, res) => {
   // 如果是开启
   if (action === 'start') {
     // 检查是否已经在运行
-    exec(`${SCRIPT_PATH} status`, (err, stdout) => {
+    runManageScript("status", (err, stdout, stderr) => {
+      if (err) {
+        return res.status(500).json({ error: stderr || err.message });
+      }
       if (stdout.includes("正在运行")) {
         return res.json({ success: true, message: "Service is already running." });
       }
       
       // 如果没运行（实际上这种逻辑很难在当前进程执行，因为如果没运行，接口就不会响应）
       // 所以 'start' 逻辑通常是给另一个独立管理进程用的，或者这里做个 restart
-      exec(`${SCRIPT_PATH} start`, (error, stdout, stderr) => {
+      runManageScript("start", (error, stdout, stderr) => {
         if (error) return res.status(500).json({ error: stderr || error.message });
         res.json({ success: true, message: stdout });
       });
@@ -165,7 +191,10 @@ app.post("/api/chat-assistant", async (req, res) => {
    - **然后**给出详细清晰的参数总结清单。
    - **最后**指引用户说若信息未更新请输入更新全部参数，若信息没问题则点击页面下方的“启动方案设计”按钮。
 5. 键名参考：length, width, height, micHandheld, micGooseneck, micOmni, micLavalier, micCeiling, hasCentralControl, hasMatrix, hasVideoConf, hasRecording。
-6. 不要输出 <think> 标签。`;
+6. 不要输出 <think> 标签。
+7. 当你引导用户填写话筒配置时，必须先提示默认建议：
+  - 报告厅默认：手领（型号 KU102）2个，鹅颈话筒（型号 KU204）2个。
+  - 会议室默认：手领（型号 KU102）2个。`;
 
   try {
     // 设置 Server-Sent Events (SSE) 头部供流式输出
@@ -240,11 +269,9 @@ app.post("/api/run-dify-chatflow", async (req, res) => {
   }
 
   // === ⚠️ 替换为你自己的 Dify 信息（可用环境变量覆盖） ===
-  // const DIFY_API_KEY = "app-TUFsI5nY9v9e6ZEUXiNvISuZ"; // ← 已保留你的 key
-  const DIFY_API_KEY = process.env.DIFY_API_KEY || "app-NB3lEaGg14fyON5fYhENY1oV";
-  const DIFY_CHAT_API_URL = isProduction
-    ? process.env.DIFY_CHAT_API_URL || "http://115.231.236.153:20000/v1/chat-messages"
-    : "http://0.0.0.0:3002/v1/chat-messages"; // 自建地址
+  // const DIFY_API_KEY = "app-NB3lEaGg14fyON5fYhENY1oV"; // ← 已保留你的 key 
+  const DIFY_API_KEY = process.env.DIFY_API_KEY || "app-rmJ6pmkpBuf4KGAChHYrcZBP";
+  const DIFY_CHAT_API_URL = process.env.DIFY_CHAT_API_URL || "http://115.231.236.153:20000/v1/chat-messages";
   const queryText = isProduction ? "请执行声学方案设计流程。" : "请执行声学方案设计流程（测试）。";
   const maskKey = (key) => key ? `${key.slice(0, 4)}...${key.slice(-4)}` : "(empty)";
   console.log(`🔐 Dify config: url=${DIFY_CHAT_API_URL}, key=${maskKey(DIFY_API_KEY)}`);

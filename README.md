@@ -99,6 +99,7 @@ npm run build
 ```bash
 cd docker
 docker-compose up -d --build
+sudo docker restart acoustic-nginx
 ```
 
 > _访问地址：[http://115.231.236.153:8100](http://115.231.236.153:8100)_

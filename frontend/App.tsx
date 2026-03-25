@@ -368,19 +368,19 @@ const App: React.FC = () => {
   );
 
   const renderSolutionSidebar = () => (
-    <div className={`w-[290px] ${theme.lightBg} border-r border-slate-200 flex flex-col shrink-0 min-h-0 h-full overflow-hidden`}>
-      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-3 flex flex-col space-y-3">
-        <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2">
+    <div className={`w-[268px] ${theme.lightBg} border-r border-slate-200 flex flex-col shrink-0 min-h-0 h-full overflow-hidden`}>
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-2.5 flex flex-col space-y-2.5">
+        <div className="bg-white p-2.5 rounded-lg shadow-sm border border-slate-100 space-y-1.5">
           <div className="flex items-center justify-between border-b pb-1">
-            <h3 className={`text-[10px] font-black ${themeText} uppercase tracking-widest`}>项目名称</h3>
-            <span className="text-[9px] font-bold text-slate-400">用于导出文档</span>
+            <h3 className={`text-[11px] font-black ${themeText} uppercase tracking-widest`}>项目名称</h3>
+            <span className="text-[10px] font-bold text-slate-400">用于导出文档</span>
           </div>
           <input
             type="text"
             value={logic.designState.projectName}
             onChange={e => logic.handleUpdateProjectName(e.target.value)}
             placeholder="请输入项目名称..."
-            className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-2 text-[12px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`}
+            className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1.5 text-[13px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`}
           />
         </div>
 
@@ -388,112 +388,112 @@ const App: React.FC = () => {
           <div className="bg-slate-200/40 p-0.5 rounded-lg flex border border-slate-200 shadow-inner">
             <button
               onClick={() => logic.handleParamChange('scenario', Scenario.MEETING_ROOM)}
-              className={`flex-1 py-1 rounded-md text-[11px] font-bold transition-all ${logic.designState.scenario === Scenario.MEETING_ROOM ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}
+              className={`flex-1 py-1 rounded-md text-[12px] font-bold transition-all ${logic.designState.scenario === Scenario.MEETING_ROOM ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}
             >
               会议室
             </button>
             <button
               onClick={() => logic.handleParamChange('scenario', Scenario.LECTURE_HALL)}
-              className={`flex-1 py-1 rounded-md text-[11px] font-bold transition-all ${logic.designState.scenario === Scenario.LECTURE_HALL ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-500'}`}
+              className={`flex-1 py-1 rounded-md text-[12px] font-bold transition-all ${logic.designState.scenario === Scenario.LECTURE_HALL ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-500'}`}
             >
               报告厅
             </button>
           </div>
-          <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2 mt-3">
-            <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b pb-1">物理参数 (M)</h3>
-            <div className="grid grid-cols-2 gap-2">
+          <div className="bg-white p-2.5 rounded-lg shadow-sm border border-slate-100 space-y-1.5 mt-2.5">
+            <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-widest border-b pb-1">物理参数 (M)</h3>
+            <div className="grid grid-cols-2 gap-1.5">
               <div>
-                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">房间长</label>
-                <input type="number" value={logic.designState.params.length} onChange={e => logic.handleParamChange('length', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
+                <label className="text-[10px] text-slate-400 font-bold mb-0.5 block">房间长</label>
+                <input type="number" value={logic.designState.params.length} onChange={e => logic.handleParamChange('length', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[13px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
               </div>
               <div>
-                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">房间宽</label>
-                <input type="number" value={logic.designState.params.width} onChange={e => logic.handleParamChange('width', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
+                <label className="text-[10px] text-slate-400 font-bold mb-0.5 block">房间宽</label>
+                <input type="number" value={logic.designState.params.width} onChange={e => logic.handleParamChange('width', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[13px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
               </div>
               <div className="col-span-2">
-                <label className="text-[9px] text-slate-400 font-bold mb-0.5 block">安装高度</label>
-                <input type="number" value={logic.designState.params.height} onChange={e => logic.handleParamChange('height', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
+                <label className="text-[10px] text-slate-400 font-bold mb-0.5 block">安装高度</label>
+                <input type="number" value={logic.designState.params.height} onChange={e => logic.handleParamChange('height', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[13px] font-bold ${themeText} outline-none focus:bg-white focus:ring-1 focus:ring-opacity-20 ring-${theme.color}`} />
               </div>
 
               {logic.designState.scenario === Scenario.LECTURE_HALL && (
-                <div className="col-span-2 grid grid-cols-2 gap-2 pt-1 border-t border-slate-50">
+                <div className="col-span-2 grid grid-cols-2 gap-1.5 pt-1 border-t border-slate-50">
                   <div>
-                    <label className="text-[9px] text-slate-400 font-bold mb-0.5 block leading-tight">台口至最近</label>
-                    <input type="number" value={logic.designState.params.stageToNearAudience} onChange={e => logic.handleParamChange('stageToNearAudience', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold outline-none ${themeText}`} />
+                    <label className="text-[10px] text-slate-400 font-bold mb-0.5 block leading-tight">台口至最近</label>
+                    <input type="number" value={logic.designState.params.stageToNearAudience} onChange={e => logic.handleParamChange('stageToNearAudience', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[13px] font-bold outline-none ${themeText}`} />
                   </div>
                   <div>
-                    <label className="text-[9px] text-slate-400 font-bold mb-0.5 block leading-tight">台口至最远</label>
-                    <input type="number" value={logic.designState.params.stageToFarAudience} onChange={e => logic.handleParamChange('stageToFarAudience', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold outline-none ${themeText}`} />
+                    <label className="text-[10px] text-slate-400 font-bold mb-0.5 block leading-tight">台口至最远</label>
+                    <input type="number" value={logic.designState.params.stageToFarAudience} onChange={e => logic.handleParamChange('stageToFarAudience', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[13px] font-bold outline-none ${themeText}`} />
                   </div>
                   <div>
-                    <label className="text-[9px] text-slate-400 font-bold mb-0.5 block leading-tight">台口宽度</label>
-                    <input type="number" value={logic.designState.params.stageWidth} onChange={e => logic.handleParamChange('stageWidth', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold outline-none ${themeText}`} />
+                    <label className="text-[10px] text-slate-400 font-bold mb-0.5 block leading-tight">台口宽度</label>
+                    <input type="number" value={logic.designState.params.stageWidth} onChange={e => logic.handleParamChange('stageWidth', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[13px] font-bold outline-none ${themeText}`} />
                   </div>
                   <div>
-                    <label className="text-[9px] text-slate-400 font-bold mb-0.5 block leading-tight">舞台深度</label>
-                    <input type="number" value={logic.designState.params.stageDepth} onChange={e => logic.handleParamChange('stageDepth', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[12px] font-bold outline-none ${themeText}`} />
+                    <label className="text-[10px] text-slate-400 font-bold mb-0.5 block leading-tight">舞台深度</label>
+                    <input type="number" value={logic.designState.params.stageDepth} onChange={e => logic.handleParamChange('stageDepth', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[13px] font-bold outline-none ${themeText}`} />
                   </div>
                 </div>
               )}
             </div>
           </div>
 
-          <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2 mt-3">
+          <div className="bg-white p-2.5 rounded-lg shadow-sm border border-slate-100 space-y-1.5 mt-2.5">
             <div className="flex items-center justify-between border-b pb-1">
-              <h3 className={`text-[10px] font-black ${themeText} uppercase tracking-widest`}>话筒配置</h3>
+              <h3 className={`text-[11px] font-black ${themeText} uppercase tracking-widest`}>话筒配置</h3>
               <button onClick={logic.addMic} className={`text-[8px] font-black px-1.5 py-0.5 rounded border ${themeText} ${themeBorder} bg-slate-50 hover:bg-white transition-colors`}>+ 添加</button>
             </div>
             <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
               {logic.designState.params.mics.map(m => (
                 <div key={m.id} className="flex items-center space-x-1.5 group">
-                  <select value={m.type} onChange={e => logic.handleParamChange('mics', logic.designState.params.mics.map(mic => mic.id === m.id ? { ...mic, type: e.target.value } : mic))} className="flex-1 bg-slate-50 border border-slate-100 rounded px-1.5 py-1 text-[11px] font-bold outline-none">
+                  <select value={m.type} onChange={e => logic.handleParamChange('mics', logic.designState.params.mics.map(mic => mic.id === m.id ? { ...mic, type: e.target.value } : mic))} className="flex-1 bg-slate-50 border border-slate-100 rounded px-1.5 py-1 text-[12px] font-bold outline-none">
                     {logic.micTypeOptions.map(t => <option key={t} value={t}>{t}</option>)}
                   </select>
-                  <input type="number" value={m.count} onChange={e => logic.handleMicChange(m.id, parseInt(e.target.value))} className={`w-8 bg-white border border-slate-200 rounded py-1 text-center text-[11px] font-bold ${themeText} outline-none`} />
+                  <input type="number" value={m.count} onChange={e => logic.handleMicChange(m.id, parseInt(e.target.value))} className={`w-7 bg-white border border-slate-200 rounded py-1 text-center text-[12px] font-bold ${themeText} outline-none`} />
                   <button onClick={() => logic.removeMic(m.id)} className="text-slate-300 hover:text-red-500 text-[9px] px-0.5">✕</button>
                 </div>
               ))}
             </div>
           </div>
 
-          <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2 mt-3">
-            <h3 className="text-[10px] font-black text-slate-400 border-b pb-1 uppercase tracking-widest">配套子系统</h3>
+          <div className="bg-white p-2.5 rounded-lg shadow-sm border border-slate-100 space-y-1.5 mt-2.5">
+            <h3 className="text-[11px] font-black text-slate-400 border-b pb-1 uppercase tracking-widest">配套子系统</h3>
             <div className="grid grid-cols-2 gap-1.5">
               {[
                 { id: 'hasCentralControl', l: '中控' }, { id: 'hasMatrix', l: '矩阵' }, { id: 'hasVideoConf', l: '视频' }, { id: 'hasRecording', l: '录播' }
               ].map(sys => (
                 <label key={sys.id} className="flex items-center space-x-1.5 bg-slate-50/50 p-1.5 rounded border border-slate-100 cursor-pointer hover:bg-white transition-all">
                   <input type="checkbox" checked={(logic.designState.params as any)[sys.id]} onChange={e => logic.handleParamChange(sys.id as any, e.target.checked)} className={`w-3 h-3 rounded accent-${theme.color.split('-')[0]}`} />
-                  <span className="text-[10px] font-bold text-slate-600">{sys.l}</span>
+                  <span className="text-[11px] font-bold text-slate-600">{sys.l}</span>
                 </label>
               ))}
             </div>
           </div>
 
-          <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-1.5 flex-1 mt-3">
-            <h3 className="text-[10px] font-black text-slate-400 border-b pb-1 uppercase tracking-widest">其他需求</h3>
+          <div className="bg-white p-2.5 rounded-lg shadow-sm border border-slate-100 space-y-1.5 flex-1 mt-2.5">
+            <h3 className="text-[11px] font-black text-slate-400 border-b pb-1 uppercase tracking-widest">其他需求</h3>
             <textarea
               value={logic.designState.params.extraRequirements}
               onChange={e => logic.handleParamChange('extraRequirements', e.target.value)}
               placeholder="补充品牌偏好等..."
-              className="w-full bg-slate-50 border border-slate-100 rounded px-2 py-1.5 text-[11px] font-medium outline-none h-14 resize-none focus:bg-white transition-all"
+              className="w-full bg-slate-50 border border-slate-100 rounded px-2 py-1.5 text-[12px] font-medium outline-none h-12 resize-none focus:bg-white transition-all"
             />
           </div>
         </div>
 
-        <div className="bg-white p-3 rounded-lg shadow-sm border border-slate-100 space-y-2">
-          <h3 className="text-[10px] font-black text-slate-400 border-b pb-1 uppercase tracking-widest">环境图纸</h3>
+        <div className="bg-white p-2.5 rounded-lg shadow-sm border border-slate-100 space-y-1.5">
+          <h3 className="text-[11px] font-black text-slate-400 border-b pb-1 uppercase tracking-widest">环境图纸</h3>
           <label className="flex flex-col items-center justify-center w-full h-12 border-2 border-dashed border-slate-200 rounded-lg cursor-pointer hover:bg-slate-50 transition-all">
             <div className="flex flex-col items-center justify-center">
               <svg className="w-4 h-4 text-slate-400 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>
-              <p className="text-[8px] text-slate-500 font-bold uppercase">上传 CAD 图纸 (JPG/PNG)</p>
+              <p className="text-[9px] text-slate-500 font-bold uppercase">上传 CAD 图纸 (JPG/PNG)</p>
             </div>
             <input type="file" className="hidden" accept="image/*" onChange={logic.handleBlueprintUpload} />
           </label>
         </div>
       </div>
-      <div className="p-3 pt-0">
-        <button onClick={logic.startDesign} disabled={logic.isProcessingAi} className={`w-full py-2.5 ${themeBg} text-white rounded-lg font-bold text-[13px] shadow-lg hover:brightness-110 transition-all shrink-0 uppercase tracking-widest`}>
+      <div className="p-2.5 pt-0">
+        <button onClick={logic.startDesign} disabled={logic.isProcessingAi} className={`w-full py-2 ${themeBg} text-white rounded-lg font-bold text-[13px] shadow-lg hover:brightness-110 transition-all shrink-0 uppercase tracking-widest`}>
           {logic.isProcessingAi ? '生成中...' : '启动方案设计'}
         </button>
       </div>
@@ -714,7 +714,33 @@ const App: React.FC = () => {
                               <td className="px-5 py-2.5 text-slate-600 font-bold">{getItemBrand(item) || '--'}</td>
                               <td className="px-5 py-2.5 font-bold text-slate-900">{item.name}</td>
                               <td className="px-5 py-2.5 text-slate-400 font-mono text-[10px]">{item.model}</td>
-                              <td className={`px-5 py-2.5 font-black text-center ${themeText}`}>{item.quantity}</td>
+                              <td className="px-5 py-2.5 text-center">
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={1}
+                                  value={item.quantity}
+                                  onChange={(e) => {
+                                    const nextQuantity = Number(e.target.value);
+                                    logic.setDesignState((prev) => {
+                                      const newResults = [...prev.results];
+                                      const targetResult = newResults[prev.activeResultIndex];
+                                      if (!targetResult) return prev;
+                                      const nextItems = [...targetResult.items];
+                                      nextItems[idx] = {
+                                        ...nextItems[idx],
+                                        quantity: Number.isFinite(nextQuantity) ? Math.max(0, Math.floor(nextQuantity)) : 0
+                                      };
+                                      newResults[prev.activeResultIndex] = {
+                                        ...targetResult,
+                                        items: nextItems
+                                      };
+                                      return { ...prev, results: newResults };
+                                    });
+                                  }}
+                                  className={`w-16 bg-white border border-slate-200 rounded px-2 py-1 text-center text-[11px] font-black ${themeText} outline-none focus:ring-1 focus:ring-slate-300`}
+                                />
+                              </td>
                               <td className="px-5 py-2.5 text-right font-black text-slate-700">¥{getItemUnitPrice(item).toLocaleString()}</td>
                               <td className="px-5 py-2.5 text-right space-x-3 pr-5">
                                 <button

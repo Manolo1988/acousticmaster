@@ -274,7 +274,7 @@ app.post("/api/run-dify-chatflow", async (req, res) => {
 
   // === ⚠️ 替换为你自己的 Dify 信息（可用环境变量覆盖） ===
   // const DIFY_API_KEY = "app-NB3lEaGg14fyON5fYhENY1oV"; // ← 已保留你的 key 
-  const DIFY_API_KEY = process.env.DIFY_API_KEY || "app-rmJ6pmkpBuf4KGAChHYrcZBP";
+  const DIFY_API_KEY = "app-rmJ6pmkpBuf4KGAChHYrcZBP";
   const DIFY_CHAT_API_URL = process.env.DIFY_CHAT_API_URL || "http://115.231.236.153:20000/v1/chat-messages";
   const queryText = isProduction ? "请执行声学方案设计流程。" : "请执行声学方案设计流程（测试）。";
   const maskKey = (key) => key ? `${key.slice(0, 4)}...${key.slice(-4)}` : "(empty)";

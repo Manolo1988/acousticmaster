@@ -95,9 +95,7 @@ const TABLE_FIELD_CONFIG: Record<TableType, FieldConfig[]> = {
 
 const App: React.FC = () => {
   const logic = useAcousticLogic();
-  const isAdminUser = String(logic.currentUser?.role || '').trim() === '管理员'
-    || String(logic.currentUser?.role || '').toLowerCase() === 'admin'
-    || String(logic.currentUser?.role || '').includes('管理员');
+  const isAdminUser = ['管理员', 'admin'].includes(String(logic.currentUser?.role || '').trim().toLowerCase());
   const [activeResultView, setActiveResultView] = useState<ResultView>('TABLE');
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -122,6 +120,9 @@ const App: React.FC = () => {
   const [replacementId, setReplacementId] = useState<number | ''>('');
   const [editingOptions, setEditingOptions] = useState<DbInventoryItem[]>([]);
   const [isReplacementPickerOpen, setIsReplacementPickerOpen] = useState(false);
+  const [solutionSidebarWidth, setSolutionSidebarWidth] = useState(360);
+  const [isResizingSolutionLayout, setIsResizingSolutionLayout] = useState(false);
+  const solutionResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
   const [tempType, setTempType] = useState<TableType>(logic.activeTable);
   const activeResult = logic.designState.results[logic.designState.activeResultIndex];
@@ -252,6 +253,38 @@ const App: React.FC = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  useEffect(() => {
+    if (!isResizingSolutionLayout) return;
+
+    const handleMouseMove = (event: MouseEvent) => {
+      if (!solutionResizeRef.current) return;
+      const deltaX = event.clientX - solutionResizeRef.current.startX;
+      const nextWidth = Math.max(320, Math.min(560, solutionResizeRef.current.startWidth + deltaX));
+      setSolutionSidebarWidth(nextWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingSolutionLayout(false);
+      solutionResizeRef.current = null;
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizingSolutionLayout]);
+
+  const startSolutionResize = (event: React.MouseEvent<HTMLDivElement>) => {
+    solutionResizeRef.current = {
+      startX: event.clientX,
+      startWidth: solutionSidebarWidth
+    };
+    setIsResizingSolutionLayout(true);
+  };
+
   const renderTopNav = () => (
     <header className="bg-white border-b h-11 px-5 flex items-center justify-between z-50 shrink-0 shadow-sm relative">
       <div className="flex items-center space-x-6">
@@ -368,7 +401,10 @@ const App: React.FC = () => {
   );
 
   const renderSolutionSidebar = () => (
-    <div className={`w-[268px] ${theme.lightBg} border-r border-slate-200 flex flex-col shrink-0 min-h-0 h-full overflow-hidden`}>
+    <div
+      style={{ width: `${solutionSidebarWidth}px` }}
+      className={`${theme.lightBg} border-r border-slate-200 flex flex-col shrink-0 min-h-0 h-full overflow-hidden`}
+    >
       <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-2.5 flex flex-col space-y-2.5">
         <div className="bg-white p-2.5 rounded-lg shadow-sm border border-slate-100 space-y-1.5">
           <div className="flex items-center justify-between border-b pb-1">
@@ -1410,10 +1446,15 @@ const App: React.FC = () => {
     <div className={`${theme.lightBg} h-screen overflow-hidden text-slate-900 font-sans`}>
       <div className="flex flex-col h-full min-h-0">
       {renderTopNav()}
-      <main className="flex-1 flex overflow-hidden min-h-0">
+      <main className={`flex-1 flex overflow-hidden min-h-0 ${isResizingSolutionLayout ? 'select-none' : ''}`}>
         {logic.currentPage === Page.SOLUTION && (
           <>
             {renderSolutionSidebar()}
+            <div
+              onMouseDown={startSolutionResize}
+              className={`w-1.5 shrink-0 cursor-col-resize transition-colors ${isResizingSolutionLayout ? 'bg-slate-300' : 'bg-slate-200 hover:bg-slate-300'}`}
+              title="拖动调整左右区域宽度"
+            />
             {renderSolutionView()}
           </>
         )}

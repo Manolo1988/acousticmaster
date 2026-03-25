@@ -829,8 +829,8 @@ export const useAcousticLogic = () => {
   });
   const defaultProjectName = `声学项目_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}_01`;
   const isAdminUser = (user: AuthUser) => {
-    const role = String(user?.role || '').trim();
-    return role === '管理员' || role.toLowerCase() === 'admin' || role.includes('管理员');
+    const role = String(user?.role || '').trim().toLowerCase();
+    return role === '管理员' || role === 'admin';
   };
   const [designState, setDesignState] = useState<DesignState>({
     projectName: defaultProjectName,

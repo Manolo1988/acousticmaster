@@ -22,7 +22,7 @@ declare global {
 }
 
 const rawApiBase = import.meta.env.VITE_API_BASE ?? "";
-const fallbackApiBase = import.meta.env.DEV ? "http://localhost:3002" : "";
+const fallbackApiBase = import.meta.env.DEV ? "http://115.231.236.153:3002" : "";
 const API_BASE = (rawApiBase || fallbackApiBase).replace(/\/+$/, "");
 
 console.log(`🔗 Using API base: ${API_BASE}`);

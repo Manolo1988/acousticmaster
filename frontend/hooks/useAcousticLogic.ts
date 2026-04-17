@@ -13,7 +13,6 @@ import * as XLSX from 'xlsx';
 declare global {
   interface ImportMetaEnv {
     readonly VITE_API_BASE?: string;
-    readonly DEV?: boolean;
     // add other env variables here if needed
   }
   interface ImportMeta {
@@ -24,6 +23,137 @@ declare global {
 const rawApiBase = import.meta.env.VITE_API_BASE ?? "";
 const fallbackApiBase = import.meta.env.DEV ? "http://115.231.236.153:3002" : "";
 const API_BASE = (rawApiBase || fallbackApiBase).replace(/\/+$/, "");
+const resolveBackendLink = (link: string) => {
+  if (!link) return '';
+  if (/^https?:\/\//i.test(link)) return link;
+  if (link.startsWith('/')) return `${API_BASE}${link}`;
+  return `${API_BASE}/${link.replace(/^\/+/, '')}`;
+};
+
+const buildReportPrintDomId = (resultId: string) => `report-print-${resultId}`;
+
+type ReportChapterConfig = { key: string; title: string };
+
+const REPORT_CHAPTERS: ReportChapterConfig[] = [
+  { key: 'project_overview', title: '项目概述' },
+  { key: 'design_basis_target', title: '设计依据和目标' },
+  { key: 'solution_design', title: '方案设计' },
+  { key: 'equipment_intro', title: '设备介绍' },
+  { key: 'decoration_suggestion', title: '装修建议' },
+  { key: 'environment_requirements', title: '环境要求' }
+];
+
+const createInitialReportChapters = () =>
+  REPORT_CHAPTERS.map((chapter) => ({
+    key: chapter.key,
+    title: chapter.title,
+    markdown: '',
+    status: 'pending' as const,
+    error: ''
+  }));
+
+const buildPrintWindowStyles = () => {
+  const styleTags = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]'))
+    .map((node) => node.outerHTML)
+    .join('\n');
+
+  const printPaginationStyles = `
+<style>
+@page {
+  size: A4;
+  margin: 20mm;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #fff;
+}
+
+.pdf-print-root {
+  width: 100%;
+}
+
+.pdf-print-section {
+  break-inside: avoid-page;
+  page-break-inside: avoid;
+}
+
+.pdf-print-section + .pdf-print-section {
+  break-before: page;
+  page-break-before: always;
+}
+
+@media print {
+  .markdown-report {
+    break-inside: avoid-page;
+    page-break-inside: avoid;
+  }
+
+  .markdown-report h1,
+  .markdown-report h2,
+  .markdown-report h3,
+  .markdown-report h4 {
+    break-after: avoid-page;
+    page-break-after: avoid;
+    break-inside: avoid-page;
+    page-break-inside: avoid;
+    orphans: 3;
+    widows: 3;
+  }
+
+  .markdown-report h1 + *,
+  .markdown-report h2 + *,
+  .markdown-report h3 + *,
+  .markdown-report h4 + * {
+    break-before: avoid-page;
+    page-break-before: avoid;
+  }
+
+  .markdown-report p,
+  .markdown-report li,
+  .markdown-report ul,
+  .markdown-report ol,
+  .markdown-report table,
+  .markdown-report thead,
+  .markdown-report tbody,
+  .markdown-report tr,
+  .markdown-report td,
+  .markdown-report th,
+  .markdown-report pre,
+  .markdown-report blockquote,
+  .markdown-report img,
+  .markdown-report .katex,
+  .markdown-report .katex-display,
+  .markdown-report hr {
+    break-inside: avoid-page;
+    page-break-inside: avoid;
+    orphans: 3;
+    widows: 3;
+  }
+
+  .markdown-report h2::after {
+    break-inside: avoid-page;
+    page-break-inside: avoid;
+  }
+
+  .markdown-report ul + ul,
+  .markdown-report ol + ol,
+  .markdown-report ul + ol,
+  .markdown-report ol + ul {
+    break-before: avoid-page;
+    page-break-before: avoid;
+  }
+
+  .markdown-report .toc-heading {
+    break-after: avoid-page;
+    page-break-after: avoid;
+  }
+}
+</style>`;
+
+  return `${styleTags}\n${printPaginationStyles}`;
+};
 
 console.log(`🔗 Using API base: ${API_BASE}`);
 
@@ -139,6 +269,14 @@ const MIC_TYPE_ALIASES: Record<string, string> = {
   吊装: '吊装话筒'
 };
 
+const MIC_KEYWORD_TO_PARAM_KEY: Array<{ keywords: string[]; key: keyof AcousticParams }> = [
+  { keywords: ['手持', '无线手持', 'ku102', '手领'], key: 'micHandheld' },
+  { keywords: ['鹅颈', '会议鹅颈', 'ku204'], key: 'micGooseneck' },
+  { keywords: ['全向', '阵列', '全向阵列'], key: 'micOmni' },
+  { keywords: ['领夹'], key: 'micLavalier' },
+  { keywords: ['吊装', '吊麦', '吊顶'], key: 'micCeiling' }
+];
+
 const MIC_TYPE_TO_PARAM_KEY: Record<string, keyof AcousticParams> = {
   手持无线话筒: 'micHandheld',
   鹅颈会议话筒: 'micGooseneck',
@@ -155,7 +293,7 @@ const MIC_PARAM_TO_TYPE: Record<string, string> = {
   micCeiling: '吊装话筒'
 };
 
-const normalizeMicType = (raw: string) => {
+const normalizeMicTypeForCount = (raw: string) => {
   const trimmed = raw.trim();
   if (!trimmed) return MIC_TYPES[0];
   const alias = MIC_TYPE_ALIASES[trimmed];
@@ -164,6 +302,24 @@ const normalizeMicType = (raw: string) => {
   if (exact) return exact;
   const fuzzy = MIC_TYPES.find(t => t.includes(trimmed) || trimmed.includes(t));
   return fuzzy || trimmed;
+};
+
+const normalizeMicDisplayType = (raw: string) => {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return '';
+  return trimmed;
+};
+
+const resolveMicParamKey = (micType: string): keyof AcousticParams | null => {
+  const normalized = normalizeMicTypeForCount(micType);
+  const directKey = MIC_TYPE_TO_PARAM_KEY[normalized];
+  if (directKey) return directKey;
+
+  const sample = String(micType || '').toLowerCase();
+  const matched = MIC_KEYWORD_TO_PARAM_KEY.find(({ keywords }) =>
+    keywords.some((keyword) => sample.includes(keyword.toLowerCase()))
+  );
+  return matched ? matched.key : null;
 };
 
 const normalizeMicListValue = (value: any): MicConfig[] => {
@@ -175,13 +331,36 @@ const normalizeMicListValue = (value: any): MicConfig[] => {
         ? item.name
         : typeof item?.label === 'string'
           ? item.label
-          : MIC_TYPES[0];
+          : '';
     const countRaw = item?.count ?? item?.qty ?? item?.quantity ?? 1;
     const countNum = typeof countRaw === 'number' ? countRaw : parseInt(String(countRaw), 10);
     return {
       id: typeof item?.id === 'string' ? item.id : `${Date.now()}-${index}`,
-      type: normalizeMicType(String(typeRaw)),
+      type: normalizeMicDisplayType(String(typeRaw)),
       count: Number.isFinite(countNum) ? Math.max(0, countNum) : 1
+    };
+  });
+};
+
+const normalizeMicsToDbOptions = (mics: MicConfig[], options: string[]): MicConfig[] => {
+  const normalizedOptions = Array.from(new Set((options || []).map((item) => String(item || '').trim()).filter(Boolean)));
+  if (normalizedOptions.length === 0) {
+    return (mics || []).map((mic) => ({ ...mic, type: '' }));
+  }
+
+  const optionSet = new Set(normalizedOptions);
+  const fallback = normalizedOptions[0];
+  return (mics || []).map((mic) => {
+    const type = String(mic?.type || '').trim();
+    if (optionSet.has(type)) {
+      return {
+        ...mic,
+        type
+      };
+    }
+    return {
+      ...mic,
+      type: fallback
     };
   });
 };
@@ -194,8 +373,9 @@ const buildMicCounts = (mics: MicConfig[]) => {
     micLavalier: 0,
     micCeiling: 0
   };
+  type MicCountKey = keyof typeof base;
   mics.forEach(mic => {
-    const key = MIC_TYPE_TO_PARAM_KEY[mic.type];
+    const key = resolveMicParamKey(mic.type) as MicCountKey | null;
     if (key) {
       base[key] += Number.isFinite(mic.count) ? mic.count : 0;
     }
@@ -817,7 +997,7 @@ export const useAcousticLogic = () => {
   const [equipmentDetailCache, setEquipmentDetailCache] = useState<Record<string, DbInventoryItem>>({});
   const [inventoryOptionsByTable, setInventoryOptionsByTable] = useState<Record<string, DbInventoryItem[]>>({});
   const [history, setHistory] = useState<HistoryRecord[]>([]);
-  const [micTypeOptions, setMicTypeOptions] = useState<string[]>(MIC_TYPES);
+  const [micTypeOptions, setMicTypeOptions] = useState<string[]>([]);
   const [assistantScenario, setAssistantScenario] = useState<Scenario | null>(null);
   const [currentUser, setCurrentUser] = useState<AuthUser>({
     id: 0,
@@ -891,7 +1071,7 @@ export const useAcousticLogic = () => {
       result = sortedResult;
     }
     if (searchFilters.品牌) {
-      result = result.filter(item => item.品牌.toLowerCase().includes(searchFilters.品牌.toLowerCase()));
+      result = result.filter(item => String(item.品牌 || '').toLowerCase().includes(searchFilters.品牌.toLowerCase()));
     }
     if (searchFilters.产品名称) {
       result = result.filter(item => item.产品名称.toLowerCase().includes(searchFilters.产品名称.toLowerCase()));
@@ -1037,12 +1217,38 @@ export const useAcousticLogic = () => {
       ));
       if (options.length > 0) {
         setMicTypeOptions(options);
+      } else {
+        setMicTypeOptions([]);
       }
     } catch (error) {
       console.error('❌ Failed to fetch mic types:', error);
-      setMicTypeOptions(MIC_TYPES);
+      setMicTypeOptions([]);
     }
   };
+
+  useEffect(() => {
+    setDesignState((prev) => {
+      const currentMics = prev.params.mics || [];
+      if (currentMics.length === 0) return prev;
+
+      const normalizedMics = normalizeMicsToDbOptions(currentMics, micTypeOptions);
+      const hasChanged = normalizedMics.some((mic, index) => {
+        const before = currentMics[index];
+        return !before || mic.type !== before.type || mic.count !== before.count || mic.id !== before.id;
+      });
+
+      if (!hasChanged) return prev;
+
+      return {
+        ...prev,
+        params: {
+          ...prev.params,
+          mics: normalizedMics,
+          ...buildMicCounts(normalizedMics)
+        }
+      };
+    });
+  }, [micTypeOptions]);
 
   const ensureInventoryOptions = async (table: TableType) => {
     if (inventoryOptionsByTable[table]?.length) return;
@@ -1133,7 +1339,7 @@ export const useAcousticLogic = () => {
       return;
     }
     if (key === 'mics') {
-      const list = normalizeMicListValue(value);
+      const list = normalizeMicsToDbOptions(normalizeMicListValue(value), micTypeOptions);
       setDesignState(prev => ({
         ...prev,
         params: {
@@ -1149,7 +1355,8 @@ export const useAcousticLogic = () => {
 
   const addMic = () => {
     setDesignState(prev => {
-      const defaultMicType = micTypeOptions[0] || MIC_TYPES[0];
+      const defaultMicType = micTypeOptions[0] || '';
+      if (!defaultMicType) return prev;
       const nextMics = [...(prev.params.mics || []), { id: uuidv4(), type: defaultMicType, count: 1 }];
       return {
         ...prev,
@@ -1233,10 +1440,10 @@ if (designState.scenario === Scenario.LECTURE_HALL) {
   const {
     length,
     width,
-    stageToNearAudience,
-    stageToFarAudience,
-    stageWidth,
-    stageDepth,
+    stageToNearAudience = 0,
+    stageToFarAudience = 0,
+    stageWidth = 0,
+    stageDepth = 0,
   } = designState.params;
 
   // 1. 四个报告厅参数必须 > 0
@@ -1300,6 +1507,15 @@ if (designState.scenario === Scenario.LECTURE_HALL) {
         }
       : baseGeometry;
 
+  const difyMics = ((designState.params.mics && designState.params.mics.length)
+    ? designState.params.mics
+    : buildMicListFromCounts(designState.params)
+  ).map((mic) => ({
+    id: mic.id,
+    type: normalizeMicDisplayType(mic.type),
+    count: Number.isFinite(mic.count) ? Math.max(0, mic.count) : 0
+  })).filter((mic) => mic.count > 0);
+
   const acousticIntent = {
     schema_version: "v1",
     intent_type: "acoustic_design",
@@ -1308,9 +1524,7 @@ if (designState.scenario === Scenario.LECTURE_HALL) {
       geometry, // ✅ 动态结构
     },
     processingSignals: {
-      mics: (designState.params.mics && designState.params.mics.length)
-        ? designState.params.mics
-        : buildMicListFromCounts(designState.params),
+      mics: difyMics,
       subsystems: {
         hasCentralControl: designState.params.hasCentralControl,
         hasMatrix: designState.params.hasMatrix,
@@ -1341,7 +1555,7 @@ if (designState.scenario === Scenario.LECTURE_HALL) {
   try {
     const apiResult = await submitDesign(acousticIntent, {
       userId: currentUser.isGuest ? null : currentUser.id,
-      guestId: currentUser.isGuest ? currentUser.guestId : null,
+      guestId: currentUser.isGuest ? (currentUser.guestId ?? null) : null,
       username: currentUser.username
     });
     const rawText = apiResult?.raw_answer ?? apiResult?.answer ?? apiResult?.data?.answer ?? '';
@@ -1469,26 +1683,141 @@ const deleteItem = (resIdx: number, itemIdx: number) => {
 };
 
 // --- 2. 实现 handleGenerateReports (生成正式报告) ---
-const handleGenerateReports = (scope: 'CURRENT' | 'ALL') => {
+const handleGenerateReports = async (scope: 'CURRENT' | 'ALL') => {
+  const targets = scope === 'CURRENT'
+    ? [designState.results[designState.activeResultIndex]].filter(Boolean)
+    : designState.results;
+
+  if (targets.length === 0) {
+    alert('当前没有可生成报告的方案。');
+    return;
+  }
+
+  const targetIdSet = new Set(targets.map((item) => String(item.id)));
+
+  setDesignState((prev) => ({
+    ...prev,
+    results: prev.results.map((res) => {
+      if (!targetIdSet.has(String(res.id))) return res;
+      return {
+        ...res,
+        chapters: [],
+        reportGenerationStatus: 'generating',
+        reportGenerationError: '',
+        markdownRaw: '',
+        markdownProcessed: '',
+        postProcessReport: undefined
+      };
+    })
+  }));
+
   setIsGeneratingDocs(true);
-  setTimeout(() => {
-    setDesignState(prev => {
-      const newResults = [...prev.results];
-      if (scope === 'CURRENT') {
-        const current = newResults[prev.activeResultIndex];
-        if (current) {
-          current.lastReportSignature = buildItemsSignature(current.items);
-        }
-      } else {
-        newResults.forEach(r => {
-          r.lastReportSignature = buildItemsSignature(r.items);
-        });
-      }
-      return { ...prev, results: newResults };
+  try {
+    const response = await fetch(`${API_BASE}/api/plan/generate-markdowns`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        projectName: designState.projectName,
+        scenario: designState.scenario,
+        params: designState.params,
+        plans: targets.map(plan => ({
+          id: plan.id,
+          title: plan.title,
+          items: plan.items
+        }))
+      })
     });
+
+    const responseData = await response.json().catch(() => ({} as any));
+    if (!response.ok) {
+      throw new Error(String(responseData?.error || `Generate markdown failed: ${response.status}`));
+    }
+
+    const generated = Array.isArray(responseData?.generated) ? responseData.generated : [];
+    const failed = Array.isArray(responseData?.failed) ? responseData.failed : [];
+
+    const matchByIdOrTitle = (entry: any, target: SolutionResult) => {
+      const entryId = entry?.id != null ? String(entry.id) : '';
+      const targetId = String(target.id);
+      if (entryId && entryId === targetId) return true;
+      const entryTitle = String(entry?.title || '').trim();
+      const targetTitle = String(target.title || '').trim();
+      return !!entryTitle && !!targetTitle && entryTitle === targetTitle;
+    };
+
+    const generatedByTargetId = new Map<string, any>();
+    const failedByTargetId = new Map<string, any>();
+    targets.forEach((target) => {
+      const matchedGenerated = generated.find((item: any) => matchByIdOrTitle(item, target));
+      if (matchedGenerated) {
+        generatedByTargetId.set(String(target.id), matchedGenerated);
+        return;
+      }
+
+      const matchedFailed = failed.find((item: any) => matchByIdOrTitle(item, target));
+      if (matchedFailed) {
+        failedByTargetId.set(String(target.id), matchedFailed);
+      }
+    });
+
+    const successCount = generatedByTargetId.size;
+    const errorCount = Math.max(0, targets.length - successCount);
+
+    setDesignState((prev) => ({
+      ...prev,
+      results: prev.results.map((res) => {
+        if (!targetIdSet.has(String(res.id))) return res;
+
+        const matchedGenerated = generatedByTargetId.get(String(res.id));
+        if (matchedGenerated) {
+          return {
+            ...res,
+            markdownRaw: String(matchedGenerated.markdownRaw || ''),
+            markdownProcessed: String(matchedGenerated.markdownProcessed || ''),
+            postProcessReport: matchedGenerated.postProcessReport || undefined,
+            wordLink: matchedGenerated.docLink ? resolveBackendLink(String(matchedGenerated.docLink)) : (res.wordLink || ''),
+            reportGenerationStatus: 'done',
+            reportGenerationError: '',
+            chapters: [],
+            lastReportSignature: buildItemsSignature(res.items)
+          };
+        }
+
+        const matchedFailed = failedByTargetId.get(String(res.id));
+        return {
+          ...res,
+          reportGenerationStatus: 'error',
+          reportGenerationError: String(matchedFailed?.message || '方案生成失败，请稍后重试。'),
+          chapters: []
+        };
+      })
+    }));
+
+    if (successCount > 0 && errorCount === 0) {
+      alert(scope === 'CURRENT' ? '当前方案生成已完成' : '所有方案生成已完成');
+    } else if (successCount > 0) {
+      alert('方案生成已结束：部分方案生成失败，请重试。');
+    } else {
+      alert('方案生成失败，请检查后端日志后重试。');
+    }
+  } catch (error) {
+    console.error('❌ Generate markdowns failed:', error);
+    setDesignState((prev) => ({
+      ...prev,
+      results: prev.results.map((res) => {
+        if (!targetIdSet.has(String(res.id))) return res;
+        return {
+          ...res,
+          reportGenerationStatus: 'error',
+          reportGenerationError: '方案生成失败，请稍后重试。',
+          chapters: []
+        };
+      })
+    }));
+    alert('方案生成失败，请检查后端日志。');
+  } finally {
     setIsGeneratingDocs(false);
-    alert(scope === 'CURRENT' ? "当前方案报告已生成" : "所有方案报告已生成");
-  }, 800);
+  }
 };
 
 // --- 3. 实现 deleteUser (用户管理中的删除) ---
@@ -1571,8 +1900,118 @@ const updateProfile = async (updates: Partial<User> & { password?: string }) => 
     return false;
   }
 };
+const exportPdfFromDomIds = async (domIds: string[], outputTitle: string) => {
+  const uniqueIds = Array.from(new Set((domIds || []).filter(Boolean)));
+  const sections = uniqueIds
+    .map((id) => document.getElementById(id))
+    .filter((el): el is HTMLElement => !!el)
+    .map((el) => `<section class="pdf-print-section">${el.outerHTML}</section>`)
+    .join('\n');
+
+  if (!sections) {
+    alert('未找到可导出的报告内容，请先生成正式报告。');
+    return false;
+  }
+
+  const styles = buildPrintWindowStyles();
+  const safeTitle = `${outputTitle || '声学方案'}_PDF`;
+
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('aria-hidden', 'true');
+  iframe.style.position = 'fixed';
+  iframe.style.right = '0';
+  iframe.style.bottom = '0';
+  iframe.style.width = '0';
+  iframe.style.height = '0';
+  iframe.style.opacity = '0';
+  iframe.style.pointerEvents = 'none';
+  iframe.style.border = '0';
+  document.body.appendChild(iframe);
+
+  const frameDoc = iframe.contentDocument || iframe.contentWindow?.document;
+  const frameWin = iframe.contentWindow;
+  if (!frameDoc || !frameWin) {
+    iframe.remove();
+    alert('导出初始化失败，请重试。');
+    return false;
+  }
+
+  frameDoc.open();
+  frameDoc.write(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${safeTitle}</title>
+  ${styles}
+</head>
+<body>
+  <main class="pdf-print-root">${sections}</main>
+</body>
+</html>`);
+  frameDoc.close();
+
+  await new Promise<void>((resolve) => {
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      frameWin.onafterprint = null;
+      iframe.remove();
+      resolve();
+    };
+
+    const runPrint = () => {
+      try {
+        frameWin.focus();
+        frameWin.print();
+      } finally {
+        // 部分浏览器不触发 onafterprint，兜底清理
+        window.setTimeout(cleanup, 8000);
+      }
+    };
+
+    frameWin.onafterprint = cleanup;
+
+    if (frameDoc.readyState === 'complete') {
+      setTimeout(runPrint, 200);
+    } else {
+      iframe.onload = () => setTimeout(runPrint, 200);
+    }
+  });
+
+  return true;
+};
+
+const copyMarkdown = async (scope: 'CURRENT' | 'ALL' = 'CURRENT') => {
+  const targets = scope === 'CURRENT'
+    ? [designState.results[designState.activeResultIndex]].filter(Boolean)
+    : designState.results;
+
+  const markdownText = targets
+    .map((res) => {
+      const body = res.markdownProcessed || res.markdownRaw || '';
+      if (!body) return '';
+      return `# ${res.title}\n\n${body}`;
+    })
+    .filter(Boolean)
+    .join('\n\n---\n\n');
+
+  if (!markdownText) {
+    alert('当前没有可复制的 Markdown 内容，请先生成正式报告。');
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(markdownText);
+    alert(scope === 'CURRENT' ? '当前方案 Markdown 已复制' : '所有方案 Markdown 已复制');
+  } catch (error) {
+    console.error('❌ Copy markdown failed:', error);
+    alert('复制失败，请检查浏览器剪贴板权限。');
+  }
+};
+
 // --- 4. 实现 handleDownload (文件下载逻辑) ---
-const handleDownload = (type: 'EXCEL' | 'WORD' | 'PNG', scope: 'CURRENT' | 'ALL' = 'CURRENT') => {
+const handleDownload = async (type: 'EXCEL' | 'PDF' | 'PNG', scope: 'CURRENT' | 'ALL' = 'CURRENT') => {
   if (type === 'PNG') {
     const fileName = designState.projectName || "声学方案";
     alert(`系统正在准备 ${fileName} 的 ${type} 文件，请稍后...`);
@@ -1613,18 +2052,15 @@ const handleDownload = (type: 'EXCEL' | 'WORD' | 'PNG', scope: 'CURRENT' | 'ALL'
     return;
   }
 
-  const missing: string[] = [];
-  results.forEach(res => {
-    const link = type === 'WORD' ? res.wordLink : res.excelLink;
-    if (link) {
-      window.open(link, '_blank');
-    } else {
-      missing.push(res.title);
+  if (type === 'PDF') {
+    const hasPending = results.some((res) => res.reportGenerationStatus === 'generating');
+    if (hasPending) {
+      alert('方案仍在生成中，请等待完成后再导出。');
+      return;
     }
-  });
-
-  if (missing.length) {
-    alert(`${type === 'WORD' ? 'Word' : 'Excel'} 链接缺失：${missing.join('，')}`);
+    const domIds = results.map((res) => buildReportPrintDomId(String(res.id)));
+    await exportPdfFromDomIds(domIds, `${designState.projectName || '声学方案'}_${scope === 'CURRENT' ? '当前方案' : '全部方案'}`);
+    return;
   }
 };
 const handleBlueprintUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1735,7 +2171,7 @@ const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
     previewHistoryItem, setPreviewHistoryItem,
     activeTable, setActiveTable,
     inventory: filteredInventory, displayInventory,deleteItem,
-    handleDownload,userNameFilter,setUserNameFilter,addUser,updateUser,users,
+    handleDownload, copyMarkdown, exportPdfFromDomIds, userNameFilter,setUserNameFilter,addUser,updateUser,users,
     // 补全 image_54f2c6.png 缺失的方法
     handleGenerateReports,
     handleSaveEquipment,

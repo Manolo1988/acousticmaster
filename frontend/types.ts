@@ -61,12 +61,32 @@ export interface EquipmentItem {
   unitPrice?: number; // 单价（可选）
 }
 
+export type ReportGenerationStatus = 'idle' | 'generating' | 'done' | 'error';
+export type ReportChapterStatus = 'pending' | 'generating' | 'done' | 'error';
+
+export interface ReportChapterState {
+  key: string;
+  title: string;
+  markdown: string;
+  status: ReportChapterStatus;
+  error?: string;
+}
+
 export interface SolutionResult {
   id: string;
   title: string;
   items: EquipmentItem[];
   wordLink?: string;
   excelLink?: string;
+  markdownRaw?: string;
+  markdownProcessed?: string;
+  postProcessReport?: {
+    injected_blocks?: string[];
+    toc_added?: boolean;
+  };
+  chapters?: ReportChapterState[];
+  reportGenerationStatus?: ReportGenerationStatus;
+  reportGenerationError?: string;
   isGenerating?: boolean;
   simulationImage?: string;
   lastReportSignature?: string;

@@ -5,6 +5,8 @@ services:
     restart: always
     build:
       context: ../backend
+    env_file:
+      - ../backend/.env
     environment:
       - NODE_ENV=production
       - PORT=3001
@@ -21,6 +23,8 @@ services:
     restart: always
     build:
       context: ../backend
+    env_file:
+      - ../backend/.env
     command: ["node", "daemon_v2.cjs"]
     environment:
       - NODE_ENV=production

@@ -1,0 +1,29 @@
+{
+  "blocks": {
+    "STANDARDS_TABLE": {
+      "file": "standards_table.md",
+      "description": "国标指标对照表（GB 50371-2006，GB/T 15381-94）",
+      "keywords": ["指标", "国标", "规范", "标准"]
+    },
+    "FORMULAS_BLOCK": {
+      "file": "formulas_block.md",
+      "description": "声学设计计算公式（Lρ、NAG、PAG、Dc、ALcons、Sabine）",
+      "keywords": ["公式", "计算", "声学", "指标依据"]
+    },
+    "SIGNAL_FLOW_MERMAID": {
+      "file": "signal_flow_mermaid.md",
+      "description": "通用信号流程Mermaid图（拾音→处理→扩声→管控）",
+      "keywords": ["信号流", "系统拓扑", "链路图"]
+    },
+    "ROOM_LAYOUT_MERMAID": {
+      "file": "room_layout_mermaid.md",
+      "description": "房间点位布置示意Mermaid图（音箱/话筒点位）",
+      "keywords": ["点位图", "布点", "平面", "音箱位置"]
+    },
+    "CONTROL_FLOW_MERMAID": {
+      "file": "control_flow_mermaid.md",
+      "description": "中控系统控制逻辑Mermaid图",
+      "keywords": ["中控", "控制流程", "设备管控"]
+    }
+  }
+}

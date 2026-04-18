@@ -173,7 +173,9 @@ const TABLE_NAME_MAP: Record<string, TableType> = {
   中控系统: TableType.FIXED_SCENE_EXTRA,
   矩阵: TableType.FIXED_SCENE_EXTRA,
   视频会议系统: TableType.FIXED_SCENE_EXTRA,
-  录播系统: TableType.FIXED_SCENE_EXTRA
+  录播系统: TableType.FIXED_SCENE_EXTRA,
+  图片资源管理: TableType.LOCAL_STATIC_RESOURCE,
+  本地静态资源: TableType.LOCAL_STATIC_RESOURCE
 };
 
 const normalizeTableName = (type: string): TableType | null => {
@@ -984,6 +986,7 @@ export const useAcousticLogic = () => {
   const [chatInputValue, setChatInputValue] = useState("");
   const [isProcessingAi, setIsProcessingAi] = useState(false);
   const [isGeneratingDocs, setIsGeneratingDocs] = useState(false);
+  const reportGenerationLockRef = useRef(false);
   const [editingItem, setEditingItem] = useState<{ resIdx: number, itemIdx: number, item: EquipmentItem } | null>(null);
   const [previewHistoryItem, setPreviewHistoryItem] = useState<HistoryRecord | null>(null);
   const [users, setUsers] = useState<User[]>([]);
@@ -998,6 +1001,7 @@ export const useAcousticLogic = () => {
   const [inventoryOptionsByTable, setInventoryOptionsByTable] = useState<Record<string, DbInventoryItem[]>>({});
   const [history, setHistory] = useState<HistoryRecord[]>([]);
   const [micTypeOptions, setMicTypeOptions] = useState<string[]>([]);
+  const [planChapterOptions, setPlanChapterOptions] = useState<string[]>(REPORT_CHAPTERS.map((chapter) => chapter.title));
   const [assistantScenario, setAssistantScenario] = useState<Scenario | null>(null);
   const [currentUser, setCurrentUser] = useState<AuthUser>({
     id: 0,
@@ -1074,14 +1078,18 @@ export const useAcousticLogic = () => {
       result = result.filter(item => String(item.品牌 || '').toLowerCase().includes(searchFilters.品牌.toLowerCase()));
     }
     if (searchFilters.产品名称) {
-      result = result.filter(item => item.产品名称.toLowerCase().includes(searchFilters.产品名称.toLowerCase()));
+      const keyword = searchFilters.产品名称.toLowerCase();
+      result = result.filter(item => {
+        const name = String(item.产品名称 || item.图片名称 || '').toLowerCase();
+        return name.includes(keyword);
+      });
     }
     if (searchFilters.用途 && activeTable === TableType.SPEAKER as TableType) {
       result = result.filter(item => Array.isArray(item.用途) ? item.用途.includes(searchFilters.用途) : item.用途 === searchFilters.用途);
     }
     if (searchFilters.场景) {
       result = result.filter(item => {
-        const scene = item.场景 || '';
+        const scene = item.场景 || item.使用场景 || '';
         const usage = Array.isArray(item.用途) ? item.用途.join(',') : (item.用途 || '');
         return scene.includes(searchFilters.场景) || usage.includes(searchFilters.场景);
       });
@@ -1226,6 +1234,27 @@ export const useAcousticLogic = () => {
     }
   };
 
+  const fetchPlanChapterOptions = async (scenario: Scenario) => {
+    try {
+      const params = new URLSearchParams();
+      params.set('scenario', scenario);
+      const response = await fetch(`${API_BASE}/api/plan/chapter-options?${params.toString()}`);
+      if (!response.ok) throw new Error(`Fetch chapter options failed: ${response.status}`);
+      const data = await response.json();
+      const chapters = Array.isArray(data?.chapters)
+        ? data.chapters.map((title: any) => String(title || '').trim()).filter(Boolean)
+        : [];
+      if (chapters.length > 0) {
+        setPlanChapterOptions(chapters);
+      } else {
+        setPlanChapterOptions(REPORT_CHAPTERS.map((chapter) => chapter.title));
+      }
+    } catch (error) {
+      console.error('❌ Failed to fetch chapter options:', error);
+      setPlanChapterOptions(REPORT_CHAPTERS.map((chapter) => chapter.title));
+    }
+  };
+
   useEffect(() => {
     setDesignState((prev) => {
       const currentMics = prev.params.mics || [];
@@ -1294,6 +1323,10 @@ export const useAcousticLogic = () => {
   useEffect(() => {
     fetchMicTypeOptions();
   }, []);
+
+  useEffect(() => {
+    fetchPlanChapterOptions(designState.scenario);
+  }, [designState.scenario]);
 
   const fetchUsers = async () => {
     try {
@@ -1684,14 +1717,41 @@ const deleteItem = (resIdx: number, itemIdx: number) => {
 
 // --- 2. 实现 handleGenerateReports (生成正式报告) ---
 const handleGenerateReports = async (scope: 'CURRENT' | 'ALL') => {
-  const targets = scope === 'CURRENT'
+  if (reportGenerationLockRef.current || isGeneratingDocs) {
+    console.warn('[PLAN_RENDER_TRACE] duplicate-request-skipped', {
+      scope,
+      reason: 'generation-in-progress'
+    });
+    return;
+  }
+
+  const rawTargets = scope === 'CURRENT'
     ? [designState.results[designState.activeResultIndex]].filter(Boolean)
     : designState.results;
+  const targets = Array.from(new Map(rawTargets.map((item) => [String(item.id), item])).values());
+
+  if (rawTargets.length !== targets.length) {
+    console.warn('[PLAN_RENDER_TRACE] duplicate-target-pruned', {
+      scope,
+      rawTargetCount: rawTargets.length,
+      dedupedTargetCount: targets.length
+    });
+  }
+
+  const clickTs = Date.now();
+  console.log('[PLAN_RENDER_TRACE] generate-clicked', {
+    at: new Date(clickTs).toISOString(),
+    ts: clickTs,
+    scope,
+    targetCount: targets.length
+  });
 
   if (targets.length === 0) {
     alert('当前没有可生成报告的方案。');
     return;
   }
+
+  reportGenerationLockRef.current = true;
 
   const targetIdSet = new Set(targets.map((item) => String(item.id)));
 
@@ -1713,6 +1773,14 @@ const handleGenerateReports = async (scope: 'CURRENT' | 'ALL') => {
 
   setIsGeneratingDocs(true);
   try {
+    const requestStartTs = Date.now();
+    console.log('[PLAN_RENDER_TRACE] request-start', {
+      at: new Date(requestStartTs).toISOString(),
+      ts: requestStartTs,
+      scope,
+      targetCount: targets.length
+    });
+
     const response = await fetch(`${API_BASE}/api/plan/generate-markdowns`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1729,6 +1797,16 @@ const handleGenerateReports = async (scope: 'CURRENT' | 'ALL') => {
     });
 
     const responseData = await response.json().catch(() => ({} as any));
+    const responseReceivedTs = Date.now();
+    console.log('[PLAN_RENDER_TRACE] response-received', {
+      at: new Date(responseReceivedTs).toISOString(),
+      ts: responseReceivedTs,
+      elapsedMs: responseReceivedTs - requestStartTs,
+      status: response.status,
+      ok: response.ok,
+      backendTrace: responseData?.trace || null
+    });
+
     if (!response.ok) {
       throw new Error(String(responseData?.error || `Generate markdown failed: ${response.status}`));
     }
@@ -1763,6 +1841,14 @@ const handleGenerateReports = async (scope: 'CURRENT' | 'ALL') => {
     const successCount = generatedByTargetId.size;
     const errorCount = Math.max(0, targets.length - successCount);
 
+    const stateUpdateStartTs = Date.now();
+    console.log('[PLAN_RENDER_TRACE] state-update-start', {
+      at: new Date(stateUpdateStartTs).toISOString(),
+      ts: stateUpdateStartTs,
+      successCount,
+      errorCount
+    });
+
     setDesignState((prev) => ({
       ...prev,
       results: prev.results.map((res) => {
@@ -1793,6 +1879,16 @@ const handleGenerateReports = async (scope: 'CURRENT' | 'ALL') => {
       })
     }));
 
+    requestAnimationFrame(() => {
+      const renderTs = Date.now();
+      console.log('[PLAN_RENDER_TRACE] frontend-render-approx', {
+        at: new Date(renderTs).toISOString(),
+        ts: renderTs,
+        elapsedFromStateUpdateMs: renderTs - stateUpdateStartTs,
+        elapsedFromResponseMs: renderTs - responseReceivedTs
+      });
+    });
+
     if (successCount > 0 && errorCount === 0) {
       alert(scope === 'CURRENT' ? '当前方案生成已完成' : '所有方案生成已完成');
     } else if (successCount > 0) {
@@ -1817,6 +1913,7 @@ const handleGenerateReports = async (scope: 'CURRENT' | 'ALL') => {
     alert('方案生成失败，请检查后端日志。');
   } finally {
     setIsGeneratingDocs(false);
+    reportGenerationLockRef.current = false;
   }
 };
 
@@ -2085,9 +2182,11 @@ const handleSaveEquipment = async (table: TableType, item: Partial<DbInventoryIt
     }
     await fetchInventoryByTable(table);
     alert("设备录入成功！");
+    return true;
   } catch (error) {
     console.error("❌ Create inventory failed:", error);
     alert("设备录入失败，请检查后端日志。");
+    return false;
   }
 };
 
@@ -2105,9 +2204,11 @@ const updateInventoryItem = async (table: TableType, id: number, updates: Partia
     }
     await fetchInventoryByTable(table);
     alert("设备更新成功！");
+    return true;
   } catch (error) {
     console.error("❌ Update inventory failed:", error);
     alert("设备更新失败，请检查后端日志。");
+    return false;
   }
 };
 
@@ -2122,9 +2223,49 @@ const deleteInventoryItem = async (table: TableType, id: number) => {
       throw new Error(`Delete inventory failed: ${response.status}`);
     }
     await fetchInventoryByTable(table);
+    return true;
   } catch (error) {
     console.error("❌ Delete inventory failed:", error);
     alert("设备删除失败，请检查后端日志。");
+    return false;
+  }
+};
+
+const deleteInventoryItemsBatch = async (table: TableType, ids: number[]) => {
+  const validIds = Array.from(
+    new Set(
+      (Array.isArray(ids) ? ids : [])
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id) && id > 0)
+    )
+  );
+
+  if (validIds.length === 0) {
+    return { ok: false, deleted: 0, requested: 0 };
+  }
+
+  try {
+    const response = await fetch(`${API_BASE}/api/inventory/${encodeURIComponent(table)}/batch-delete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: validIds })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Batch delete inventory failed: ${response.status}`);
+    }
+
+    const data = await response.json().catch(() => ({}));
+    await fetchInventoryByTable(table);
+    return {
+      ok: true,
+      deleted: Number(data?.affectedRows || 0),
+      requested: validIds.length
+    };
+  } catch (error) {
+    console.error("❌ Batch delete inventory failed:", error);
+    alert("批量删除失败，请检查后端日志。");
+    return { ok: false, deleted: 0, requested: validIds.length };
   }
 };
 
@@ -2177,6 +2318,7 @@ const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
     handleSaveEquipment,
     updateInventoryItem,
     deleteInventoryItem,
+    deleteInventoryItemsBatch,
     updateHistoryRecord,
     deleteHistoryRecord,
     deleteUser,
@@ -2189,6 +2331,7 @@ const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
     history,
     setHistory,
     micTypeOptions,
+    planChapterOptions,
     addMic,
     removeMic,
     handleMicChange,

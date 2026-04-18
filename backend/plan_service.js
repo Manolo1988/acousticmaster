@@ -4,6 +4,8 @@ import path from "path";
 
 const ARK_URL = process.env.ARK_API_URL || "https://ark.cn-beijing.volces.com/api/v3/responses";
 const ARK_MODEL = process.env.ARK_MODEL || "doubao-seed-2-0-pro-260215";
+export const LOCAL_STATIC_RESOURCE_TABLE = "本地静态资源";
+const LEGACY_STATIC_RESOURCE_TABLE = "static_markdown_blocks";
 
 const STATIC_BLOCK_KEYWORDS = {
   STANDARDS_TABLE: ["国标", "指标", "规范", "标准"],
@@ -43,6 +45,15 @@ function headingToAnchor(text) {
     .replace(/[^\w\s\-\u4e00-\u9fa5]/g, "")
     .trim()
     .replace(/\s+/g, "-");
+}
+
+function sanitizeStaticBlockKey(value) {
+  const normalized = String(value || "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64);
+  return normalized || `BLOCK_${Date.now()}`;
 }
 
 function generateToc(markdown) {
@@ -273,19 +284,54 @@ async function callArkForMarkdown(prompt) {
 }
 
 export async function ensureStaticBlockTableAndSeed(pool, backendDir) {
+  try {
+    const [legacyRows] = await pool.query(
+      "SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1",
+      [LEGACY_STATIC_RESOURCE_TABLE]
+    );
+    const [currentRows] = await pool.query(
+      "SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1",
+      [LOCAL_STATIC_RESOURCE_TABLE]
+    );
+
+    if (legacyRows.length > 0 && currentRows.length === 0) {
+      await pool.query(`RENAME TABLE \`${LEGACY_STATIC_RESOURCE_TABLE}\` TO \`${LOCAL_STATIC_RESOURCE_TABLE}\``);
+    }
+  } catch (error) {
+    console.warn("⚠️ Static resource table rename skipped:", error.message);
+  }
+
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS static_markdown_blocks (
+    CREATE TABLE IF NOT EXISTS \`${LOCAL_STATIC_RESOURCE_TABLE}\` (
       id INT AUTO_INCREMENT PRIMARY KEY,
       block_key VARCHAR(64) NOT NULL UNIQUE,
       title VARCHAR(255) NOT NULL DEFAULT '',
       description VARCHAR(512) NOT NULL DEFAULT '',
       source_file VARCHAR(255) NOT NULL DEFAULT '',
       content MEDIUMTEXT NOT NULL,
+      \`插入章节\` VARCHAR(255) NULL,
+      \`使用场景\` VARCHAR(32) NULL,
       enabled TINYINT(1) NOT NULL DEFAULT 1,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
+
+  const [chapterColumnRows] = await pool.query(
+    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = '插入章节' LIMIT 1",
+    [LOCAL_STATIC_RESOURCE_TABLE]
+  );
+  if (chapterColumnRows.length === 0) {
+    await pool.query(`ALTER TABLE \`${LOCAL_STATIC_RESOURCE_TABLE}\` ADD COLUMN \`插入章节\` VARCHAR(255) NULL`);
+  }
+
+  const [sceneColumnRows] = await pool.query(
+    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = '使用场景' LIMIT 1",
+    [LOCAL_STATIC_RESOURCE_TABLE]
+  );
+  if (sceneColumnRows.length === 0) {
+    await pool.query(`ALTER TABLE \`${LOCAL_STATIC_RESOURCE_TABLE}\` ADD COLUMN \`使用场景\` VARCHAR(32) NULL`);
+  }
 
   const indexPath = path.join(backendDir, "static_blocks", "index.json");
   if (!existsSync(indexPath)) return;
@@ -302,7 +348,7 @@ export async function ensureStaticBlockTableAndSeed(pool, backendDir) {
     const content = readFileSync(filePath, "utf-8").trim();
 
     await pool.query(
-      `INSERT INTO static_markdown_blocks (block_key, title, description, source_file, content, enabled)
+      `INSERT INTO \`${LOCAL_STATIC_RESOURCE_TABLE}\` (block_key, title, description, source_file, content, enabled)
        VALUES (?, ?, ?, ?, ?, 1)
        ON DUPLICATE KEY UPDATE
        title = VALUES(title),
@@ -310,14 +356,16 @@ export async function ensureStaticBlockTableAndSeed(pool, backendDir) {
        source_file = VALUES(source_file),
        content = VALUES(content),
        enabled = VALUES(enabled)`,
-      [key, title, description, sourceFile, content]
+      [sanitizeStaticBlockKey(key), title, description, sourceFile, content]
     );
   }
 }
 
 export async function listStaticBlocks(pool) {
   const [rows] = await pool.query(
-    "SELECT id, block_key, title, description, source_file, content, enabled, updated_at FROM static_markdown_blocks ORDER BY block_key ASC"
+    `SELECT id, block_key, title, description, source_file, content, \`插入章节\`, \`使用场景\`, enabled, updated_at
+     FROM \`${LOCAL_STATIC_RESOURCE_TABLE}\`
+     ORDER BY block_key ASC`
   );
   return rows;
 }
@@ -342,14 +390,22 @@ export async function updateStaticBlock(pool, blockKey, payload) {
     fields.push("enabled = ?");
     values.push(payload.enabled ? 1 : 0);
   }
+  if (Object.prototype.hasOwnProperty.call(payload, "insertChapter")) {
+    fields.push("`插入章节` = ?");
+    values.push(String(payload.insertChapter || ""));
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, "usageScene")) {
+    fields.push("`使用场景` = ?");
+    values.push(String(payload.usageScene || ""));
+  }
 
   if (fields.length === 0) {
     return { updated: false, reason: "No updatable fields" };
   }
 
-  values.push(blockKey);
+  values.push(sanitizeStaticBlockKey(blockKey));
   const [result] = await pool.query(
-    `UPDATE static_markdown_blocks SET ${fields.join(", ")} WHERE block_key = ?`,
+    `UPDATE \`${LOCAL_STATIC_RESOURCE_TABLE}\` SET ${fields.join(", ")} WHERE block_key = ?`,
     values
   );
 
@@ -358,7 +414,7 @@ export async function updateStaticBlock(pool, blockKey, payload) {
 
 export async function loadEnabledStaticBlockMap(pool) {
   const [rows] = await pool.query(
-    "SELECT block_key, content FROM static_markdown_blocks WHERE enabled = 1"
+    `SELECT block_key, content FROM \`${LOCAL_STATIC_RESOURCE_TABLE}\` WHERE enabled = 1`
   );
   const map = {};
   for (const row of rows) {

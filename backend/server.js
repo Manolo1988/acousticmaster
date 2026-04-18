@@ -11,6 +11,7 @@ import { fileURLToPath } from "url";
 import {
   ensureStaticBlockTableAndSeed,
   listStaticBlocks,
+  LOCAL_STATIC_RESOURCE_TABLE as SERVICE_LOCAL_STATIC_RESOURCE_TABLE,
   loadEnabledStaticBlockMap,
   updateStaticBlock
 } from "./plan_service.js";
@@ -40,7 +41,7 @@ app.use(
     optionsSuccessStatus: 204
   })
 );
-app.use(express.json());
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "20mb" }));
 
 const DB_CONFIG = {
   host: process.env.DB_HOST || "115.231.236.153",
@@ -54,14 +55,87 @@ const DB_CONFIG = {
 
 const pool = mysql.createPool(DB_CONFIG);
 const isProduction = process.env.NODE_ENV === 'production';
-const ALLOWED_TABLES = new Set([
+const INVENTORY_TABLES = [
   "固定搭配",
   "音箱",
   "定阻功放",
   "周边设备",
   "固定搭配场景剩余周边设备",
   "非固定搭配场景剩余周边设备"
-]);
+];
+const IMAGE_RESOURCE_TABLE = "图片资源管理";
+const LOCAL_STATIC_RESOURCE_TABLE = SERVICE_LOCAL_STATIC_RESOURCE_TABLE;
+const ALLOWED_TABLES = new Set([...INVENTORY_TABLES, IMAGE_RESOURCE_TABLE, LOCAL_STATIC_RESOURCE_TABLE]);
+const RESOURCE_TYPE_IMAGE = "图片";
+const RESOURCE_TYPE_TEXT = "文字（表格）";
+const PLAN_CHAPTER_TITLE_CANDIDATES = [
+  "项目概述",
+  "设计依据和目标",
+  "方案设计",
+  "设备介绍",
+  "装修建议",
+  "环境要求"
+];
+
+const normalizeChapterTitle = (value = "") =>
+  String(value || "")
+    .replace(/^第\s*\d+\s*[章节]\s*/g, "")
+    .replace(/^\d+(?:\.\d+)*\s*/g, "")
+    .replace(/^[、\.:：\-\s]+/g, "")
+    .trim();
+
+const normalizeStaticBlockKey = (value = "") =>
+  String(value || "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64);
+
+const ensureStaticBlockKey = (value = "") => {
+  const normalized = normalizeStaticBlockKey(value);
+  return normalized || `BLOCK_${Date.now()}`;
+};
+
+const createManualResourceBlockKey = (title = "") => {
+  const normalizedTitle = normalizeStaticBlockKey(title);
+  const timePart = Date.now().toString(36).toUpperCase();
+  const randomPart = Math.random().toString(36).slice(2, 8).toUpperCase();
+  const base = normalizedTitle ? `USR_${normalizedTitle}_${timePart}_${randomPart}` : `USR_RESOURCE_${timePart}_${randomPart}`;
+  return ensureStaticBlockKey(base);
+};
+
+const normalizeEnabledValue = (value) => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value > 0;
+  const normalized = String(value || "").trim().toLowerCase();
+  return ["1", "true", "yes", "on", "是", "启用"].includes(normalized);
+};
+
+const normalizeResourceType = (value, fallback = RESOURCE_TYPE_TEXT) => {
+  const normalized = String(value || "").trim();
+  if (normalized === RESOURCE_TYPE_IMAGE || normalized === "image" || normalized === "图片资源") {
+    return RESOURCE_TYPE_IMAGE;
+  }
+  if (normalized === RESOURCE_TYPE_TEXT || normalized === "text" || normalized === "文字") {
+    return RESOURCE_TYPE_TEXT;
+  }
+  return fallback;
+};
+
+const inferResourceTypeFromContent = (content) => {
+  const text = String(content || "").trim().toLowerCase();
+  if (!text) return RESOURCE_TYPE_TEXT;
+  if (text.startsWith("data:image/") || text.startsWith("http://") || text.startsWith("https://")) {
+    return RESOURCE_TYPE_IMAGE;
+  }
+  return RESOURCE_TYPE_TEXT;
+};
+
+const resolvePhysicalTableName = (table) => {
+  if (table === IMAGE_RESOURCE_TABLE) return LOCAL_STATIC_RESOURCE_TABLE;
+  if (table === LOCAL_STATIC_RESOURCE_TABLE) return LOCAL_STATIC_RESOURCE_TABLE;
+  return table;
+};
 
 const getSafeTableName = (table) => {
   if (!table || !ALLOWED_TABLES.has(table)) return null;
@@ -69,20 +143,271 @@ const getSafeTableName = (table) => {
 };
 
 const getTableColumns = async (table) => {
+  const physicalTable = resolvePhysicalTableName(table);
   const [rows] = await pool.query(
     "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
-    [DB_CONFIG.database, table]
+    [DB_CONFIG.database, physicalTable]
   );
   return rows.map((row) => row.COLUMN_NAME);
 };
 
 const getPrimaryKey = async (table) => {
+  const physicalTable = resolvePhysicalTableName(table);
   const [rows] = await pool.query(
     "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY'",
-    [DB_CONFIG.database, table]
+    [DB_CONFIG.database, physicalTable]
   );
   if (rows.length > 0) return rows[0].COLUMN_NAME;
+
+  const columns = await getTableColumns(physicalTable);
+  if (columns.includes("id")) return "id";
+  if (columns.includes("序号")) return "序号";
+  if (columns.includes("型号")) return "型号";
+  if (columns.includes("产品名称")) return "产品名称";
   return "id";
+};
+
+const normalizeSceneLabel = (scenario) =>
+  String(scenario || "") === "LECTURE_HALL" ? "报告厅" : "会议室";
+
+const normalizeStaticResourceRows = (rows, scenarioLabel, validChapterTitleSet) =>
+  (Array.isArray(rows) ? rows : [])
+    .filter((row) => {
+      const enabled = Number(row?.enabled ?? row?.是否启用 ?? 1);
+      if (enabled === 0) return false;
+      const scene = String(row?.使用场景 || "").trim();
+      if (!scene || scene === "通用") return true;
+      return scene === scenarioLabel;
+    })
+    .map((row) => {
+      const resourceName = String(row?.title || row?.图片名称 || row?.block_key || `本地静态资源${row?.id || ""}`).trim();
+      const chapterSource = String(row?.插入章节 || row?.目标章节 || "").trim();
+      const explain = String(row?.description || row?.图片解释 || "").trim();
+      const chapterTitle = normalizeChapterTitle(chapterSource);
+      const content = String(row?.content || row?.资源内容 || row?.图片文件 || "").trim();
+      const resourceType = normalizeResourceType(row?.资源类型, inferResourceTypeFromContent(content));
+      return {
+        id: Number(row?.id || 0),
+        resourceName,
+        resourceType,
+        chapterTitle,
+        explain,
+        content
+      };
+    })
+    .filter((row) => !!row.content && !!row.chapterTitle && validChapterTitleSet.has(row.chapterTitle));
+
+const normalizeInventoryRowForResponse = (table, row, index = 0) => {
+  const next = { ...(row || {}) };
+  if (next.id === undefined || next.id === null || next.id === "") {
+    if (next["序号"] !== undefined && next["序号"] !== null && String(next["序号"]) !== "") {
+      next.id = Number(next["序号"]);
+    } else {
+      next.id = index + 1;
+    }
+  }
+
+  if (table === "固定搭配") {
+    if (!next["类型"] && next["设备类型"]) {
+      next["类型"] = next["设备类型"];
+    }
+  }
+
+  if (table === LOCAL_STATIC_RESOURCE_TABLE || table === IMAGE_RESOURCE_TABLE) {
+    const content = String(next.content || next["资源内容"] || next["图片文件"] || "");
+    const resourceType = normalizeResourceType(next["资源类型"], inferResourceTypeFromContent(content));
+    return {
+      id: Number(next.id || index + 1),
+      图片名称: String(next.title || next.block_key || `本地静态资源${next.id || index + 1}`).trim(),
+      插入章节: String(next["插入章节"] || next["目标章节"] || "").trim(),
+      使用场景: String(next["使用场景"] || "通用").trim(),
+      图片解释: String(next.description || next["图片解释"] || "").trim(),
+      资源类型: resourceType,
+      资源内容: content,
+      是否启用: Number(next.enabled ?? 1) === 1 ? "是" : "否"
+    };
+  }
+
+  return next;
+};
+
+const mapInventoryPayloadToTable = (table, payload = {}) => {
+  const next = { ...(payload || {}) };
+
+  if (table === "固定搭配") {
+    if (next["类型"] && !next["设备类型"]) {
+      next["设备类型"] = next["类型"];
+    }
+  }
+
+  if (table === LOCAL_STATIC_RESOURCE_TABLE || table === IMAGE_RESOURCE_TABLE) {
+    const hasTitle = Object.prototype.hasOwnProperty.call(next, "图片名称") || Object.prototype.hasOwnProperty.call(next, "title");
+    const hasChapter = Object.prototype.hasOwnProperty.call(next, "插入章节");
+    const hasLegacyChapter = Object.prototype.hasOwnProperty.call(next, "目标章节");
+    const hasScene = Object.prototype.hasOwnProperty.call(next, "使用场景");
+    const hasDescription = Object.prototype.hasOwnProperty.call(next, "图片解释") || Object.prototype.hasOwnProperty.call(next, "description");
+    const hasContent = Object.prototype.hasOwnProperty.call(next, "资源内容") || Object.prototype.hasOwnProperty.call(next, "content");
+    const hasLegacyImageContent = Object.prototype.hasOwnProperty.call(next, "图片文件");
+    const hasResourceType = Object.prototype.hasOwnProperty.call(next, "资源类型") || Object.prototype.hasOwnProperty.call(next, "resourceType");
+    const hasSource = Object.prototype.hasOwnProperty.call(next, "来源文件") || Object.prototype.hasOwnProperty.call(next, "source_file");
+    const hasEnabled = Object.prototype.hasOwnProperty.call(next, "是否启用") || Object.prototype.hasOwnProperty.call(next, "enabled");
+    const hasBlockKey = Object.prototype.hasOwnProperty.call(next, "标识键") || Object.prototype.hasOwnProperty.call(next, "block_key");
+
+    if (hasTitle) {
+      next.title = String(next["图片名称"] ?? next.title ?? "").trim();
+    }
+    if (hasChapter || hasLegacyChapter) {
+      const chapter = String(next["插入章节"] ?? next["目标章节"] ?? "").trim();
+      next["插入章节"] = chapter;
+      next["目标章节"] = chapter;
+    }
+    if (hasScene) {
+      next["使用场景"] = String(next["使用场景"] ?? "通用").trim() || "通用";
+    }
+    if (hasDescription) {
+      next.description = String(next["图片解释"] ?? next.description ?? "").trim();
+    }
+    if (hasContent || hasLegacyImageContent) {
+      const unifiedContent = String(next["资源内容"] ?? next["图片文件"] ?? next.content ?? "").trim();
+      next.content = unifiedContent;
+    }
+    if (hasResourceType || hasLegacyImageContent) {
+      const fallbackType = hasLegacyImageContent ? RESOURCE_TYPE_IMAGE : inferResourceTypeFromContent(next.content);
+      next["资源类型"] = normalizeResourceType(next["资源类型"] ?? next.resourceType, fallbackType);
+    }
+    if (hasSource) {
+      next.source_file = String(next["来源文件"] ?? next.source_file ?? "manual").trim() || "manual";
+    }
+    if (hasBlockKey) {
+      const blockKeySource = String(next["标识键"] ?? next.block_key ?? "").trim();
+      next.block_key = ensureStaticBlockKey(blockKeySource);
+    }
+    if (hasEnabled) {
+      const enabledInput = Object.prototype.hasOwnProperty.call(next, "是否启用") ? next["是否启用"] : next.enabled;
+      next.enabled = normalizeEnabledValue(enabledInput) ? 1 : 0;
+    }
+  }
+
+  return next;
+};
+
+const getDeviceImageTableCandidates = (type) => {
+  const text = String(type || "");
+  if (!text) return ["周边设备"];
+  if (text.includes("功放")) return ["定阻功放"];
+  if (text.includes("音箱")) return ["音箱"];
+  if (["中控系统", "矩阵", "视频会议系统", "录播系统"].includes(text)) {
+    return ["固定搭配场景剩余周边设备", "非固定搭配场景剩余周边设备"];
+  }
+  return ["周边设备", "固定搭配场景剩余周边设备", "非固定搭配场景剩余周边设备"];
+};
+
+const ensureColumnExists = async (table, columnName, sqlDefinition) => {
+  const [rows] = await pool.query(
+    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1",
+    [DB_CONFIG.database, table, columnName]
+  );
+  if (rows.length > 0) return false;
+  await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${columnName}\` ${sqlDefinition}`);
+  return true;
+};
+
+const ensureInventorySchema = async () => {
+  for (const table of INVENTORY_TABLES) {
+    const columns = await getTableColumns(table);
+    if (!columns.includes("id")) {
+      await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`id\` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY FIRST`);
+    } else {
+      const [pkRows] = await pool.query(
+        "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY'",
+        [DB_CONFIG.database, table]
+      );
+      if (pkRows.length === 0) {
+        try {
+          await pool.query(`ALTER TABLE \`${table}\` MODIFY COLUMN \`id\` BIGINT NOT NULL`);
+          await pool.query(`ALTER TABLE \`${table}\` ADD PRIMARY KEY (\`id\`)`);
+        } catch (error) {
+          console.warn(`⚠️ Failed to promote id as primary key for ${table}:`, error.message);
+        }
+      }
+    }
+
+    await ensureColumnExists(table, "设备图片", "LONGTEXT NULL");
+    await ensureColumnExists(table, "品牌", "TEXT NULL");
+  }
+
+  try {
+    await ensureColumnExists("固定搭配", "类型", "TEXT NULL");
+    const fixedColumns = await getTableColumns("固定搭配");
+    if (fixedColumns.includes("设备类型") && fixedColumns.includes("类型")) {
+      await pool.query(
+        "UPDATE `固定搭配` SET `类型` = `设备类型` WHERE (`类型` IS NULL OR `类型` = '') AND `设备类型` IS NOT NULL"
+      );
+    }
+  } catch (error) {
+    console.warn("⚠️ Fixed combination alias column init failed:", error.message);
+  }
+
+};
+
+const ensureMergedStaticResourceSchemaAndMigrate = async () => {
+  await ensureColumnExists(LOCAL_STATIC_RESOURCE_TABLE, "资源类型", "VARCHAR(32) NULL");
+
+  await pool.query(
+    `UPDATE \`${LOCAL_STATIC_RESOURCE_TABLE}\`
+     SET \`资源类型\` = ?
+     WHERE \`资源类型\` IS NULL OR \`资源类型\` = ''`,
+    [RESOURCE_TYPE_TEXT]
+  );
+
+  try {
+    const [legacyTableRows] = await pool.query(
+      "SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? LIMIT 1",
+      [DB_CONFIG.database, IMAGE_RESOURCE_TABLE]
+    );
+
+    if (!Array.isArray(legacyTableRows) || legacyTableRows.length === 0) {
+      return;
+    }
+
+    await pool.query(
+      `INSERT INTO \`${LOCAL_STATIC_RESOURCE_TABLE}\` (
+         block_key,
+         title,
+         description,
+         source_file,
+         content,
+         \`插入章节\`,
+         \`使用场景\`,
+         \`资源类型\`,
+         enabled
+       )
+       SELECT
+         CONCAT('LEGACY_IMAGE_', CAST(\`id\` AS CHAR)),
+         COALESCE(NULLIF(\`图片名称\`, ''), CONCAT('图片资源', \`id\`)),
+         COALESCE(\`图片解释\`, ''),
+         'legacy-image-resource',
+         COALESCE(\`图片文件\`, ''),
+         COALESCE(NULLIF(\`插入章节\`, ''), NULLIF(\`目标章节\`, ''), ''),
+         COALESCE(NULLIF(\`使用场景\`, ''), '通用'),
+         ?,
+         1
+       FROM \`${IMAGE_RESOURCE_TABLE}\`
+       WHERE \`图片文件\` IS NOT NULL AND \`图片文件\` <> ''
+       ON DUPLICATE KEY UPDATE
+         title = VALUES(title),
+         description = VALUES(description),
+         source_file = VALUES(source_file),
+         content = VALUES(content),
+         \`插入章节\` = VALUES(\`插入章节\`),
+         \`使用场景\` = VALUES(\`使用场景\`),
+         \`资源类型\` = VALUES(\`资源类型\`),
+         enabled = VALUES(enabled)`,
+      [RESOURCE_TYPE_IMAGE]
+    );
+  } catch (error) {
+    console.warn("⚠️ Legacy image resource migration skipped:", error.message);
+  }
 };
 
 const parseJsonField = (value, fallback) => {
@@ -117,10 +442,70 @@ const STATIC_BLOCKS_DIR_URL = new URL("./static_blocks/", import.meta.url);
 const GENERATED_DOCS_DIR_URL = new URL("./generated_docs/", import.meta.url);
 const PLAN_STREAM_CONCURRENCY = Math.max(1, Number(process.env.PLAN_STREAM_CONCURRENCY || 2));
 const PLAN_BATCH_CONCURRENCY = Math.max(1, Number(process.env.PLAN_BATCH_CONCURRENCY || 2));
+const PLAN_TRACE_LOG_ENABLED = String(process.env.PLAN_TRACE_LOG_ENABLED || "1") !== "0";
+const PLAN_TRACE_FULL_TEXT = String(process.env.PLAN_TRACE_FULL_TEXT || "0") === "1";
+const PLAN_TRACE_PREVIEW_MAX = Math.max(400, Number(process.env.PLAN_TRACE_PREVIEW_MAX || 2000));
+const PLAN_ARK_MAX_ATTEMPTS = Math.max(1, Number(process.env.PLAN_ARK_MAX_ATTEMPTS || 1));
+
+const createTraceId = (prefix = "trace") => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+const clipTraceText = (value) => {
+  const text = String(value || "");
+  if (PLAN_TRACE_FULL_TEXT || text.length <= PLAN_TRACE_PREVIEW_MAX) {
+    return { text, totalLength: text.length, truncated: false };
+  }
+  return {
+    text: `${text.slice(0, PLAN_TRACE_PREVIEW_MAX)}\n...[truncated ${text.length - PLAN_TRACE_PREVIEW_MAX} chars]`,
+    totalLength: text.length,
+    truncated: true
+  };
+};
+
+const clipTraceJson = (value) => {
+  try {
+    return clipTraceText(JSON.stringify(value));
+  } catch (error) {
+    return clipTraceText(String(value));
+  }
+};
+
+const tracePlanEvent = (stage, context = {}, details = {}) => {
+  if (!PLAN_TRACE_LOG_ENABLED) return;
+  const nowMs = Date.now();
+  const payload = {
+    tag: "PLAN_TRACE",
+    stage,
+    at: new Date(nowMs).toISOString(),
+    ts: nowMs,
+    ...context,
+    ...details
+  };
+  try {
+    console.log(`[PLAN_TRACE] ${JSON.stringify(payload)}`);
+  } catch (error) {
+    console.log("[PLAN_TRACE]", stage, context, details);
+  }
+};
 
 const safeNumber = (value) => {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
+};
+
+const shouldRetryArkRequest = (error) => {
+  const status = Number(error?.response?.status || 0);
+  if (status === 429 || status >= 500) return true;
+
+  const code = String(error?.code || "").toUpperCase();
+  return [
+    "ECONNABORTED",
+    "ETIMEDOUT",
+    "ECONNRESET",
+    "EPIPE",
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "ECONNREFUSED"
+  ].includes(code);
 };
 
 const inferSelectedSystems = (params, items) => {
@@ -158,7 +543,63 @@ const inferSelectedSystems = (params, items) => {
   return Array.from(systems);
 };
 
-const buildPlanPrompt = ({ projectName, scenario, params, planTitle, items }) => {
+const toWrappedImageToken = (token) => `{{${token}}}`;
+
+const normalizeDevicePlaceholderName = (value = "") =>
+  String(value || "")
+    .replace(/[\s\u3000]+/g, "")
+    .trim();
+
+const sanitizeImageAltText = (text, fallback = "图片") => {
+  const cleaned = String(text || "").replace(/[\[\]\r\n]/g, " ").trim();
+  return cleaned || fallback;
+};
+
+const buildImagePromptSection = (imageContext = {}) => {
+  const common = Array.isArray(imageContext?.commonImageGuidance) ? imageContext.commonImageGuidance : [];
+  const deviceGuidance = Array.isArray(imageContext?.devicePlaceholderGuidance) ? imageContext.devicePlaceholderGuidance : [];
+  if (common.length === 0 && deviceGuidance.length === 0) return "";
+
+  const lines = [];
+  lines.push("【本地静态资源占位符规则】");
+  lines.push("A. 你只能使用后端提供的占位符，禁止编造任何新占位符。");
+  lines.push("B. 资源类型为“图片”时，只能输出占位符 {{RES_IMAGE_xxx}}；不要输出 base64、URL 或 HTML 图片标签。");
+  lines.push("C. 资源类型为“文字（表格）”时，只能输出占位符 {{RES_TEXT_xxx}}，后端会替换为对应 Markdown 内容。");
+  lines.push("D. 输出资源占位符时建议先写“资源解释”文本，再单独一行输出占位符，便于后端排版。");
+  lines.push("E. 设备名称必须与“可插入设备图片列表”逐字一致，设备占位符需单独成行，后端会替换为真实图片。");
+
+  if (common.length > 0) {
+    lines.push("");
+    lines.push("【本地静态资源（按章节）】");
+    common.forEach((item) => {
+      lines.push(`- 章节: ${item.chapterTitle}`);
+      lines.push(`  资源名称: ${item.imageName}`);
+      lines.push(`  资源类型: ${item.resourceType || RESOURCE_TYPE_TEXT}`);
+      lines.push(`  资源解释: ${item.explain || "（无）"}`);
+      lines.push(`  占位符: ${toWrappedImageToken(item.token)}`);
+    });
+  }
+
+  if (deviceGuidance.length > 0) {
+    const added = new Set();
+    lines.push("");
+    lines.push("【可插入设备图片列表（仅限以下设备）】");
+    deviceGuidance.forEach((item) => {
+      const deviceName = String(item?.deviceName || "").trim();
+      if (!deviceName || added.has(deviceName)) return;
+      added.add(deviceName);
+      lines.push(`- ${deviceName} -> [图片占位符：${deviceName}]`);
+    });
+  } else {
+    lines.push("");
+    lines.push("【可插入设备图片列表】");
+    lines.push("当前无可用设备图片，禁止输出任何 [图片占位符：...]。\n");
+  }
+
+  return lines.join("\n");
+};
+
+const buildPlanPrompt = ({ projectName, scenario, params, planTitle, items, imageContext = {} }) => {
   let templateText = "";
   try {
     templateText = readFileSync(PROMPT_TEMPLATE_FILE_URL, "utf-8");
@@ -189,6 +630,8 @@ const buildPlanPrompt = ({ projectName, scenario, params, planTitle, items }) =>
     单位: item?.unit || "台"
   }));
 
+  const imagePromptSection = buildImagePromptSection(imageContext);
+
   return [
     "你是专业声学顾问，请根据输入生成可直接用于投标/验收的正式 Markdown 方案。",
     `项目名称: ${projectName}`,
@@ -207,9 +650,12 @@ const buildPlanPrompt = ({ projectName, scenario, params, planTitle, items }) =>
     "4. 必须严格遵守模板中的目录结构和章节顺序。",
     "5. 只保留设备清单中实际存在的系统章节；无对应设备的系统章节必须整节删除（包含标题与正文）。",
     "6. 必须包含完整工程化文字描述，不可只给表格。",
-    "7. 必须输出模板中要求的固定公式，并对每个公式给出不少于50字的原则与解释。",
-    "8. 必须在方案中保留该占位符原文且不能改字：【后端自动插入：报告厅平面布局图】。",
-    "9. 可按模板建议使用静态块占位符，例如 {{INSERT:STANDARDS_TABLE}}、{{INSERT:FORMULAS_BLOCK}}。",
+    "7. 必须输出模板中要求的固定公式，并对每个公式给出不少于50字的原则与解释，解释另起一段不直接跟在公式后面。",
+    "8. 可按模板建议使用静态块占位符，例如 {{INSERT:STANDARDS_TABLE}}、{{INSERT:FORMULAS_BLOCK}}。",
+    "9. 设备清单中不包含图片字段，严禁输出 base64、图片 URL 或 HTML 图片标签。",
+    "10. 本地静态资源的图片类型请使用 {{RES_IMAGE_xxx}}，文字（表格）类型请使用 {{RES_TEXT_xxx}}。",
+    "11. 设备图片只能使用统一格式占位符 [图片占位符：设备名称]。",
+    imagePromptSection,
     "",
     "【参考模板（节选）】",
     truncatedTemplate
@@ -230,7 +676,7 @@ const CHAPTER_SHARED_RULES = [
   "你现在只负责分章节生成《{方案标题}》，严格遵守以下固定规则：",
   "1. 只生成我指定的单一章节，不生成其他内容、不生成目录、不总结、不提前写后面章节。",
   "2. 只保留设备清单中存在的系统，无设备的系统整节删除，不出现文字。",
-  "3. 公式必须原样写在指定位置；图片统一用占位符【后端自动插入：XXX】。",
+  "3. 公式必须原样写在指定位置；设备图片统一使用 [图片占位符：设备名称]。",
   "4. 语言正式工程化，符合投标/验收标准，格式规范。",
   "5. 我会按章节依次让你生成，你只返回当前章节内容。"
 ].join("\n");
@@ -381,28 +827,37 @@ const generatePlanMarkdownByChapters = async ({
   scenario,
   params,
   planTitle,
-  items
+  items,
+  imageContext = {},
+  traceContext = {}
 }) => {
   const prompt = buildPlanPrompt({
     projectName,
     scenario,
     params,
     planTitle,
-    items
+    items,
+    imageContext
   });
 
   let markdown = "";
   let finalError = null;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < PLAN_ARK_MAX_ATTEMPTS; attempt += 1) {
     try {
-      markdown = await callArkMarkdown(prompt);
+      markdown = await callArkMarkdown(prompt, {
+        ...traceContext,
+        attempt: attempt + 1
+      });
       finalError = null;
       break;
     } catch (error) {
       finalError = error;
       console.warn(`⚠️ Plan ${planTitle} generation failed on attempt ${attempt + 1}:`, error.message);
-      if (attempt < 1) {
+      const canRetry = shouldRetryArkRequest(error);
+      if (attempt < PLAN_ARK_MAX_ATTEMPTS - 1 && canRetry) {
         await new Promise((resolve) => setTimeout(resolve, 800 * (attempt + 1)));
+      } else {
+        break;
       }
     }
   }
@@ -465,37 +920,346 @@ const extractArkMarkdown = (data) => {
   return texts.join("\n").trim();
 };
 
-const callArkMarkdown = async (prompt) => {
+const callArkMarkdown = async (prompt, traceContext = {}) => {
   const apiKey = process.env.ARK_API_KEY || "";
   if (!apiKey) {
     throw new Error("Missing ARK_API_KEY env variable");
   }
 
-  const response = await axios.post(
-    ARK_API_URL,
-    {
-      model: ARK_MODEL,
-      input: [
-        {
-          role: "user",
-          content: [{ type: "input_text", text: prompt }]
-        }
-      ]
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json"
-      },
-      timeout: 180000
-    }
-  );
+  const requestBody = {
+    model: ARK_MODEL,
+    input: [
+      {
+        role: "user",
+        content: [{ type: "input_text", text: prompt }]
+      }
+    ]
+  };
+
+  const requestStartAt = Date.now();
+  tracePlanEvent("ark-request-send", traceContext, {
+    arkUrl: ARK_API_URL,
+    model: ARK_MODEL,
+    prompt: clipTraceText(prompt),
+    requestBody: clipTraceJson(requestBody)
+  });
+
+  let response;
+  try {
+    response = await axios.post(
+      ARK_API_URL,
+      requestBody,
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
+        },
+        timeout: 180000
+      }
+    );
+  } catch (error) {
+    tracePlanEvent("ark-request-failed", traceContext, {
+      elapsedMs: Date.now() - requestStartAt,
+      message: error?.message || "Ark request failed",
+      status: error?.response?.status,
+      responseData: clipTraceJson(error?.response?.data || "")
+    });
+    throw error;
+  }
+
+  tracePlanEvent("ark-response-received", traceContext, {
+    elapsedMs: Date.now() - requestStartAt,
+    status: response.status,
+    responseBody: clipTraceJson(response.data)
+  });
 
   const markdown = extractArkMarkdown(response.data);
+  tracePlanEvent("ark-markdown-extracted", traceContext, {
+    markdown: clipTraceText(markdown)
+  });
   if (!markdown) {
     throw new Error("Ark returned empty markdown content");
   }
   return markdown;
+};
+
+const loadCommonImageResources = async (scenario) => {
+  const sceneLabel = normalizeSceneLabel(scenario);
+  const validChapterTitleSet = new Set(PLAN_CHAPTER_TITLE_CANDIDATES.map((title) => normalizeChapterTitle(title)));
+  try {
+    const [rows] = await pool.query(
+      `SELECT id, block_key, title, description, content, \`插入章节\`, \`使用场景\`, \`资源类型\`, enabled
+       FROM \`${LOCAL_STATIC_RESOURCE_TABLE}\`
+       WHERE content IS NOT NULL AND content <> ''`
+    );
+    return normalizeStaticResourceRows(rows, sceneLabel, validChapterTitleSet);
+  } catch (error) {
+    console.warn("⚠️ Load common image resources failed:", error.message);
+    return [];
+  }
+};
+
+const queryDeviceImageByItem = async (item) => {
+  const tables = getDeviceImageTableCandidates(item?.type);
+  const model = String(item?.model || "").trim();
+  const name = String(item?.name || "").trim();
+
+  for (const table of tables) {
+    try {
+      const columns = await getTableColumns(table);
+      if (!columns.includes("设备图片")) continue;
+      const hasModel = columns.includes("型号");
+      const hasName = columns.includes("产品名称");
+      if (!hasModel && !hasName) continue;
+
+      const conditions = [];
+      const values = [];
+      if (hasModel && model) {
+        conditions.push("`型号` = ?");
+        values.push(model);
+      }
+      if (hasName && name) {
+        conditions.push("`产品名称` = ?");
+        values.push(name);
+      }
+      if (conditions.length === 0) continue;
+
+      const [rows] = await pool.query(
+        `SELECT 设备图片, 产品名称, 型号
+         FROM \`${table}\`
+         WHERE (${conditions.join(" OR ")}) AND 设备图片 IS NOT NULL AND 设备图片 <> ''
+         LIMIT 1`,
+        values
+      );
+
+      if (Array.isArray(rows) && rows.length > 0) {
+        const first = rows[0] || {};
+        return {
+          imageData: String(first?.设备图片 || "").trim(),
+          imageName: String(first?.产品名称 || name || first?.型号 || model || "设备图片").trim()
+        };
+      }
+    } catch (error) {
+      console.warn(`⚠️ Query device image failed (${table}):`, error.message);
+    }
+  }
+
+  return null;
+};
+
+const buildPlanImageContext = async ({
+  scenario,
+  items,
+  commonImageResources,
+  deviceImageCache
+}) => {
+  const mediaAssetMap = {};
+  const deviceImageByName = {};
+  const devicePlaceholderGuidance = [];
+
+  const commonImageGuidance = (Array.isArray(commonImageResources) ? commonImageResources : []).map((asset) => {
+    const normalizedType = normalizeResourceType(asset.resourceType, inferResourceTypeFromContent(asset.content));
+    const token = normalizedType === RESOURCE_TYPE_IMAGE
+      ? `RES_IMAGE_${asset.id}`
+      : `RES_TEXT_${asset.id}`;
+    mediaAssetMap[token] = {
+      resourceType: normalizedType,
+      content: String(asset.content || "").trim(),
+      alt: sanitizeImageAltText(asset.resourceName, "本地静态资源")
+    };
+    return {
+      chapterTitle: asset.chapterTitle,
+      imageName: asset.resourceName,
+      explain: asset.explain,
+      token,
+      resourceType: normalizedType
+    };
+  });
+
+  const list = Array.isArray(items) ? items : [];
+  for (let i = 0; i < list.length; i += 1) {
+    const item = list[i] || {};
+    const cacheKey = `${String(item?.type || "")}||${String(item?.model || "")}||${String(item?.name || "")}`;
+    let imageRecord = deviceImageCache.get(cacheKey);
+    if (imageRecord === undefined) {
+      imageRecord = await queryDeviceImageByItem(item);
+      deviceImageCache.set(cacheKey, imageRecord || null);
+    }
+
+    if (!imageRecord || !imageRecord.imageData) continue;
+
+    const deviceName = String(item?.name || item?.model || "").trim();
+    const normalizedName = normalizeDevicePlaceholderName(deviceName);
+    if (!normalizedName || deviceImageByName[normalizedName]) continue;
+
+    deviceImageByName[normalizedName] = {
+      src: imageRecord.imageData,
+      alt: sanitizeImageAltText(imageRecord.imageName || deviceName || item?.model || "设备图片", "设备图片"),
+      deviceName
+    };
+    devicePlaceholderGuidance.push({ deviceName });
+  }
+
+  return {
+    mediaAssetMap,
+    commonImageGuidance,
+    deviceImageByName,
+    devicePlaceholderGuidance
+  };
+};
+
+const replaceMediaPlaceholders = (markdown, mediaAssetMap = {}, skipTokenSet = new Set()) => {
+  const replaced = [];
+  const content = String(markdown || "").replace(/\{\{((?:IMG_[A-Z0-9_]+|RES_(?:IMAGE|TEXT)_[A-Z0-9_]+))\}\}/g, (_, token) => {
+    if (skipTokenSet.has(token)) {
+      return `{{${token}}}`;
+    }
+    const asset = mediaAssetMap[token];
+    if (!asset) {
+      return `<!-- WARNING: image placeholder '${token}' not found -->`;
+    }
+
+    const resourceType = normalizeResourceType(asset.resourceType, inferResourceTypeFromContent(asset.content || asset.src));
+    const rawContent = String(asset.content || asset.src || "").trim();
+    if (!rawContent) {
+      return `<!-- WARNING: resource placeholder '${token}' has empty content -->`;
+    }
+
+    replaced.push(token);
+    if (resourceType === RESOURCE_TYPE_TEXT) {
+      return rawContent;
+    }
+    return `![${sanitizeImageAltText(asset.alt, token)}](${rawContent})`;
+  });
+  return { content, replaced };
+};
+
+const stripCommonImagePlaceholders = (markdown, tokens = []) => {
+  const tokenSet = new Set(Array.isArray(tokens) ? tokens : []);
+  if (tokenSet.size === 0) return markdown;
+  return String(markdown || "").replace(/\{\{((?:IMG_[A-Z0-9_]+|RES_(?:IMAGE|TEXT)_[A-Z0-9_]+))\}\}/g, (_, token) => {
+    if (tokenSet.has(token)) return "";
+    return `{{${token}}}`;
+  });
+};
+
+const replaceDeviceImagePlaceholders = (markdown, deviceImageByName = {}) => {
+  const replaced = [];
+  const missing = [];
+  const content = String(markdown || "").replace(/\[图片占位符[：:]\s*([^\]\r\n]+?)\s*\]/g, (full, rawName) => {
+    const deviceName = String(rawName || "").trim();
+    const normalizedName = normalizeDevicePlaceholderName(deviceName);
+    const asset = normalizedName ? deviceImageByName[normalizedName] : null;
+    if (!asset?.src) {
+      if (deviceName) missing.push(deviceName);
+      return full;
+    }
+    replaced.push(deviceName || String(asset?.deviceName || ""));
+    return `![${sanitizeImageAltText(asset.alt || deviceName, deviceName || "设备图片")}](${String(asset.src).trim()})`;
+  });
+
+  return {
+    content,
+    replaced: Array.from(new Set(replaced.filter(Boolean))),
+    missing: Array.from(new Set(missing.filter(Boolean)))
+  };
+};
+
+const insertCommonImagesByChapterTitle = (markdown, commonImageGuidance = [], mediaAssetMap = {}, replacedTokens = []) => {
+  const lines = String(markdown || "").split(/\r?\n/);
+  const replacedSet = new Set(Array.isArray(replacedTokens) ? replacedTokens : []);
+  const inserted = [];
+
+  const pendingByChapter = new Map();
+  (Array.isArray(commonImageGuidance) ? commonImageGuidance : []).forEach((item) => {
+    const token = String(item?.token || "").trim();
+    const chapterTitle = normalizeChapterTitle(item?.chapterTitle || "");
+    const asset = mediaAssetMap[token];
+    const rawContent = String(asset?.content || asset?.src || "").trim();
+    if (!token || !chapterTitle || !asset || !rawContent || replacedSet.has(token)) return;
+    if (!pendingByChapter.has(chapterTitle)) {
+      pendingByChapter.set(chapterTitle, []);
+    }
+    pendingByChapter.get(chapterTitle).push(item);
+  });
+
+  if (pendingByChapter.size === 0) {
+    return { content: lines.join("\n"), inserted, skipped: [] };
+  }
+
+  const headings = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const matched = lines[i].match(/^(#{2,6})\s+(.+)$/);
+    if (!matched) continue;
+    headings.push({
+      index: i,
+      level: matched[1].length,
+      title: matched[2].trim(),
+      normalizedTitle: normalizeChapterTitle(matched[2].trim())
+    });
+  }
+
+  const operations = [];
+  for (let i = 0; i < headings.length; i += 1) {
+    const heading = headings[i];
+    const chapterAssets = pendingByChapter.get(heading.normalizedTitle);
+    if (!chapterAssets || chapterAssets.length === 0) continue;
+
+    const chunks = [];
+    chapterAssets.forEach((item) => {
+      const token = String(item?.token || "").trim();
+      const asset = mediaAssetMap[token];
+      if (!token || !asset || replacedSet.has(token)) return;
+
+      const resourceType = normalizeResourceType(asset.resourceType, item?.resourceType || inferResourceTypeFromContent(asset.content || asset.src));
+      const rawContent = String(asset.content || asset.src || "").trim();
+      if (!rawContent) return;
+
+      const explain = String(item?.explain || "").trim();
+      if (explain) chunks.push(explain);
+      if (resourceType === RESOURCE_TYPE_TEXT) {
+        chunks.push(rawContent);
+      } else {
+        chunks.push(`![${sanitizeImageAltText(asset.alt || item?.imageName || token, token)}](${rawContent})`);
+      }
+      inserted.push(token);
+      replacedSet.add(token);
+    });
+
+    if (chunks.length === 0) continue;
+
+    let insertAt = lines.length;
+    for (let j = i + 1; j < headings.length; j += 1) {
+      if (headings[j].level <= heading.level) {
+        insertAt = headings[j].index;
+        break;
+      }
+    }
+
+    const insertLines = ["", chunks.join("\n\n"), ""];
+    operations.push({ insertAt, insertLines });
+    pendingByChapter.delete(heading.normalizedTitle);
+  }
+
+  operations
+    .sort((a, b) => b.insertAt - a.insertAt)
+    .forEach((operation) => {
+      lines.splice(operation.insertAt, 0, ...operation.insertLines);
+    });
+
+  const skipped = [];
+  pendingByChapter.forEach((chapterAssets) => {
+    chapterAssets.forEach((item) => {
+      const token = String(item?.token || "").trim();
+      if (token && !replacedSet.has(token)) skipped.push(token);
+    });
+  });
+
+  return {
+    content: lines.join("\n"),
+    inserted,
+    skipped
+  };
 };
 
 const headingToAnchor = (text) =>
@@ -552,14 +1316,39 @@ const injectStaticBlocks = (markdown, blockMap) => {
   return { content, injected };
 };
 
-const postProcessMarkdown = (markdown, blockMap) => {
+const postProcessMarkdown = (markdown, blockMap, mediaAssetMap = {}, commonImageGuidance = [], deviceImageByName = {}) => {
   const { content, injected } = injectStaticBlocks(markdown, blockMap);
   const withToc = insertToc(content);
+  const commonTokens = (Array.isArray(commonImageGuidance) ? commonImageGuidance : [])
+    .map((item) => String(item?.token || "").trim())
+    .filter(Boolean);
+  const commonTokenSet = new Set(commonTokens);
+  const { content: withImages, replaced } = replaceMediaPlaceholders(withToc, mediaAssetMap, commonTokenSet);
+  const {
+    content: withChapterImages,
+    inserted: chapterInserted,
+    skipped: chapterSkipped
+  } = insertCommonImagesByChapterTitle(withImages, commonImageGuidance, mediaAssetMap, replaced);
+  const cleanedMarkdown = stripCommonImagePlaceholders(withChapterImages, commonTokens);
+  const {
+    content: withDeviceImages,
+    replaced: deviceReplaced,
+    missing: deviceMissing
+  } = replaceDeviceImagePlaceholders(cleanedMarkdown, deviceImageByName);
+  const replacedAll = Array.from(new Set([...(Array.isArray(replaced) ? replaced : []), ...chapterInserted]));
   return {
-    markdownProcessed: withToc,
+    markdownProcessed: withDeviceImages,
     postProcessReport: {
       injected_blocks: injected,
-      toc_added: withToc !== content
+      toc_added: withToc !== content,
+      replaced_resource_placeholders: replacedAll,
+      chapter_inserted_resources: chapterInserted,
+      chapter_skipped_resources: chapterSkipped,
+      replaced_image_placeholders: replacedAll,
+      chapter_inserted_images: chapterInserted,
+      chapter_skipped_images: chapterSkipped,
+      replaced_device_placeholders: deviceReplaced,
+      missing_device_placeholders: deviceMissing
     }
   };
 };
@@ -875,10 +1664,19 @@ app.post("/api/run-dify-chatflow", async (req, res) => {
 app.get("/api/inventory/:table", async (req, res) => {
   const table = getSafeTableName(req.params.table);
   if (!table) return res.status(400).json({ error: "Invalid table name" });
+  const physicalTable = resolvePhysicalTableName(table);
 
   try {
-    const [rows] = await pool.query(`SELECT * FROM \`${table}\``);
-    res.json(rows);
+    const columns = await getTableColumns(table);
+    const orderColumn = columns.includes("序号") ? "序号" : (columns.includes("id") ? "id" : "");
+    const sql = orderColumn
+      ? `SELECT * FROM \`${physicalTable}\` ORDER BY \`${orderColumn}\` ASC`
+      : `SELECT * FROM \`${physicalTable}\``;
+    const [rows] = await pool.query(sql);
+    const normalized = (Array.isArray(rows) ? rows : []).map((row, index) =>
+      normalizeInventoryRowForResponse(table, row, index)
+    );
+    res.json(normalized);
   } catch (error) {
     console.error("❌ Fetch inventory failed:", error.message);
     res.status(500).json({ error: "Failed to fetch inventory" });
@@ -888,6 +1686,7 @@ app.get("/api/inventory/:table", async (req, res) => {
 app.get("/api/inventory/:table/detail", async (req, res) => {
   const table = getSafeTableName(req.params.table);
   if (!table) return res.status(400).json({ error: "Invalid table name" });
+  const physicalTable = resolvePhysicalTableName(table);
 
   const { model, name } = req.query;
   if (!model && !name) {
@@ -895,19 +1694,24 @@ app.get("/api/inventory/:table/detail", async (req, res) => {
   }
 
   try {
+    const columns = await getTableColumns(table);
     const conditions = [];
     const values = [];
-    if (model) {
+    if (model && columns.includes("型号")) {
       conditions.push("`型号` = ?");
       values.push(model);
     }
-    if (name) {
+    if (name && columns.includes("产品名称")) {
       conditions.push("`产品名称` = ?");
       values.push(name);
     }
 
+    if (conditions.length === 0) {
+      return res.status(400).json({ error: "No matched searchable columns in target table" });
+    }
+
     const [rows] = await pool.query(
-      `SELECT * FROM \`${table}\` WHERE ${conditions.join(" OR ")} LIMIT 1`,
+      `SELECT * FROM \`${physicalTable}\` WHERE ${conditions.join(" OR ")} LIMIT 1`,
       values
     );
 
@@ -915,7 +1719,7 @@ app.get("/api/inventory/:table/detail", async (req, res) => {
       return res.status(404).json({ error: "Not found" });
     }
 
-    res.json(rows[0]);
+    res.json(normalizeInventoryRowForResponse(table, rows[0], 0));
   } catch (error) {
     console.error("❌ Fetch inventory detail failed:", error.message);
     res.status(500).json({ error: "Failed to fetch inventory detail" });
@@ -925,9 +1729,31 @@ app.get("/api/inventory/:table/detail", async (req, res) => {
 app.post("/api/inventory/:table", async (req, res) => {
   const table = getSafeTableName(req.params.table);
   if (!table) return res.status(400).json({ error: "Invalid table name" });
+  const physicalTable = resolvePhysicalTableName(table);
 
-  const payload = req.body || {};
+  const payload = mapInventoryPayloadToTable(table, req.body || {});
   try {
+    if (table === LOCAL_STATIC_RESOURCE_TABLE || table === IMAGE_RESOURCE_TABLE) {
+      if (!payload.block_key) {
+        payload.block_key = createManualResourceBlockKey(payload.title || payload["图片名称"] || "");
+      }
+      if (!Object.prototype.hasOwnProperty.call(payload, "source_file")) {
+        payload.source_file = "manual";
+      }
+      if (!Object.prototype.hasOwnProperty.call(payload, "content")) {
+        payload.content = String(payload.description || "");
+      }
+      if (!Object.prototype.hasOwnProperty.call(payload, "资源类型")) {
+        payload["资源类型"] = normalizeResourceType("", inferResourceTypeFromContent(payload.content));
+      }
+      if (!Object.prototype.hasOwnProperty.call(payload, "enabled")) {
+        payload.enabled = 1;
+      }
+      if (!Object.prototype.hasOwnProperty.call(payload, "使用场景")) {
+        payload["使用场景"] = "通用";
+      }
+    }
+
     const columns = await getTableColumns(table);
     const keys = Object.keys(payload).filter((key) => columns.includes(key));
     if (keys.length === 0) {
@@ -938,7 +1764,7 @@ app.post("/api/inventory/:table", async (req, res) => {
     const fields = keys.map((key) => `\`${key}\``).join(", ");
     const values = keys.map((key) => payload[key]);
     const [result] = await pool.query(
-      `INSERT INTO \`${table}\` (${fields}) VALUES (${placeholders})`,
+      `INSERT INTO \`${physicalTable}\` (${fields}) VALUES (${placeholders})`,
       values
     );
 
@@ -952,8 +1778,9 @@ app.post("/api/inventory/:table", async (req, res) => {
 app.put("/api/inventory/:table/:id", async (req, res) => {
   const table = getSafeTableName(req.params.table);
   if (!table) return res.status(400).json({ error: "Invalid table name" });
+  const physicalTable = resolvePhysicalTableName(table);
 
-  const payload = req.body || {};
+  const payload = mapInventoryPayloadToTable(table, req.body || {});
   const recordId = req.params.id;
 
   try {
@@ -974,7 +1801,7 @@ app.put("/api/inventory/:table/:id", async (req, res) => {
     values.push(recordId);
 
     const [result] = await pool.query(
-      `UPDATE \`${table}\` SET ${setClause} WHERE \`${primaryKey}\` = ?`,
+      `UPDATE \`${physicalTable}\` SET ${setClause} WHERE \`${primaryKey}\` = ?`,
       values
     );
 
@@ -988,18 +1815,55 @@ app.put("/api/inventory/:table/:id", async (req, res) => {
 app.delete("/api/inventory/:table/:id", async (req, res) => {
   const table = getSafeTableName(req.params.table);
   if (!table) return res.status(400).json({ error: "Invalid table name" });
+  const physicalTable = resolvePhysicalTableName(table);
 
   const recordId = req.params.id;
   try {
     const primaryKey = await getPrimaryKey(table);
     const [result] = await pool.query(
-      `DELETE FROM \`${table}\` WHERE \`${primaryKey}\` = ?`,
+      `DELETE FROM \`${physicalTable}\` WHERE \`${primaryKey}\` = ?`,
       [recordId]
     );
     res.json({ affectedRows: result.affectedRows });
   } catch (error) {
     console.error("❌ Delete inventory failed:", error.message);
     res.status(500).json({ error: "Failed to delete inventory" });
+  }
+});
+
+app.post("/api/inventory/:table/batch-delete", async (req, res) => {
+  const table = getSafeTableName(req.params.table);
+  if (!table) return res.status(400).json({ error: "Invalid table name" });
+  const physicalTable = resolvePhysicalTableName(table);
+
+  const rawIds = Array.isArray(req.body?.ids) ? req.body.ids : [];
+  const ids = Array.from(
+    new Set(
+      rawIds
+        .map((value) => String(value ?? "").trim())
+        .filter((value) => /^\d+$/.test(value))
+    )
+  );
+
+  if (ids.length === 0) {
+    return res.status(400).json({ error: "Missing valid ids" });
+  }
+
+  try {
+    const primaryKey = await getPrimaryKey(table);
+    const placeholders = ids.map(() => "?").join(", ");
+    const [result] = await pool.query(
+      `DELETE FROM \`${physicalTable}\` WHERE \`${primaryKey}\` IN (${placeholders})`,
+      ids
+    );
+
+    res.json({
+      affectedRows: Number(result?.affectedRows || 0),
+      requestedRows: ids.length
+    });
+  } catch (error) {
+    console.error("❌ Batch delete inventory failed:", error.message);
+    res.status(500).json({ error: "Failed to batch delete inventory" });
   }
 });
 
@@ -1237,6 +2101,15 @@ app.put("/api/static-blocks/:blockKey", async (req, res) => {
   }
 });
 
+app.get("/api/plan/chapter-options", (req, res) => {
+  const scenario = String(req.query.scenario || "MEETING_ROOM");
+  const chapters = PLAN_CHAPTERS.map((chapter) => chapter.title);
+  res.json({
+    scenario,
+    chapters
+  });
+});
+
 app.get("/api/plan/documents/:fileName", (req, res) => {
   const rawName = decodeURIComponent(String(req.params.fileName || ""));
   const isSafeName = /^[a-zA-Z0-9\-_\.]+$/.test(rawName) && !rawName.includes("..") && !rawName.includes("/");
@@ -1255,7 +2128,21 @@ app.get("/api/plan/documents/:fileName", (req, res) => {
 
 app.post("/api/plan/generate-markdowns-stream", async (req, res) => {
   const { projectName, scenario, params, plans } = req.body || {};
+  const routeTrace = {
+    traceId: createTraceId("plan-stream"),
+    route: "/api/plan/generate-markdowns-stream",
+    projectName: String(projectName || ""),
+    scenario: String(scenario || "")
+  };
+
+  tracePlanEvent("request-received", routeTrace, {
+    planCount: Array.isArray(plans) ? plans.length : 0
+  });
+
   if (!projectName || !scenario || !params || !Array.isArray(plans) || plans.length === 0) {
+    tracePlanEvent("request-invalid", routeTrace, {
+      reason: "Missing required fields: projectName, scenario, params, plans"
+    });
     return res.status(400).json({ error: "Missing required fields: projectName, scenario, params, plans" });
   }
 
@@ -1267,16 +2154,46 @@ app.post("/api/plan/generate-markdowns-stream", async (req, res) => {
   }
 
   const sendSse = (payload) => {
-    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    const withServerTime = {
+      ...payload,
+      serverSentAt: new Date().toISOString(),
+      serverSentTs: Date.now(),
+      traceId: routeTrace.traceId
+    };
+    const serialized = JSON.stringify(withServerTime);
+    tracePlanEvent("frontend-payload-sent", {
+      ...routeTrace,
+      planId: payload?.planId,
+      planTitle: payload?.title
+    }, {
+      event: payload?.event || "unknown",
+      payloadBytes: Buffer.byteLength(serialized, "utf8")
+    });
+    res.write(`data: ${serialized}\n\n`);
   };
 
   let closed = false;
   req.on("close", () => {
     closed = true;
+    tracePlanEvent("frontend-connection-closed", routeTrace);
   });
 
   try {
+    const staticBlocksStartAt = Date.now();
     const staticBlockMap = await loadEffectiveStaticBlockMap();
+    tracePlanEvent("static-blocks-loaded", routeTrace, {
+      elapsedMs: Date.now() - staticBlocksStartAt,
+      blockCount: Object.keys(staticBlockMap || {}).length
+    });
+
+    const commonImagesStartAt = Date.now();
+    const commonImageResources = await loadCommonImageResources(String(scenario));
+    tracePlanEvent("common-images-loaded", routeTrace, {
+      elapsedMs: Date.now() - commonImagesStartAt,
+      count: commonImageResources.length
+    });
+    const deviceImageCache = new Map();
+
     const planResults = await runWithConcurrency(plans, PLAN_STREAM_CONCURRENCY, async (plan) => {
       if (closed) {
         return { status: "aborted" };
@@ -1286,14 +2203,39 @@ app.post("/api/plan/generate-markdowns-stream", async (req, res) => {
       const planId = plan?.id;
       const planTitle = String(plan?.title || "方案");
       const items = Array.isArray(plan?.items) ? plan.items : [];
+      const planTrace = {
+        ...routeTrace,
+        planId,
+        planTitle
+      };
+
+      tracePlanEvent("plan-start", planTrace, {
+        itemCount: items.length
+      });
 
       try {
+        const imageContextStartAt = Date.now();
+        const imageContext = await buildPlanImageContext({
+          scenario: String(scenario),
+          items,
+          commonImageResources,
+          deviceImageCache
+        });
+        tracePlanEvent("plan-image-context-ready", planTrace, {
+          elapsedMs: Date.now() - imageContextStartAt,
+          mediaCount: Object.keys(imageContext.mediaAssetMap || {}).length,
+          commonImageCount: imageContext.commonImageGuidance?.length || 0,
+          deviceImageCount: Object.keys(imageContext.deviceImageByName || {}).length
+        });
+
         const markdownRaw = await generatePlanMarkdownByChapters({
           projectName: String(projectName),
           scenario: String(scenario),
           params,
           planTitle,
           items,
+          imageContext,
+          traceContext: planTrace,
           onChapterStart: (chapter) => {
             if (closed) return;
             sendSse({
@@ -1332,11 +2274,29 @@ app.post("/api/plan/generate-markdowns-stream", async (req, res) => {
           }
         });
 
-        const { markdownProcessed, postProcessReport } = postProcessMarkdown(markdownRaw, staticBlockMap);
+        const postProcessStartAt = Date.now();
+        tracePlanEvent("post-process-start", planTrace);
+        const { markdownProcessed, postProcessReport } = postProcessMarkdown(
+          markdownRaw,
+          staticBlockMap,
+          imageContext.mediaAssetMap,
+          imageContext.commonImageGuidance,
+          imageContext.deviceImageByName
+        );
+        tracePlanEvent("post-process-end", planTrace, {
+          elapsedMs: Date.now() - postProcessStartAt,
+          postProcessReport
+        });
+
+        const saveDocStartAt = Date.now();
         const { docLink } = saveGeneratedDoc({
           projectName: String(projectName),
           planTitle,
           markdownProcessed
+        });
+        tracePlanEvent("doc-saved", planTrace, {
+          elapsedMs: Date.now() - saveDocStartAt,
+          docLink
         });
 
         if (!closed) {
@@ -1352,9 +2312,20 @@ app.post("/api/plan/generate-markdowns-stream", async (req, res) => {
           });
         }
 
+        tracePlanEvent("plan-success", planTrace, {
+          totalElapsedMs: Date.now() - planStartAt,
+          markdownRawLength: String(markdownRaw || "").length,
+          markdownProcessedLength: String(markdownProcessed || "").length
+        });
+
         return { status: "success" };
       } catch (error) {
         console.error(`❌ Plan stream generation failed (${planTitle}):`, error.response?.data || error.message);
+        tracePlanEvent("plan-failed", planTrace, {
+          totalElapsedMs: Date.now() - planStartAt,
+          message: error?.message || "Plan stream generation failed",
+          responseData: clipTraceJson(error?.response?.data || "")
+        });
         if (!closed) {
           sendSse({
             event: "plan-error",
@@ -1379,10 +2350,17 @@ app.post("/api/plan/generate-markdowns-stream", async (req, res) => {
 
     if (!closed) {
       sendSse({ event: "done", summary });
+      tracePlanEvent("request-complete", routeTrace, {
+        summary
+      });
       res.end();
     }
   } catch (error) {
     console.error("❌ Generate markdown stream failed:", error.response?.data || error.message);
+    tracePlanEvent("request-failed", routeTrace, {
+      message: error?.message || "Generate markdown stream failed",
+      responseData: clipTraceJson(error?.response?.data || "")
+    });
     if (!closed) {
       sendSse({ event: "fatal-error", message: error.message });
       res.end();
@@ -1392,29 +2370,108 @@ app.post("/api/plan/generate-markdowns-stream", async (req, res) => {
 
 app.post("/api/plan/generate-markdowns", async (req, res) => {
   const { projectName, scenario, params, plans } = req.body || {};
+  const routeTrace = {
+    traceId: createTraceId("plan-batch"),
+    route: "/api/plan/generate-markdowns",
+    projectName: String(projectName || ""),
+    scenario: String(scenario || "")
+  };
+
+  tracePlanEvent("request-received", routeTrace, {
+    planCount: Array.isArray(plans) ? plans.length : 0
+  });
+
   if (!projectName || !scenario || !params || !Array.isArray(plans) || plans.length === 0) {
+    tracePlanEvent("request-invalid", routeTrace, {
+      reason: "Missing required fields: projectName, scenario, params, plans"
+    });
     return res.status(400).json({ error: "Missing required fields: projectName, scenario, params, plans" });
   }
 
   try {
+    const staticBlocksStartAt = Date.now();
     const staticBlockMap = await loadEffectiveStaticBlockMap();
+    tracePlanEvent("static-blocks-loaded", routeTrace, {
+      elapsedMs: Date.now() - staticBlocksStartAt,
+      blockCount: Object.keys(staticBlockMap || {}).length
+    });
+
+    const commonImagesStartAt = Date.now();
+    const commonImageResources = await loadCommonImageResources(String(scenario));
+    tracePlanEvent("common-images-loaded", routeTrace, {
+      elapsedMs: Date.now() - commonImagesStartAt,
+      count: commonImageResources.length
+    });
+    const deviceImageCache = new Map();
+
     const planResults = await runWithConcurrency(plans, PLAN_BATCH_CONCURRENCY, async (plan) => {
+      const planStartAt = Date.now();
       const planTitle = String(plan?.title || "方案");
       const items = Array.isArray(plan?.items) ? plan.items : [];
+      const planTrace = {
+        ...routeTrace,
+        planId: plan?.id,
+        planTitle
+      };
+
+      tracePlanEvent("plan-start", planTrace, {
+        itemCount: items.length
+      });
+
       try {
+        const imageContextStartAt = Date.now();
+        const imageContext = await buildPlanImageContext({
+          scenario: String(scenario),
+          items,
+          commonImageResources,
+          deviceImageCache
+        });
+        tracePlanEvent("plan-image-context-ready", planTrace, {
+          elapsedMs: Date.now() - imageContextStartAt,
+          mediaCount: Object.keys(imageContext.mediaAssetMap || {}).length,
+          commonImageCount: imageContext.commonImageGuidance?.length || 0,
+          deviceImageCount: Object.keys(imageContext.deviceImageByName || {}).length
+        });
+
         const markdownRaw = await generatePlanMarkdownByChapters({
           projectName: String(projectName),
           scenario: String(scenario),
           params,
           planTitle,
-          items
+          items,
+          imageContext,
+          traceContext: planTrace
         });
 
-        const { markdownProcessed, postProcessReport } = postProcessMarkdown(markdownRaw, staticBlockMap);
+        const postProcessStartAt = Date.now();
+        tracePlanEvent("post-process-start", planTrace);
+        const { markdownProcessed, postProcessReport } = postProcessMarkdown(
+          markdownRaw,
+          staticBlockMap,
+          imageContext.mediaAssetMap,
+          imageContext.commonImageGuidance,
+          imageContext.deviceImageByName
+        );
+        tracePlanEvent("post-process-end", planTrace, {
+          elapsedMs: Date.now() - postProcessStartAt,
+          postProcessReport
+        });
+
+        const saveDocStartAt = Date.now();
         const { docLink } = saveGeneratedDoc({
           projectName: String(projectName),
           planTitle,
           markdownProcessed
+        });
+        tracePlanEvent("doc-saved", planTrace, {
+          elapsedMs: Date.now() - saveDocStartAt,
+          docLink
+        });
+
+        tracePlanEvent("plan-success", planTrace, {
+          totalElapsedMs: Date.now() - planStartAt,
+          markdownRawLength: String(markdownRaw || "").length,
+          markdownProcessedLength: String(markdownProcessed || "").length
         });
 
         return {
@@ -1429,6 +2486,11 @@ app.post("/api/plan/generate-markdowns", async (req, res) => {
           }
         };
       } catch (error) {
+        tracePlanEvent("plan-failed", planTrace, {
+          totalElapsedMs: Date.now() - planStartAt,
+          message: error?.message || "Plan generation failed",
+          responseData: clipTraceJson(error?.response?.data || "")
+        });
         return {
           ok: false,
           data: {
@@ -1445,18 +2507,59 @@ app.post("/api/plan/generate-markdowns", async (req, res) => {
 
     const ok = generated.length > 0;
     if (!ok) {
+      tracePlanEvent("request-failed", routeTrace, {
+        reason: "all plans failed",
+        failedCount: failed.length
+      });
       return res.status(500).json({
         error: "Failed to generate markdowns",
-        failed
+        failed,
+        trace: {
+          requestId: routeTrace.traceId,
+          responseSentAt: new Date().toISOString(),
+          responseSentTs: Date.now()
+        }
       });
     }
 
-    res.json({ ok: true, projectName, generated, failed, documents: generated });
+    const responsePayload = {
+      ok: true,
+      projectName,
+      generated,
+      failed,
+      documents: generated,
+      trace: {
+        requestId: routeTrace.traceId,
+        responseSentAt: new Date().toISOString(),
+        responseSentTs: Date.now()
+      }
+    };
+
+    tracePlanEvent("frontend-payload-sent", routeTrace, {
+      successCount: generated.length,
+      failedCount: failed.length,
+      payloadBytes: Buffer.byteLength(JSON.stringify(responsePayload), "utf8")
+    });
+    tracePlanEvent("request-complete", routeTrace, {
+      successCount: generated.length,
+      failedCount: failed.length
+    });
+
+    res.json(responsePayload);
   } catch (error) {
     console.error("❌ Generate markdowns failed:", error.response?.data || error.message);
+    tracePlanEvent("request-failed", routeTrace, {
+      message: error?.message || "Generate markdowns failed",
+      responseData: clipTraceJson(error?.response?.data || "")
+    });
     res.status(500).json({
       error: "Failed to generate markdowns",
-      details: error.message
+      details: error.message,
+      trace: {
+        requestId: routeTrace.traceId,
+        responseSentAt: new Date().toISOString(),
+        responseSentTs: Date.now()
+      }
     });
   }
 });
@@ -1467,10 +2570,24 @@ app.get('/health', (req, res) => {
 
 const backendDir = fileURLToPath(new URL("./", import.meta.url));
 try {
+  await ensureInventorySchema();
+  console.log("✅ Inventory schema ready");
+} catch (error) {
+  console.warn("⚠️ Inventory schema init failed:", error.message);
+}
+
+try {
   await ensureStaticBlockTableAndSeed(pool, backendDir);
   console.log("✅ Static markdown blocks ready");
 } catch (error) {
   console.warn("⚠️ Static markdown blocks init failed:", error.message);
+}
+
+try {
+  await ensureMergedStaticResourceSchemaAndMigrate();
+  console.log("✅ Merged static resource schema ready");
+} catch (error) {
+  console.warn("⚠️ Merged static resource schema init failed:", error.message);
 }
 
 // 启动 - 支持环境变量动态指定端口

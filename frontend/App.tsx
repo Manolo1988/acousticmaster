@@ -1,5 +1,5 @@
 
-import React, { useRef, useEffect, useState, ReactNode } from 'react';
+import React, { useRef, useEffect, useState, useMemo, ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -130,9 +130,12 @@ const markdownReportStyles = `
 }
 
 .markdown-report img {
-  max-width: 100%;
+  display: block;
+  max-width: min(100%, 820px);
+  width: auto;
+  height: auto;
   border-radius: 10px;
-  margin: 12px 0;
+  margin: 14px auto;
 }
 
 .markdown-report hr {
@@ -374,7 +377,7 @@ const markdownReportStyles = `
 }
 `;
 
-type FieldType = 'text' | 'number' | 'select';
+type FieldType = 'text' | 'number' | 'select' | 'textarea' | 'file';
 type FieldConfig = {
   key: string;
   label: string;
@@ -383,6 +386,7 @@ type FieldConfig = {
   options?: string[];
   placeholder?: string;
   defaultValue?: string | number;
+  accept?: string;
 };
 
 const FIXED_SCENES = [
@@ -397,12 +401,15 @@ const NON_FIXED_SCENES = ['270平方以上', '90-270平方', '90平方以下'];
 const SPEAKER_TYPES = ['全频音箱', '线阵列音箱', '台唇音箱', '拉声像音箱', '返听音箱', '超低音箱'];
 const PERIPHERAL_TYPES = ['调音台', '电源时序器', '音频处理器', '话筒', '天线放大系统'];
 const EXTRA_DEVICE_TYPES = ['中控系统', '矩阵', '视频会议系统', '录播系统'];
+const REPORT_CHAPTER_OPTIONS = ['项目概述', '设计依据和目标', '方案设计', '设备介绍', '装修建议', '环境要求'];
 
 const TABLE_FIELD_CONFIG: Record<TableType, FieldConfig[]> = {
   [TableType.FIXED_COMBINATION]: [
     { key: '场景', label: '场景', type: 'select', options: FIXED_SCENES, required: true },
     { key: '类型', label: '类型', type: 'select', options: SPEAKER_TYPES, required: true },
-    { key: '型号', label: '型号', type: 'text', required: true, placeholder: '型号（与音箱表一致）' }
+    { key: '品牌', label: '品牌', type: 'text', required: true },
+    { key: '型号', label: '型号', type: 'text', required: true, placeholder: '型号（与音箱表一致）' },
+    { key: '设备图片', label: '设备图片', type: 'file', accept: 'image/*' }
   ],
   [TableType.SPEAKER]: [
     { key: '类型', label: '类型', type: 'select', options: SPEAKER_TYPES, required: true },
@@ -415,38 +422,56 @@ const TABLE_FIELD_CONFIG: Record<TableType, FieldConfig[]> = {
     { key: '灵敏度', label: '灵敏度', type: 'text', placeholder: '如 93dB' },
     { key: '最大声压级', label: '最大声压级', type: 'text', placeholder: '如 120dB' },
     { key: '覆盖角', label: '覆盖角', type: 'text', placeholder: '如 90°×60°' },
-    { key: '面高', label: '面高', type: 'number', placeholder: '单位米，如 0.4' }
+    { key: '面高', label: '面高', type: 'number', placeholder: '单位米，如 0.4' },
+    { key: '设备图片', label: '设备图片', type: 'file', accept: 'image/*' }
   ],
   [TableType.AMPLIFIER]: [
     { key: '类型', label: '类型', type: 'text', required: true, defaultValue: '定阻功放' },
+    { key: '品牌', label: '品牌', type: 'text', required: true },
     { key: '产品名称', label: '产品名称', type: 'text', required: true },
     { key: '型号', label: '型号', type: 'text', required: true },
     { key: '市场价', label: '市场价', type: 'number', required: true, defaultValue: 0 },
     { key: '额定功率', label: '额定功率', type: 'text', required: true },
     { key: '额定阻抗', label: '额定阻抗', type: 'text', required: true },
-    { key: '通道数', label: '通道数', type: 'text', required: true }
+    { key: '通道数', label: '通道数', type: 'text', required: true },
+    { key: '设备图片', label: '设备图片', type: 'file', accept: 'image/*' }
   ],
   [TableType.PERIPHERAL]: [
     { key: '类型', label: '类型', type: 'select', options: PERIPHERAL_TYPES, required: true },
+    { key: '品牌', label: '品牌', type: 'text', required: true },
     { key: '产品名称', label: '产品名称', type: 'text', required: true },
     { key: '型号', label: '型号', type: 'text', required: true },
     { key: '输入通道', label: '输入通道', type: 'number' },
     { key: '输出通道', label: '输出通道', type: 'number' },
-    { key: '市场价', label: '市场价', type: 'number', required: true, defaultValue: 0 }
+    { key: '市场价', label: '市场价', type: 'number', required: true, defaultValue: 0 },
+    { key: '设备图片', label: '设备图片', type: 'file', accept: 'image/*' }
   ],
   [TableType.FIXED_SCENE_EXTRA]: [
     { key: '场景', label: '场景', type: 'select', options: FIXED_SCENES, required: true },
     { key: '类型', label: '类型', type: 'select', options: EXTRA_DEVICE_TYPES, required: true },
+    { key: '品牌', label: '品牌', type: 'text', required: true },
     { key: '产品名称', label: '产品名称', type: 'text', required: true },
     { key: '型号', label: '型号', type: 'text', required: true },
-    { key: '数量', label: '数量', type: 'number', required: true, defaultValue: 1 }
+    { key: '数量', label: '数量', type: 'number', required: true, defaultValue: 1 },
+    { key: '设备图片', label: '设备图片', type: 'file', accept: 'image/*' }
   ],
   [TableType.NON_FIXED_SCENE_EXTRA]: [
     { key: '场景', label: '场景', type: 'select', options: NON_FIXED_SCENES, required: true },
     { key: '类型', label: '类型', type: 'select', options: EXTRA_DEVICE_TYPES, required: true },
+    { key: '品牌', label: '品牌', type: 'text', required: true },
     { key: '产品名称', label: '产品名称', type: 'text', required: true },
     { key: '型号', label: '型号', type: 'text', required: true },
-    { key: '数量', label: '数量', type: 'number', required: true, defaultValue: 1 }
+    { key: '数量', label: '数量', type: 'number', required: true, defaultValue: 1 },
+    { key: '设备图片', label: '设备图片', type: 'file', accept: 'image/*' }
+  ],
+  [TableType.LOCAL_STATIC_RESOURCE]: [
+    { key: '图片名称', label: '资源名称', type: 'text', required: true, placeholder: '如：公式说明补充' },
+    { key: '资源类型', label: '资源类型', type: 'select', options: ['图片', '文字（表格）'], required: true, defaultValue: '文字（表格）' },
+    { key: '插入章节', label: '插入章节', type: 'select', options: REPORT_CHAPTER_OPTIONS, required: true },
+    { key: '使用场景', label: '使用场景', type: 'select', options: ['会议室', '报告厅', '通用'], required: true, defaultValue: '通用' },
+    { key: '图片解释', label: '资源解释', type: 'textarea', placeholder: '资源说明文字，将保留在资源正文之前。' },
+    { key: '资源内容', label: '资源内容', type: 'textarea', required: true, placeholder: '图片类型请上传图片，文字（表格）类型请填写Markdown内容。' },
+    { key: '是否启用', label: '是否启用', type: 'select', options: ['是', '否'], required: true, defaultValue: '是' }
   ]
 };
 
@@ -458,6 +483,7 @@ const App: React.FC = () => {
 
   const [editingEq, setEditingEq] = useState<DbInventoryItem | null>(null);
   const [isAddingEq, setIsAddingEq] = useState(false);
+  const [previewImage, setPreviewImage] = useState<{ src: string; title: string } | null>(null);
   const [editingHistory, setEditingHistory] = useState<HistoryRecord | null>(null);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [isProfileDialogOpen, setIsProfileDialogOpen] = useState(false);
@@ -480,8 +506,12 @@ const App: React.FC = () => {
   const [solutionSidebarWidth, setSolutionSidebarWidth] = useState(360);
   const [isResizingSolutionLayout, setIsResizingSolutionLayout] = useState(false);
   const solutionResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const [selectedInventoryIds, setSelectedInventoryIds] = useState<Set<number>>(new Set());
+  const selectAllInventoryRef = useRef<HTMLInputElement | null>(null);
 
   const [tempType, setTempType] = useState<TableType>(logic.activeTable);
+  const [newResourceType, setNewResourceType] = useState<'图片' | '文字（表格）'>('文字（表格）');
+  const [editResourceType, setEditResourceType] = useState<'图片' | '文字（表格）'>('文字（表格）');
   const activeResult = logic.designState.results[logic.designState.activeResultIndex];
 
   const theme = logic.currentSolutionTab === SolutionTab.VERIFICATION
@@ -492,9 +522,30 @@ const App: React.FC = () => {
   const themeBg = `bg-${theme.color}`;
   const themeBorder = `border-${theme.color}`;
   const isBlueprintLocked = !!logic.designState.blueprint;
+  const isLectureHallManagement = logic.designState.scenario === Scenario.LECTURE_HALL;
+  const managementTheme = isLectureHallManagement
+    ? {
+      activeNav: 'bg-fuchsia-600 text-white border-fuchsia-600 shadow-sm',
+      primaryBtn: 'bg-fuchsia-600 hover:bg-fuchsia-700',
+      focusRing: 'focus:border-fuchsia-300 focus:ring-fuchsia-100',
+      rowHover: 'hover:bg-fuchsia-50/40',
+      softBtn: 'border-fuchsia-200 text-fuchsia-700 bg-fuchsia-50 hover:bg-fuchsia-100',
+      fileBtn: 'file:bg-fuchsia-50 file:text-fuchsia-700'
+    }
+    : {
+      activeNav: 'bg-blue-600 text-white border-blue-600 shadow-sm',
+      primaryBtn: 'bg-blue-600 hover:bg-blue-700',
+      focusRing: 'focus:border-blue-300 focus:ring-blue-100',
+      rowHover: 'hover:bg-blue-50/40',
+      softBtn: 'border-blue-200 text-blue-700 bg-blue-50 hover:bg-blue-100',
+      fileBtn: 'file:bg-blue-50 file:text-blue-700'
+    };
 
   const getItemDetail = (item: EquipmentItem) => logic.getCachedEquipmentDetail(item);
   const getItemBrand = (item: EquipmentItem) => item.brand || getItemDetail(item)?.品牌 || '';
+  const normalizeResourceType = (value: any): '图片' | '文字（表格）' => {
+    return String(value || '').trim() === '图片' ? '图片' : '文字（表格）';
+  };
   const getItemUnitPrice = (item: EquipmentItem) => {
     const raw = item.unitPrice ?? getItemDetail(item)?.市场价;
     return raw ? Number(raw) : 0;
@@ -639,6 +690,12 @@ const App: React.FC = () => {
   };
 
   const getFieldsByTable = (table: TableType) => TABLE_FIELD_CONFIG[table] || [];
+  const getFieldOptions = (field: FieldConfig) => {
+    if (field.key === '插入章节') {
+      return logic.planChapterOptions?.length ? logic.planChapterOptions : (field.options || []);
+    }
+    return field.options || [];
+  };
 
   const getDisplayColumns = (table: TableType, rows: DbInventoryItem[]) => {
     const preferred = getFieldsByTable(table).map((f) => f.key);
@@ -651,31 +708,164 @@ const App: React.FC = () => {
       });
     });
     const merged = [...preferred, ...Array.from(dynamic).filter((k) => !preferred.includes(k))];
-    return merged;
+    const hiddenColumns = table === TableType.LOCAL_STATIC_RESOURCE
+      ? new Set(['资源内容', 'content'])
+      : new Set<string>();
+    return ['序号', ...merged.filter((key) => key !== '序号' && !hiddenColumns.has(key))];
   };
 
-  const buildPayloadFromForm = (prefix: string, table: TableType) => {
+  const getDisplayColumnLabel = (table: TableType, column: string) => {
+    if (table === TableType.LOCAL_STATIC_RESOURCE) {
+      if (column === '图片名称') return '资源名称';
+      if (column === '图片解释') return '资源解释';
+    }
+    return column;
+  };
+
+  const readFileAsDataUrl = async (file: File) => {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(new Error('读取图片失败'));
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const buildPayloadFromForm = async (prefix: string, table: TableType) => {
     const payload: Record<string, any> = {};
     const fields = getFieldsByTable(table);
-    fields.forEach((field) => {
+
+    const getFormResourceType = () => {
+      const resourceTypeElement = document.getElementById(`${prefix}-资源类型`) as HTMLSelectElement | null;
+      const selected = resourceTypeElement?.value;
+      if (table === TableType.LOCAL_STATIC_RESOURCE) {
+        if (prefix === 'new') return normalizeResourceType(selected || newResourceType);
+        return normalizeResourceType(selected || editResourceType);
+      }
+      return normalizeResourceType(selected || '文字（表格）');
+    };
+
+    for (const field of fields) {
       const element = document.getElementById(`${prefix}-${field.key}`) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null;
-      if (!element) return;
-      let value: any = element.value;
+      if (!element) continue;
+
+      let value: any = null;
+
+      if (table === TableType.LOCAL_STATIC_RESOURCE && field.key === '资源内容') {
+        const resourceType = getFormResourceType();
+        if (resourceType === '图片') {
+          const input = element as HTMLInputElement;
+          const selectedFile = input.files?.[0];
+          if (selectedFile) {
+            value = await readFileAsDataUrl(selectedFile);
+          } else if (prefix === 'edit' && editingEq && normalizeResourceType((editingEq as any)?.资源类型) === '图片' && String((editingEq as any)?.资源内容 || '').trim()) {
+            value = String((editingEq as any)?.资源内容 || '').trim();
+          } else if (field.required) {
+            throw new Error('资源类型为“图片”时，资源内容为必填项，请上传图片。');
+          }
+        } else {
+          value = (element as HTMLTextAreaElement).value;
+        }
+      }
+
+      if (value === null && field.type === 'file') {
+        const input = element as HTMLInputElement;
+        const selectedFile = input.files?.[0];
+        if (selectedFile) {
+          value = await readFileAsDataUrl(selectedFile);
+        } else if (prefix === 'edit' && editingEq && String((editingEq as any)?.[field.key] || '').trim()) {
+          value = String((editingEq as any)?.[field.key] || '').trim();
+        } else if (field.required) {
+          throw new Error(`${field.label}为必填项，请上传图片。`);
+        } else {
+          continue;
+        }
+      } else if (value === null) {
+        value = element.value;
+      }
+
       if (field.type === 'number') {
         value = value === '' ? null : Number(value);
         if (!Number.isFinite(value)) value = null;
       }
       if (typeof value === 'string') value = value.trim();
+
       if (value === '' || value === null) {
         if (field.required) {
           value = field.defaultValue ?? (field.type === 'number' ? 0 : '');
         } else {
-          return;
+          continue;
         }
       }
       payload[field.key] = value;
-    });
+    }
+
     return payload;
+  };
+
+  const imageColumnSet = new Set(['设备图片', '图片文件']);
+  const centerColumnSet = new Set(['类型', '资源类型', '场景', '使用场景', '插入章节', '是否启用', '额定功率', '额定阻抗', '输入通道', '输出通道', '通道数', '数量', '面高', '覆盖角']);
+
+  const getColumnAlignmentClass = (column: string) => {
+    if (column === '序号') return 'text-center';
+    if (column.includes('价') || column === '市场价') return 'text-right tabular-nums';
+    if (centerColumnSet.has(column)) return 'text-center';
+    return 'text-left';
+  };
+
+  const visibleInventoryIds = useMemo(
+    () => logic.inventory
+      .map((item) => Number(item.id))
+      .filter((id) => Number.isFinite(id)),
+    [logic.inventory]
+  );
+
+  const selectedVisibleInventoryCount = useMemo(
+    () => visibleInventoryIds.filter((id) => selectedInventoryIds.has(id)).length,
+    [visibleInventoryIds, selectedInventoryIds]
+  );
+
+  const isAllVisibleInventorySelected =
+    visibleInventoryIds.length > 0 && selectedVisibleInventoryCount === visibleInventoryIds.length;
+  const isPartialVisibleInventorySelected =
+    selectedVisibleInventoryCount > 0 && !isAllVisibleInventorySelected;
+
+  const toggleInventoryRowSelection = (id: number, checked: boolean) => {
+    setSelectedInventoryIds((prev) => {
+      const next = new Set(prev);
+      if (checked) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAllInventoryRows = (checked: boolean) => {
+    if (!checked) {
+      setSelectedInventoryIds(new Set());
+      return;
+    }
+    setSelectedInventoryIds(new Set(visibleInventoryIds));
+  };
+
+  const handleBatchDeleteInventory = async () => {
+    const targetIds = visibleInventoryIds.filter((id) => selectedInventoryIds.has(id));
+    if (targetIds.length === 0) {
+      alert('请先勾选要删除的条目。');
+      return;
+    }
+
+    if (!window.confirm(`确定删除已选中的 ${targetIds.length} 条数据吗？此操作不可恢复。`)) {
+      return;
+    }
+
+    const result = await logic.deleteInventoryItemsBatch(logic.activeTable, targetIds);
+    if (!result?.ok) return;
+
+    setSelectedInventoryIds(new Set());
+    alert(`已删除 ${result.deleted} 条数据。`);
   };
 
   const resolvePlanItemTable = (type: string): TableType | null => {
@@ -689,6 +879,50 @@ const App: React.FC = () => {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logic.designState.chatHistory, logic.isChatOpen]);
+
+  useEffect(() => {
+    setSelectedInventoryIds(new Set());
+  }, [logic.activeTable]);
+
+  useEffect(() => {
+    if (tempType === TableType.LOCAL_STATIC_RESOURCE) {
+      setNewResourceType('文字（表格）');
+    }
+  }, [tempType]);
+
+  useEffect(() => {
+    if (!editingEq || logic.activeTable !== TableType.LOCAL_STATIC_RESOURCE) return;
+    const current = (editingEq as any).资源类型;
+    const inferred = String((editingEq as any).资源内容 || '').trim().toLowerCase().startsWith('data:image/') ? '图片' : '文字（表格）';
+    setEditResourceType(normalizeResourceType(current || inferred));
+  }, [editingEq, logic.activeTable]);
+
+  useEffect(() => {
+    setSelectedInventoryIds((prev) => {
+      const visibleSet = new Set(visibleInventoryIds);
+      let changed = false;
+      const next = new Set<number>();
+
+      prev.forEach((id) => {
+        if (visibleSet.has(id)) {
+          next.add(id);
+        } else {
+          changed = true;
+        }
+      });
+
+      if (!changed && next.size === prev.size) {
+        return prev;
+      }
+      return next;
+    });
+  }, [visibleInventoryIds]);
+
+  useEffect(() => {
+    if (selectAllInventoryRef.current) {
+      selectAllInventoryRef.current.indeterminate = isPartialVisibleInventorySelected;
+    }
+  }, [isPartialVisibleInventorySelected]);
 
   // 当方案切换时，如果当前视图是方案预览且未生成，则切回到数据清单
   useEffect(() => {
@@ -1392,14 +1626,16 @@ const App: React.FC = () => {
             <div className="grid grid-cols-1 gap-3">
               <button
                 onClick={() => { logic.handleGenerateReports('CURRENT'); setShowReportDialog(false); }}
-                className="glass-btn flex flex-col items-start p-4 rounded-xl transition-all group"
+                disabled={logic.isGeneratingDocs || !activeResult}
+                className={`glass-btn flex flex-col items-start p-4 rounded-xl transition-all group ${logic.isGeneratingDocs || !activeResult ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 <span className="text-[13px] font-black text-slate-900 group-hover:text-blue-600">方案：{activeResult?.title} (仅当前)</span>
                 <span className="text-[13px] text-slate-400 mt-1">仅针对当前选中的推荐方案生成正式文档并开启预览/下载。</span>
               </button>
               <button
                 onClick={() => { logic.handleGenerateReports('ALL'); setShowReportDialog(false); }}
-                className="glass-btn flex flex-col items-start p-4 rounded-xl transition-all group"
+                disabled={logic.isGeneratingDocs || logic.designState.results.length === 0}
+                className={`glass-btn flex flex-col items-start p-4 rounded-xl transition-all group ${logic.isGeneratingDocs || logic.designState.results.length === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 <span className="text-[13px] font-black text-slate-900 group-hover:text-blue-600">所有推荐方案 (共 {logic.designState.results.length} 个)</span>
                 <span className="text-[13px] text-slate-400 mt-1">对本次设计出的所有备选方案同时生成正式文档并开启预览/下载。</span>
@@ -1457,100 +1693,207 @@ const App: React.FC = () => {
     </div>
   );
 
-  // App.tsx 内部 renderManagementView 修改
-  // App.tsx 内部 renderManagementView 函数
   const renderManagementView = () => (
-    <div className="flex-1 flex overflow-hidden bg-white">
-      {/* 左侧设备目录 (对应 image_557afb) */}
-      <div className="w-56 bg-slate-50 border-r border-slate-200 flex flex-col p-4 shrink-0 min-h-0">
-        <h2 className="text-xs font-black text-slate-900 uppercase tracking-widest mb-6 px-2">设备目录</h2>
-        <nav className="space-y-1 flex-1 min-h-0 overflow-y-auto pr-1">
+    <div className="flex-1 flex overflow-hidden bg-slate-50">
+      <aside className="w-60 bg-white border-r border-slate-200 flex flex-col p-4 shrink-0 min-h-0">
+        <h2 className="text-xs font-black text-slate-700 uppercase tracking-[0.16em] mb-4 px-2">资源目录</h2>
+        <nav className="space-y-1.5 flex-1 min-h-0 overflow-y-auto pr-1">
           {Object.values(TableType).map((t) => (
-            <button key={t} onClick={() => logic.setActiveTable(t)}
-              className={`w-full text-left px-4 py-2.5 rounded-xl text-[13px] font-bold transition-all ${logic.activeTable === t ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500 hover:bg-slate-100'
-                }`}
+            <button
+              key={t}
+              onClick={() => logic.setActiveTable(t)}
+              className={`w-full text-left px-4 py-2.5 rounded-xl text-[13px] font-bold transition-all border ${logic.activeTable === t
+                ? managementTheme.activeNav
+                : 'text-slate-600 border-transparent hover:bg-slate-100 hover:border-slate-200'
+              }`}
             >
               {t}
             </button>
           ))}
         </nav>
-      </div>
+      </aside>
 
-      {/* 右侧列表 */}
-      <div className="flex-1 flex flex-col min-w-0">
-        <div className="h-16 px-6 border-b border-slate-100 flex items-center justify-between">
-          <h2 className="text-sm font-black text-slate-900">{logic.activeTable} 列表</h2>
-          <button onClick={() => setIsAddingEq(true)} className="bg-slate-900 text-white px-4 py-2 rounded-xl text-[13px] font-black uppercase tracking-widest">+ 录入数据</button>
+      <section className="flex-1 flex flex-col min-w-0">
+        <div className="px-6 py-4 bg-white border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-base font-black text-slate-900 tracking-tight">{logic.activeTable}</h2>
+            <p className="text-[12px] text-slate-500 font-semibold">资源列表与编辑管理</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[12px] text-slate-500 font-semibold mr-1">已选 {selectedVisibleInventoryCount} 条</span>
+            <button
+              onClick={handleBatchDeleteInventory}
+              disabled={selectedVisibleInventoryCount === 0}
+              className={`px-4 h-10 rounded-xl text-[13px] font-black tracking-wide active:scale-[0.98] transition-all border ${selectedVisibleInventoryCount === 0 ? 'border-slate-200 text-slate-300 bg-slate-100 cursor-not-allowed' : 'border-red-200 text-red-600 bg-red-50 hover:bg-red-100'}`}
+            >
+              批量删除
+            </button>
+            <button
+              onClick={() => setIsAddingEq(true)}
+              className={`px-4 h-10 rounded-xl text-white text-[13px] font-black tracking-wide active:scale-[0.98] transition-all ${managementTheme.primaryBtn}`}
+            >
+              + 录入数据
+            </button>
+          </div>
         </div>
 
-        <div className="px-6 py-3 border-b border-slate-100 bg-slate-50/60 flex flex-wrap items-center gap-3">
-          <input
-            value={logic.searchFilters.品牌}
-            onChange={e => logic.setSearchFilters(prev => ({ ...prev, 品牌: e.target.value }))}
-            placeholder="筛选品牌"
-            className="w-40 bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-[13px] font-bold outline-none"
-          />
-          <input
-            value={logic.searchFilters.产品名称}
-            onChange={e => logic.setSearchFilters(prev => ({ ...prev, 产品名称: e.target.value }))}
-            placeholder="筛选名称"
-            className="w-48 bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-[13px] font-bold outline-none"
-          />
-          <select
-            value={logic.searchFilters.场景}
-            onChange={e => logic.setSearchFilters(prev => ({ ...prev, 场景: e.target.value }))}
-            className="w-36 bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-[13px] font-bold outline-none"
-          >
-            <option value="">场景：全部</option>
-            <option value="通用">通用</option>
-            <option value="会议室">会议室</option>
-            <option value="报告厅">报告厅</option>
-          </select>
+        <div className="px-6 py-4 bg-white border-b border-slate-200">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <input
+              value={logic.searchFilters.品牌}
+              onChange={e => logic.setSearchFilters(prev => ({ ...prev, 品牌: e.target.value }))}
+              placeholder="筛选品牌"
+              className={`w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-semibold outline-none focus:ring-2 ${managementTheme.focusRing}`}
+            />
+            <input
+              value={logic.searchFilters.产品名称}
+              onChange={e => logic.setSearchFilters(prev => ({ ...prev, 产品名称: e.target.value }))}
+              placeholder={logic.activeTable === TableType.LOCAL_STATIC_RESOURCE ? '筛选名称 / 资源名称' : '筛选名称 / 图片名称'}
+              className={`w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-semibold outline-none focus:ring-2 ${managementTheme.focusRing}`}
+            />
+            <select
+              value={logic.searchFilters.场景}
+              onChange={e => logic.setSearchFilters(prev => ({ ...prev, 场景: e.target.value }))}
+              className={`w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-semibold outline-none focus:ring-2 ${managementTheme.focusRing}`}
+            >
+              <option value="">场景：全部</option>
+              <option value="通用">通用</option>
+              <option value="会议室">会议室</option>
+              <option value="报告厅">报告厅</option>
+            </select>
+            <div className="text-[12px] text-slate-500 font-semibold flex items-center justify-end pr-1">
+              共 {logic.inventory.length} 条
+            </div>
+          </div>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-auto">
-          <table className="w-full text-left text-[13px]">
-            <thead className="sticky top-0 bg-white border-b">
-              <tr>
-                {getDisplayColumns(logic.activeTable, logic.inventory).map((col) => (
-                  <th key={col} className="px-6 py-4 font-black text-slate-400">
-                    {col}
+        <div className="flex-1 min-h-0 overflow-auto px-6 py-5">
+          <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-[0_4px_16px_rgba(15,23,42,0.04)]">
+            <table className="w-full text-[13px] table-fixed">
+              <thead className="sticky top-0 bg-slate-100/90 backdrop-blur border-b border-slate-200 z-10">
+                <tr>
+                  <th className="w-12 px-2 py-3.5 text-center">
+                    <input
+                      ref={selectAllInventoryRef}
+                      type="checkbox"
+                      checked={isAllVisibleInventorySelected}
+                      disabled={visibleInventoryIds.length === 0}
+                      onChange={(e) => toggleSelectAllInventoryRows(e.target.checked)}
+                      className="h-4 w-4 rounded border-slate-300 text-slate-700 focus:ring-slate-300"
+                    />
                   </th>
-                ))}
-                <th className="px-6 py-4 text-right pr-6">管理</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-50">
-              {logic.inventory.map((item) => (
-                <tr key={item.id} className="hover:bg-slate-50">
-                  {getDisplayColumns(logic.activeTable, logic.inventory).map((col) => {
-                    const value = (item as any)[col];
-                    const displayValue = Array.isArray(value) ? value.join(' / ') : (value ?? '');
-                    return (
-                      <td key={`${item.id}-${col}`} className="px-6 py-4 text-slate-700">
-                        {col === '市场价' && displayValue !== '' ? `¥${displayValue}` : String(displayValue)}
-                      </td>
-                    );
-                  })}
-                  <td className="px-6 py-4 text-right pr-6 space-x-2">
-                    <button onClick={() => setEditingEq(item)} className="text-blue-600 font-bold">编辑</button>
-                    <button
-                      onClick={() => {
-                        if (window.confirm('确定要删除该设备吗？')) {
-                          logic.deleteInventoryItem(logic.activeTable, item.id);
-                        }
-                      }}
-                      className="text-red-400 font-bold"
+                  {getDisplayColumns(logic.activeTable, logic.inventory).map((col) => (
+                    <th
+                      key={col}
+                      className={`px-4 py-3.5 font-black text-slate-700 ${col === '序号' ? 'w-20 text-center' : 'text-left'}`}
                     >
-                      删除
-                    </button>
-                  </td>
+                      {getDisplayColumnLabel(logic.activeTable, col)}
+                    </th>
+                  ))}
+                  <th className="w-44 px-4 py-3.5 text-center font-black text-slate-700">操作</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {logic.inventory.map((item, rowIndex) => (
+                  <tr key={`${item.id}-${rowIndex}`} className={`${managementTheme.rowHover} transition-colors`}>
+                    <td className="px-2 py-3 align-middle text-center">
+                      <input
+                        type="checkbox"
+                        checked={selectedInventoryIds.has(Number(item.id))}
+                        onChange={(e) => toggleInventoryRowSelection(Number(item.id), e.target.checked)}
+                        className="h-4 w-4 rounded border-slate-300 text-slate-700 focus:ring-slate-300"
+                      />
+                    </td>
+                    {getDisplayColumns(logic.activeTable, logic.inventory).map((col) => {
+                      const rawValue = col === '序号'
+                        ? ((item as any).序号 ?? rowIndex + 1)
+                        : (item as any)[col];
+
+                      if (imageColumnSet.has(col)) {
+                        const src = String(rawValue || '').trim();
+                        return (
+                          <td key={`${item.id}-${col}`} className="px-4 py-3 align-middle text-center">
+                            {src ? (
+                              <button
+                                onClick={() => setPreviewImage({ src, title: `${(item as any).产品名称 || (item as any).图片名称 || '图片预览'} - ${col}` })}
+                                className={`inline-flex items-center justify-center h-8 px-3 rounded-lg text-[12px] font-bold transition-colors border ${managementTheme.softBtn}`}
+                              >
+                                预览图片
+                              </button>
+                            ) : (
+                              <span className="text-slate-300">-</span>
+                            )}
+                          </td>
+                        );
+                      }
+
+                      const displayValue = Array.isArray(rawValue) ? rawValue.join(' / ') : (rawValue ?? '');
+                      const alignClass = getColumnAlignmentClass(col);
+                      const isEmphasis = col === '型号' || col === '市场价' || col.includes('价');
+                      const formatted = (col === '市场价' && displayValue !== '' && Number.isFinite(Number(displayValue)))
+                        ? `¥${Number(displayValue).toLocaleString()}`
+                        : String(displayValue);
+
+                      if (logic.activeTable === TableType.LOCAL_STATIC_RESOURCE && col === '图片名称') {
+                        const title = String(formatted || '').trim();
+                        return (
+                          <td key={`${item.id}-${col}`} className={`px-4 py-3 align-middle text-slate-700 ${alignClass} font-medium`}>
+                            {title ? (
+                              <button
+                                type="button"
+                                title="点击查看并编辑资源内容"
+                                onClick={() => setEditingEq(item)}
+                                className="text-blue-700 hover:text-blue-800 hover:underline font-semibold"
+                              >
+                                {title}
+                              </button>
+                            ) : (
+                              <span className="text-slate-300">-</span>
+                            )}
+                          </td>
+                        );
+                      }
+
+                      return (
+                        <td key={`${item.id}-${col}`} className={`px-4 py-3 align-middle text-slate-700 ${alignClass} ${isEmphasis ? 'font-semibold text-slate-900' : 'font-medium'}`}>
+                          {formatted || <span className="text-slate-300">-</span>}
+                        </td>
+                      );
+                    })}
+                    <td className="w-40 px-4 py-3 align-middle">
+                      <div className="flex items-center justify-center gap-2">
+                        <button
+                          onClick={() => setEditingEq(item)}
+                          className={`h-8 px-3 rounded-lg border text-[12px] font-bold transition-colors ${managementTheme.softBtn}`}
+                        >
+                          编辑
+                        </button>
+                        <button
+                          onClick={async () => {
+                            if (window.confirm('确定要删除该设备吗？')) {
+                              await logic.deleteInventoryItem(logic.activeTable, item.id);
+                            }
+                          }}
+                          className="h-8 px-3 rounded-lg border border-red-200 text-red-600 bg-red-50 hover:bg-red-100 text-[12px] font-bold transition-colors"
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {logic.inventory.length === 0 && (
+                  <tr>
+                    <td colSpan={getDisplayColumns(logic.activeTable, logic.inventory).length + 2} className="py-16 text-center text-slate-400 font-semibold">
+                      暂无数据
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
+      </section>
     </div>
   );
   const renderHistoryView = () => (
@@ -2070,11 +2413,11 @@ const App: React.FC = () => {
             <div className="space-y-6">
               {/* 第一步：选择设备类型 - 这是核心控制点 */}
               <div className="space-y-1.5">
-                <label className="text-[13px] font-black text-blue-600 uppercase ml-1">第一步：选择设备大类</label>
+                <label className={`text-[13px] font-black uppercase ml-1 ${isLectureHallManagement ? 'text-fuchsia-600' : 'text-blue-600'}`}>第一步：选择设备大类</label>
                 <select
                   value={tempType}
                   onChange={(e) => setTempType(e.target.value as TableType)}
-                  className="w-full bg-blue-50/50 border border-blue-100 rounded-xl px-4 py-3 text-[13px] font-bold outline-none focus:ring-2 focus:ring-blue-500/20"
+                  className={`w-full border rounded-xl px-4 py-3 text-[13px] font-bold outline-none focus:ring-2 ${isLectureHallManagement ? 'bg-fuchsia-50/50 border-fuchsia-100 focus:ring-fuchsia-500/20' : 'bg-blue-50/50 border-blue-100 focus:ring-blue-500/20'}`}
                 >
                   {Object.values(TableType).map(t => (
                     <option key={t} value={t}>{t}</option>
@@ -2089,16 +2432,53 @@ const App: React.FC = () => {
                   {getFieldsByTable(tempType).map((field) => (
                     <div key={`new-${field.key}`} className="space-y-1">
                       <label className="text-[13px] font-black text-slate-500 ml-1">{field.label}</label>
-                      {field.type === 'select' ? (
+                      {tempType === TableType.LOCAL_STATIC_RESOURCE && field.key === '资源内容' ? (
+                        newResourceType === '图片' ? (
+                          <input
+                            id={`new-${field.key}`}
+                            type="file"
+                            accept="image/*"
+                            className={`w-full bg-slate-50 border rounded-xl px-3 py-2 text-[12px] outline-none file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:font-bold ${managementTheme.fileBtn}`}
+                          />
+                        ) : (
+                          <textarea
+                            id={`new-${field.key}`}
+                            defaultValue={String(field.defaultValue ?? '')}
+                            placeholder={field.placeholder || `${field.label}${field.required ? ' (必填)' : ''}`}
+                            rows={3}
+                            className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none resize-y"
+                          />
+                        )
+                      ) : field.type === 'select' ? (
                         <select
                           id={`new-${field.key}`}
-                          defaultValue={field.options?.[0] || ''}
+                          defaultValue={String(field.defaultValue ?? getFieldOptions(field)[0] ?? '')}
+                          onChange={(e) => {
+                            if (tempType === TableType.LOCAL_STATIC_RESOURCE && field.key === '资源类型') {
+                              setNewResourceType(normalizeResourceType(e.target.value));
+                            }
+                          }}
                           className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none"
                         >
-                          {(field.options || []).map((opt) => (
+                          {getFieldOptions(field).map((opt) => (
                             <option key={opt} value={opt}>{opt}</option>
                           ))}
                         </select>
+                      ) : field.type === 'textarea' ? (
+                        <textarea
+                          id={`new-${field.key}`}
+                          defaultValue={String(field.defaultValue ?? '')}
+                          placeholder={field.placeholder || `${field.label}${field.required ? ' (必填)' : ''}`}
+                          rows={3}
+                          className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none resize-y"
+                        />
+                      ) : field.type === 'file' ? (
+                        <input
+                          id={`new-${field.key}`}
+                          type="file"
+                          accept={field.accept || 'image/*'}
+                          className={`w-full bg-slate-50 border rounded-xl px-3 py-2 text-[12px] outline-none file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:font-bold ${managementTheme.fileBtn}`}
+                        />
                       ) : (
                         <input
                           id={`new-${field.key}`}
@@ -2118,10 +2498,16 @@ const App: React.FC = () => {
             <div className="flex space-x-3 pt-4 border-t">
               <button onClick={() => setIsAddingEq(false)} className="flex-1 py-3.5 rounded-2xl border text-slate-400 font-black text-[13px] uppercase tracking-widest hover:bg-slate-50 transition-all">取消</button>
               <button
-                onClick={() => {
-                  const payload = buildPayloadFromForm('new', tempType);
-                  logic.handleSaveEquipment(tempType, payload);
-                  setIsAddingEq(false);
+                onClick={async () => {
+                  try {
+                    const payload = await buildPayloadFromForm('new', tempType);
+                    const ok = await logic.handleSaveEquipment(tempType, payload);
+                    if (ok) {
+                      setIsAddingEq(false);
+                    }
+                  } catch (error: any) {
+                    alert(error?.message || '录入失败，请检查输入后重试。');
+                  }
                 }}
                 className="flex-1 py-3.5 bg-slate-900 text-white rounded-2xl font-black text-[13px] uppercase shadow-xl hover:bg-black transition-all"
               >
@@ -2145,16 +2531,75 @@ const App: React.FC = () => {
                 {getFieldsByTable(logic.activeTable).map((field) => (
                   <div key={`edit-${field.key}`} className="space-y-1">
                     <label className="text-[13px] font-black text-slate-500 ml-1">{field.label}</label>
-                    {field.type === 'select' ? (
+                    {logic.activeTable === TableType.LOCAL_STATIC_RESOURCE && field.key === '资源内容' ? (
+                      editResourceType === '图片' ? (
+                        <div className="space-y-2">
+                          <input
+                            id={`edit-${field.key}`}
+                            type="file"
+                            accept="image/*"
+                            className={`w-full bg-slate-50 border rounded-xl px-3 py-2 text-[12px] outline-none file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:font-bold ${managementTheme.fileBtn}`}
+                          />
+                          {String((editingEq as any)?.资源内容 || '').trim() && (
+                            <button
+                              type="button"
+                              onClick={() => setPreviewImage({ src: String((editingEq as any)?.资源内容 || ''), title: `${editingEq.图片名称 || '资源图片'} - 资源内容` })}
+                              className={`h-8 px-3 rounded-lg border text-[12px] font-bold transition-colors ${managementTheme.softBtn}`}
+                            >
+                              查看当前图片
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <textarea
+                          id={`edit-${field.key}`}
+                          defaultValue={String((editingEq as any)[field.key] ?? field.defaultValue ?? '')}
+                          placeholder={field.placeholder || field.label}
+                          rows={3}
+                          className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none resize-y"
+                        />
+                      )
+                    ) : field.type === 'select' ? (
                       <select
                         id={`edit-${field.key}`}
-                        defaultValue={String((editingEq as any)[field.key] ?? field.options?.[0] ?? '')}
+                        defaultValue={String((editingEq as any)[field.key] ?? field.defaultValue ?? getFieldOptions(field)[0] ?? '')}
+                        onChange={(e) => {
+                          if (logic.activeTable === TableType.LOCAL_STATIC_RESOURCE && field.key === '资源类型') {
+                            setEditResourceType(normalizeResourceType(e.target.value));
+                          }
+                        }}
                         className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none"
                       >
-                        {(field.options || []).map((opt) => (
+                        {getFieldOptions(field).map((opt) => (
                           <option key={opt} value={opt}>{opt}</option>
                         ))}
                       </select>
+                    ) : field.type === 'textarea' ? (
+                      <textarea
+                        id={`edit-${field.key}`}
+                        defaultValue={String((editingEq as any)[field.key] ?? field.defaultValue ?? '')}
+                        placeholder={field.placeholder || field.label}
+                        rows={3}
+                        className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none resize-y"
+                      />
+                    ) : field.type === 'file' ? (
+                      <div className="space-y-2">
+                        <input
+                          id={`edit-${field.key}`}
+                          type="file"
+                          accept={field.accept || 'image/*'}
+                          className={`w-full bg-slate-50 border rounded-xl px-3 py-2 text-[12px] outline-none file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:font-bold ${managementTheme.fileBtn}`}
+                        />
+                        {String((editingEq as any)[field.key] || '').trim() && (
+                          <button
+                            type="button"
+                            onClick={() => setPreviewImage({ src: String((editingEq as any)[field.key] || ''), title: `${editingEq.产品名称 || editingEq.图片名称 || '图片'} - ${field.label}` })}
+                            className={`h-8 px-3 rounded-lg border text-[12px] font-bold transition-colors ${managementTheme.softBtn}`}
+                          >
+                            查看当前图片
+                          </button>
+                        )}
+                      </div>
                     ) : (
                       <input
                         id={`edit-${field.key}`}
@@ -2172,15 +2617,35 @@ const App: React.FC = () => {
             <div className="flex space-x-3 pt-4 border-t">
               <button onClick={() => setEditingEq(null)} className="flex-1 py-3.5 rounded-2xl border text-slate-400 font-black text-[13px] uppercase tracking-widest hover:bg-slate-50 transition-all">取消</button>
               <button
-                onClick={() => {
-                  const payload = buildPayloadFromForm('edit', logic.activeTable);
-                  logic.updateInventoryItem(logic.activeTable, editingEq.id, payload);
-                  setEditingEq(null);
+                onClick={async () => {
+                  try {
+                    const payload = await buildPayloadFromForm('edit', logic.activeTable);
+                    const ok = await logic.updateInventoryItem(logic.activeTable, editingEq.id, payload);
+                    if (ok) {
+                      setEditingEq(null);
+                    }
+                  } catch (error: any) {
+                    alert(error?.message || '更新失败，请检查输入后重试。');
+                  }
                 }}
                 className="flex-1 py-3.5 bg-slate-900 text-white rounded-2xl font-black text-[13px] uppercase shadow-xl hover:bg-black transition-all"
               >
                 保存更新
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {previewImage && (
+        <div className="fixed inset-0 z-[652] bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-6" onClick={() => setPreviewImage(null)}>
+          <div className="bg-white w-full max-w-4xl rounded-3xl shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+              <h3 className="text-base font-black text-slate-900 tracking-tight">{previewImage.title}</h3>
+              <button onClick={() => setPreviewImage(null)} className="text-slate-400 hover:text-slate-900 text-xl leading-none">✕</button>
+            </div>
+            <div className="max-h-[75vh] overflow-auto bg-slate-50 p-6">
+              <img src={previewImage.src} alt={previewImage.title} className="max-w-full h-auto mx-auto rounded-xl border border-slate-200 bg-white" />
             </div>
           </div>
         </div>

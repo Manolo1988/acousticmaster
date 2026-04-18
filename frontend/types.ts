@@ -83,6 +83,14 @@ export interface SolutionResult {
   postProcessReport?: {
     injected_blocks?: string[];
     toc_added?: boolean;
+    replaced_resource_placeholders?: string[];
+    chapter_inserted_resources?: string[];
+    chapter_skipped_resources?: string[];
+    replaced_image_placeholders?: string[];
+    chapter_inserted_images?: string[];
+    chapter_skipped_images?: string[];
+    replaced_device_placeholders?: string[];
+    missing_device_placeholders?: string[];
   };
   chapters?: ReportChapterState[];
   reportGenerationStatus?: ReportGenerationStatus;
@@ -164,7 +172,8 @@ export enum TableType {
   AMPLIFIER = '定阻功放',
   PERIPHERAL = '周边设备',
   FIXED_SCENE_EXTRA = '固定搭配场景剩余周边设备',
-  NON_FIXED_SCENE_EXTRA = '非固定搭配场景剩余周边设备'
+  NON_FIXED_SCENE_EXTRA = '非固定搭配场景剩余周边设备',
+  LOCAL_STATIC_RESOURCE = '本地静态资源'
 }
 export interface DbInventoryItem {
   id: number; // 数据库 int 类型，解决 string 冲突
@@ -191,6 +200,26 @@ export interface DbInventoryItem {
   // 其他设备特有
   描述?: string;
   场景?: string;
+  设备图片?: string;
+
+  // 资源管理兼容字段
+  图片名称?: string;
+  插入章节?: string;
+  目标章节?: string;
+  图片文件?: string;
+  使用场景?: string;
+  图片解释?: string;
+  资源类型?: string;
+
+  // 本地静态资源
+  资源内容?: string;
+  标识键?: string;
+  来源文件?: string;
+  是否启用?: string;
+
+  // 兼容字段
+  设备类型?: string;
+  序号?: number;
   // 前端辅助标识
   isChild?: boolean; 
 }

@@ -91,6 +91,8 @@ export interface SolutionResult {
     chapter_skipped_images?: string[];
     replaced_device_placeholders?: string[];
     missing_device_placeholders?: string[];
+    figure_caption_count?: number;
+    table_caption_count?: number;
   };
   chapters?: ReportChapterState[];
   reportGenerationStatus?: ReportGenerationStatus;
@@ -173,7 +175,7 @@ export enum TableType {
   PERIPHERAL = '周边设备',
   FIXED_SCENE_EXTRA = '固定搭配场景剩余周边设备',
   NON_FIXED_SCENE_EXTRA = '非固定搭配场景剩余周边设备',
-  LOCAL_STATIC_RESOURCE = '本地静态资源'
+  LOCAL_STATIC_RESOURCE = '本地静态资源管理'
 }
 export interface DbInventoryItem {
   id: number; // 数据库 int 类型，解决 string 冲突

@@ -466,11 +466,11 @@ const TABLE_FIELD_CONFIG: Record<TableType, FieldConfig[]> = {
   ],
   [TableType.LOCAL_STATIC_RESOURCE]: [
     { key: '图片名称', label: '资源名称', type: 'text', required: true, placeholder: '如：公式说明补充' },
-    { key: '资源类型', label: '资源类型', type: 'select', options: ['图片', '文字（表格）'], required: true, defaultValue: '文字（表格）' },
+    { key: '资源类型', label: '资源类型', type: 'select', options: ['图片', '文字', '表格'], required: true, defaultValue: '文字' },
     { key: '插入章节', label: '插入章节', type: 'select', options: REPORT_CHAPTER_OPTIONS, required: true },
     { key: '使用场景', label: '使用场景', type: 'select', options: ['会议室', '报告厅', '通用'], required: true, defaultValue: '通用' },
     { key: '图片解释', label: '资源解释', type: 'textarea', placeholder: '资源说明文字，将保留在资源正文之前。' },
-    { key: '资源内容', label: '资源内容', type: 'textarea', required: true, placeholder: '图片类型请上传图片，文字（表格）类型请填写Markdown内容。' },
+    { key: '资源内容', label: '资源内容', type: 'textarea', required: true, placeholder: '图片类型请上传图片；文字和表格类型请填写Markdown内容。' },
     { key: '是否启用', label: '是否启用', type: 'select', options: ['是', '否'], required: true, defaultValue: '是' }
   ]
 };
@@ -508,10 +508,12 @@ const App: React.FC = () => {
   const solutionResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const [selectedInventoryIds, setSelectedInventoryIds] = useState<Set<number>>(new Set());
   const selectAllInventoryRef = useRef<HTMLInputElement | null>(null);
+  const [selectedHistoryIds, setSelectedHistoryIds] = useState<Set<number>>(new Set());
+  const selectAllHistoryRef = useRef<HTMLInputElement | null>(null);
 
   const [tempType, setTempType] = useState<TableType>(logic.activeTable);
-  const [newResourceType, setNewResourceType] = useState<'图片' | '文字（表格）'>('文字（表格）');
-  const [editResourceType, setEditResourceType] = useState<'图片' | '文字（表格）'>('文字（表格）');
+  const [newResourceType, setNewResourceType] = useState<'图片' | '文字' | '表格'>('文字');
+  const [editResourceType, setEditResourceType] = useState<'图片' | '文字' | '表格'>('文字');
   const activeResult = logic.designState.results[logic.designState.activeResultIndex];
 
   const theme = logic.currentSolutionTab === SolutionTab.VERIFICATION
@@ -543,8 +545,31 @@ const App: React.FC = () => {
 
   const getItemDetail = (item: EquipmentItem) => logic.getCachedEquipmentDetail(item);
   const getItemBrand = (item: EquipmentItem) => item.brand || getItemDetail(item)?.品牌 || '';
-  const normalizeResourceType = (value: any): '图片' | '文字（表格）' => {
-    return String(value || '').trim() === '图片' ? '图片' : '文字（表格）';
+  const inferResourceTypeByContent = (content: string): '图片' | '文字' | '表格' => {
+    const normalized = String(content || '').trim().toLowerCase();
+    if (!normalized) return '文字';
+    if (
+      normalized.startsWith('data:image/') ||
+      /^!\[[^\]]*\]\([^\)]+\)$/.test(normalized) ||
+      /^https?:\/\/[^\s]+\.(png|jpg|jpeg|gif|webp|svg)(\?.*)?$/.test(normalized)
+    ) {
+      return '图片';
+    }
+    const lines = normalized.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const hasPipeRow = lines.some((line) => /^\|.+\|$/.test(line));
+    const hasDivider = lines.some((line) => /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(line));
+    if (normalized.includes('<table') || (hasPipeRow && hasDivider)) {
+      return '表格';
+    }
+    return '文字';
+  };
+  const normalizeResourceType = (value: any, fallback: '图片' | '文字' | '表格' = '文字'): '图片' | '文字' | '表格' => {
+    const normalized = String(value || '').trim();
+    if (normalized === '图片') return '图片';
+    if (normalized === '表格') return '表格';
+    if (normalized === '文字') return '文字';
+    if (normalized === '文字（表格）') return fallback;
+    return fallback;
   };
   const getItemUnitPrice = (item: EquipmentItem) => {
     const raw = item.unitPrice ?? getItemDetail(item)?.市场价;
@@ -742,7 +767,7 @@ const App: React.FC = () => {
         if (prefix === 'new') return normalizeResourceType(selected || newResourceType);
         return normalizeResourceType(selected || editResourceType);
       }
-      return normalizeResourceType(selected || '文字（表格）');
+      return normalizeResourceType(selected || '文字');
     };
 
     for (const field of fields) {
@@ -820,6 +845,13 @@ const App: React.FC = () => {
     [logic.inventory]
   );
 
+  const visibleHistoryIds = useMemo(
+    () => logic.history
+      .map((item) => Number(item.id))
+      .filter((id) => Number.isFinite(id)),
+    [logic.history]
+  );
+
   const selectedVisibleInventoryCount = useMemo(
     () => visibleInventoryIds.filter((id) => selectedInventoryIds.has(id)).length,
     [visibleInventoryIds, selectedInventoryIds]
@@ -829,6 +861,16 @@ const App: React.FC = () => {
     visibleInventoryIds.length > 0 && selectedVisibleInventoryCount === visibleInventoryIds.length;
   const isPartialVisibleInventorySelected =
     selectedVisibleInventoryCount > 0 && !isAllVisibleInventorySelected;
+
+  const selectedVisibleHistoryCount = useMemo(
+    () => visibleHistoryIds.filter((id) => selectedHistoryIds.has(id)).length,
+    [visibleHistoryIds, selectedHistoryIds]
+  );
+
+  const isAllVisibleHistorySelected =
+    visibleHistoryIds.length > 0 && selectedVisibleHistoryCount === visibleHistoryIds.length;
+  const isPartialVisibleHistorySelected =
+    selectedVisibleHistoryCount > 0 && !isAllVisibleHistorySelected;
 
   const toggleInventoryRowSelection = (id: number, checked: boolean) => {
     setSelectedInventoryIds((prev) => {
@@ -850,6 +892,26 @@ const App: React.FC = () => {
     setSelectedInventoryIds(new Set(visibleInventoryIds));
   };
 
+  const toggleHistoryRowSelection = (id: number, checked: boolean) => {
+    setSelectedHistoryIds((prev) => {
+      const next = new Set(prev);
+      if (checked) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAllHistoryRows = (checked: boolean) => {
+    if (!checked) {
+      setSelectedHistoryIds(new Set());
+      return;
+    }
+    setSelectedHistoryIds(new Set(visibleHistoryIds));
+  };
+
   const handleBatchDeleteInventory = async () => {
     const targetIds = visibleInventoryIds.filter((id) => selectedInventoryIds.has(id));
     if (targetIds.length === 0) {
@@ -866,6 +928,24 @@ const App: React.FC = () => {
 
     setSelectedInventoryIds(new Set());
     alert(`已删除 ${result.deleted} 条数据。`);
+  };
+
+  const handleBatchDeleteHistory = async () => {
+    const targetIds = visibleHistoryIds.filter((id) => selectedHistoryIds.has(id));
+    if (targetIds.length === 0) {
+      alert('请先勾选要删除的历史记录。');
+      return;
+    }
+
+    if (!window.confirm(`确定删除已选中的 ${targetIds.length} 条历史记录吗？此操作不可恢复。`)) {
+      return;
+    }
+
+    const result = await logic.deleteHistoryRecordsBatch(targetIds);
+    if (!result?.ok) return;
+
+    setSelectedHistoryIds(new Set());
+    alert(`已删除 ${result.deleted} 条历史记录。`);
   };
 
   const resolvePlanItemTable = (type: string): TableType | null => {
@@ -886,15 +966,15 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (tempType === TableType.LOCAL_STATIC_RESOURCE) {
-      setNewResourceType('文字（表格）');
+      setNewResourceType('文字');
     }
   }, [tempType]);
 
   useEffect(() => {
     if (!editingEq || logic.activeTable !== TableType.LOCAL_STATIC_RESOURCE) return;
     const current = (editingEq as any).资源类型;
-    const inferred = String((editingEq as any).资源内容 || '').trim().toLowerCase().startsWith('data:image/') ? '图片' : '文字（表格）';
-    setEditResourceType(normalizeResourceType(current || inferred));
+    const inferred = inferResourceTypeByContent(String((editingEq as any).资源内容 || ''));
+    setEditResourceType(normalizeResourceType(current, inferred));
   }, [editingEq, logic.activeTable]);
 
   useEffect(() => {
@@ -923,6 +1003,33 @@ const App: React.FC = () => {
       selectAllInventoryRef.current.indeterminate = isPartialVisibleInventorySelected;
     }
   }, [isPartialVisibleInventorySelected]);
+
+  useEffect(() => {
+    setSelectedHistoryIds((prev) => {
+      const visibleSet = new Set(visibleHistoryIds);
+      let changed = false;
+      const next = new Set<number>();
+
+      prev.forEach((id) => {
+        if (visibleSet.has(id)) {
+          next.add(id);
+        } else {
+          changed = true;
+        }
+      });
+
+      if (!changed && next.size === prev.size) {
+        return prev;
+      }
+      return next;
+    });
+  }, [visibleHistoryIds]);
+
+  useEffect(() => {
+    if (selectAllHistoryRef.current) {
+      selectAllHistoryRef.current.indeterminate = isPartialVisibleHistorySelected;
+    }
+  }, [isPartialVisibleHistorySelected]);
 
   // 当方案切换时，如果当前视图是方案预览且未生成，则切回到数据清单
   useEffect(() => {
@@ -1898,9 +2005,21 @@ const App: React.FC = () => {
   );
   const renderHistoryView = () => (
     <div className="flex-1 flex flex-col p-6 overflow-hidden bg-white">
-      <div className="mb-8">
-        <h2 className="text-2xl font-black text-slate-900 tracking-tight uppercase">历史设计档案</h2>
-        <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">回顾及重新载入之前的设计成果</p>
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-black text-slate-900 tracking-tight uppercase">历史设计档案</h2>
+          <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">回顾及重新载入之前的设计成果</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[12px] text-slate-500 font-semibold">已选 {selectedVisibleHistoryCount} 条</span>
+          <button
+            onClick={handleBatchDeleteHistory}
+            disabled={selectedVisibleHistoryCount === 0}
+            className={`px-4 h-10 rounded-xl text-[13px] font-black tracking-wide active:scale-[0.98] transition-all border ${selectedVisibleHistoryCount === 0 ? 'border-slate-200 text-slate-300 bg-slate-100 cursor-not-allowed' : 'border-red-200 text-red-600 bg-red-50 hover:bg-red-100'}`}
+          >
+            批量删除
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 min-h-0 bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-sm flex flex-col">
@@ -1908,6 +2027,16 @@ const App: React.FC = () => {
           <table className="w-full text-left text-[13px]">
             <thead className="sticky top-0 bg-slate-50 border-b z-10">
               <tr>
+                <th className="px-4 py-4 text-center">
+                  <input
+                    ref={selectAllHistoryRef}
+                    type="checkbox"
+                    checked={isAllVisibleHistorySelected}
+                    disabled={visibleHistoryIds.length === 0}
+                    onChange={(e) => toggleSelectAllHistoryRows(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 text-slate-700 focus:ring-slate-300"
+                  />
+                </th>
                 <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">项目名称</th>
                 <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">设计时间</th>
                 <th className="px-6 py-4 font-black text-slate-400 uppercase tracking-widest">场景类型</th>
@@ -1918,6 +2047,14 @@ const App: React.FC = () => {
             <tbody className="divide-y divide-slate-100">
               {logic.history.map(h => (
                 <tr key={h.id} className="hover:bg-slate-50 transition-colors group">
+                  <td className="px-4 py-4 text-center">
+                    <input
+                      type="checkbox"
+                      checked={selectedHistoryIds.has(Number(h.id))}
+                      onChange={(e) => toggleHistoryRowSelection(Number(h.id), e.target.checked)}
+                      className="h-4 w-4 rounded border-slate-300 text-slate-700 focus:ring-slate-300"
+                    />
+                  </td>
                   <td className="px-6 py-4 font-black text-slate-900">{h.projectName}</td>
                   <td className="px-6 py-4 text-slate-400 font-mono">{new Date(h.createdAt).toISOString().slice(0, 10)}</td>
                   <td className="px-6 py-4">
@@ -1939,7 +2076,7 @@ const App: React.FC = () => {
               ))}
               {logic.history.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="py-20 text-center text-slate-300 font-black uppercase italic">暂无历史设计记录</td>
+                  <td colSpan={6} className="py-20 text-center text-slate-300 font-black uppercase italic">暂无历史设计记录</td>
                 </tr>
               )}
             </tbody>

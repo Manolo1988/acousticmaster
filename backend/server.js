@@ -63,11 +63,13 @@ const INVENTORY_TABLES = [
   "固定搭配场景剩余周边设备",
   "非固定搭配场景剩余周边设备"
 ];
-const IMAGE_RESOURCE_TABLE = "图片资源管理";
+const LEGACY_IMAGE_RESOURCE_TABLE = "图片资源管理";
 const LOCAL_STATIC_RESOURCE_TABLE = SERVICE_LOCAL_STATIC_RESOURCE_TABLE;
-const ALLOWED_TABLES = new Set([...INVENTORY_TABLES, IMAGE_RESOURCE_TABLE, LOCAL_STATIC_RESOURCE_TABLE]);
+const LOCAL_STATIC_RESOURCE_MANAGEMENT_TABLE = "本地静态资源管理";
+const ALLOWED_TABLES = new Set([...INVENTORY_TABLES, LOCAL_STATIC_RESOURCE_TABLE, LOCAL_STATIC_RESOURCE_MANAGEMENT_TABLE]);
 const RESOURCE_TYPE_IMAGE = "图片";
-const RESOURCE_TYPE_TEXT = "文字（表格）";
+const RESOURCE_TYPE_TEXT = "文字";
+const RESOURCE_TYPE_TABLE = "表格";
 const PLAN_CHAPTER_TITLE_CANDIDATES = [
   "项目概述",
   "设计依据和目标",
@@ -116,8 +118,14 @@ const normalizeResourceType = (value, fallback = RESOURCE_TYPE_TEXT) => {
   if (normalized === RESOURCE_TYPE_IMAGE || normalized === "image" || normalized === "图片资源") {
     return RESOURCE_TYPE_IMAGE;
   }
-  if (normalized === RESOURCE_TYPE_TEXT || normalized === "text" || normalized === "文字") {
+  if (normalized === RESOURCE_TYPE_TABLE || normalized === "table" || normalized === "markdown_table") {
+    return RESOURCE_TYPE_TABLE;
+  }
+  if (normalized === RESOURCE_TYPE_TEXT || normalized === "text" || normalized === "文字" || normalized === "文本") {
     return RESOURCE_TYPE_TEXT;
+  }
+  if (normalized === "文字（表格）") {
+    return fallback;
   }
   return fallback;
 };
@@ -125,14 +133,24 @@ const normalizeResourceType = (value, fallback = RESOURCE_TYPE_TEXT) => {
 const inferResourceTypeFromContent = (content) => {
   const text = String(content || "").trim().toLowerCase();
   if (!text) return RESOURCE_TYPE_TEXT;
-  if (text.startsWith("data:image/") || text.startsWith("http://") || text.startsWith("https://")) {
+  if (
+    text.startsWith("data:image/") ||
+    /^!\[[^\]]*\]\([^\)]+\)$/.test(text) ||
+    /https?:\/\/[^\s]+\.(png|jpg|jpeg|gif|webp|svg)(\?.*)?$/.test(text)
+  ) {
     return RESOURCE_TYPE_IMAGE;
+  }
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const hasPipeRow = lines.some((line) => /^\|.+\|$/.test(line));
+  const hasTableDivider = lines.some((line) => /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(line));
+  if (text.includes("<table") || (hasPipeRow && hasTableDivider)) {
+    return RESOURCE_TYPE_TABLE;
   }
   return RESOURCE_TYPE_TEXT;
 };
 
 const resolvePhysicalTableName = (table) => {
-  if (table === IMAGE_RESOURCE_TABLE) return LOCAL_STATIC_RESOURCE_TABLE;
+  if (table === LOCAL_STATIC_RESOURCE_MANAGEMENT_TABLE) return LOCAL_STATIC_RESOURCE_TABLE;
   if (table === LOCAL_STATIC_RESOURCE_TABLE) return LOCAL_STATIC_RESOURCE_TABLE;
   return table;
 };
@@ -141,6 +159,9 @@ const getSafeTableName = (table) => {
   if (!table || !ALLOWED_TABLES.has(table)) return null;
   return table;
 };
+
+const isLocalStaticResourceTable = (table) =>
+  table === LOCAL_STATIC_RESOURCE_TABLE || table === LOCAL_STATIC_RESOURCE_MANAGEMENT_TABLE;
 
 const getTableColumns = async (table) => {
   const physicalTable = resolvePhysicalTableName(table);
@@ -213,7 +234,7 @@ const normalizeInventoryRowForResponse = (table, row, index = 0) => {
     }
   }
 
-  if (table === LOCAL_STATIC_RESOURCE_TABLE || table === IMAGE_RESOURCE_TABLE) {
+  if (isLocalStaticResourceTable(table)) {
     const content = String(next.content || next["资源内容"] || next["图片文件"] || "");
     const resourceType = normalizeResourceType(next["资源类型"], inferResourceTypeFromContent(content));
     return {
@@ -240,7 +261,7 @@ const mapInventoryPayloadToTable = (table, payload = {}) => {
     }
   }
 
-  if (table === LOCAL_STATIC_RESOURCE_TABLE || table === IMAGE_RESOURCE_TABLE) {
+  if (isLocalStaticResourceTable(table)) {
     const hasTitle = Object.prototype.hasOwnProperty.call(next, "图片名称") || Object.prototype.hasOwnProperty.call(next, "title");
     const hasChapter = Object.prototype.hasOwnProperty.call(next, "插入章节");
     const hasLegacyChapter = Object.prototype.hasOwnProperty.call(next, "目标章节");
@@ -360,10 +381,17 @@ const ensureMergedStaticResourceSchemaAndMigrate = async () => {
     [RESOURCE_TYPE_TEXT]
   );
 
+  await pool.query(
+    `UPDATE \`${LOCAL_STATIC_RESOURCE_TABLE}\`
+     SET \`资源类型\` = ?
+     WHERE \`资源类型\` = '文字（表格）'`,
+    [RESOURCE_TYPE_TEXT]
+  );
+
   try {
     const [legacyTableRows] = await pool.query(
       "SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? LIMIT 1",
-      [DB_CONFIG.database, IMAGE_RESOURCE_TABLE]
+      [DB_CONFIG.database, LEGACY_IMAGE_RESOURCE_TABLE]
     );
 
     if (!Array.isArray(legacyTableRows) || legacyTableRows.length === 0) {
@@ -392,7 +420,7 @@ const ensureMergedStaticResourceSchemaAndMigrate = async () => {
          COALESCE(NULLIF(\`使用场景\`, ''), '通用'),
          ?,
          1
-       FROM \`${IMAGE_RESOURCE_TABLE}\`
+       FROM \`${LEGACY_IMAGE_RESOURCE_TABLE}\`
        WHERE \`图片文件\` IS NOT NULL AND \`图片文件\` <> ''
        ON DUPLICATE KEY UPDATE
          title = VALUES(title),
@@ -405,6 +433,8 @@ const ensureMergedStaticResourceSchemaAndMigrate = async () => {
          enabled = VALUES(enabled)`,
       [RESOURCE_TYPE_IMAGE]
     );
+
+    await pool.query(`DROP TABLE IF EXISTS \`${LEGACY_IMAGE_RESOURCE_TABLE}\``);
   } catch (error) {
     console.warn("⚠️ Legacy image resource migration skipped:", error.message);
   }
@@ -555,6 +585,39 @@ const sanitizeImageAltText = (text, fallback = "图片") => {
   return cleaned || fallback;
 };
 
+const sanitizeResourceTitle = (text, fallback = "资源") => {
+  const cleaned = String(text || "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+  return cleaned || fallback;
+};
+
+const renderTypedResourceMarkdown = (asset = {}, token = "", captionCounter = { image: 0, table: 0 }) => {
+  const resourceType = normalizeResourceType(asset.resourceType, inferResourceTypeFromContent(asset.content || asset.src));
+  const rawContent = String(asset.content || asset.src || "").trim();
+  if (!rawContent) return "";
+
+  const resourceTitle = sanitizeResourceTitle(asset.title || asset.alt || token, "资源");
+  if (resourceType === RESOURCE_TYPE_TEXT) {
+    return rawContent;
+  }
+
+  if (resourceType === RESOURCE_TYPE_TABLE) {
+    captionCounter.table += 1;
+    return `表 ${captionCounter.table} ${resourceTitle}\n\n${rawContent}`;
+  }
+
+  captionCounter.image += 1;
+  return `![${sanitizeImageAltText(asset.alt || resourceTitle, resourceTitle)}](${rawContent})\n\n图 ${captionCounter.image} ${resourceTitle}`;
+};
+
+const renderDeviceImageMarkdown = (asset = {}, deviceName = "", captionCounter = { image: 0, table: 0 }) => {
+  const rawContent = String(asset.src || "").trim();
+  if (!rawContent) return "";
+
+  captionCounter.image += 1;
+  const title = sanitizeResourceTitle(deviceName || asset.deviceName || asset.alt, "设备图片");
+  return `![${sanitizeImageAltText(asset.alt || title, title)}](${rawContent})\n\n图 ${captionCounter.image} ${title}`;
+};
+
 const buildImagePromptSection = (imageContext = {}) => {
   const common = Array.isArray(imageContext?.commonImageGuidance) ? imageContext.commonImageGuidance : [];
   const deviceGuidance = Array.isArray(imageContext?.devicePlaceholderGuidance) ? imageContext.devicePlaceholderGuidance : [];
@@ -564,9 +627,10 @@ const buildImagePromptSection = (imageContext = {}) => {
   lines.push("【本地静态资源占位符规则】");
   lines.push("A. 你只能使用后端提供的占位符，禁止编造任何新占位符。");
   lines.push("B. 资源类型为“图片”时，只能输出占位符 {{RES_IMAGE_xxx}}；不要输出 base64、URL 或 HTML 图片标签。");
-  lines.push("C. 资源类型为“文字（表格）”时，只能输出占位符 {{RES_TEXT_xxx}}，后端会替换为对应 Markdown 内容。");
-  lines.push("D. 输出资源占位符时建议先写“资源解释”文本，再单独一行输出占位符，便于后端排版。");
-  lines.push("E. 设备名称必须与“可插入设备图片列表”逐字一致，设备占位符需单独成行，后端会替换为真实图片。");
+  lines.push("C. 资源类型为“文字”时，只能输出占位符 {{RES_TEXT_xxx}}，后端会替换为对应 Markdown 内容。");
+  lines.push("D. 资源类型为“表格”时，只能输出占位符 {{RES_TABLE_xxx}}，后端会替换为对应 Markdown 表格并自动添加表题。");
+  lines.push("E. 输出资源占位符时建议先写“资源解释”文本，再单独一行输出占位符，便于后端排版。");
+  lines.push("F. 设备名称必须与“可插入设备图片列表”逐字一致，设备占位符需单独成行，后端会替换为真实图片并自动添加图题。");
 
   if (common.length > 0) {
     lines.push("");
@@ -653,7 +717,7 @@ const buildPlanPrompt = ({ projectName, scenario, params, planTitle, items, imag
     "7. 必须输出模板中要求的固定公式，并对每个公式给出不少于50字的原则与解释，解释另起一段不直接跟在公式后面。",
     "8. 可按模板建议使用静态块占位符，例如 {{INSERT:STANDARDS_TABLE}}、{{INSERT:FORMULAS_BLOCK}}。",
     "9. 设备清单中不包含图片字段，严禁输出 base64、图片 URL 或 HTML 图片标签。",
-    "10. 本地静态资源的图片类型请使用 {{RES_IMAGE_xxx}}，文字（表格）类型请使用 {{RES_TEXT_xxx}}。",
+    "10. 本地静态资源的图片类型请使用 {{RES_IMAGE_xxx}}，文字类型请使用 {{RES_TEXT_xxx}}，表格类型请使用 {{RES_TABLE_xxx}}。",
     "11. 设备图片只能使用统一格式占位符 [图片占位符：设备名称]。",
     imagePromptSection,
     "",
@@ -1059,13 +1123,17 @@ const buildPlanImageContext = async ({
 
   const commonImageGuidance = (Array.isArray(commonImageResources) ? commonImageResources : []).map((asset) => {
     const normalizedType = normalizeResourceType(asset.resourceType, inferResourceTypeFromContent(asset.content));
-    const token = normalizedType === RESOURCE_TYPE_IMAGE
-      ? `RES_IMAGE_${asset.id}`
-      : `RES_TEXT_${asset.id}`;
+    let token = `RES_TEXT_${asset.id}`;
+    if (normalizedType === RESOURCE_TYPE_IMAGE) {
+      token = `RES_IMAGE_${asset.id}`;
+    } else if (normalizedType === RESOURCE_TYPE_TABLE) {
+      token = `RES_TABLE_${asset.id}`;
+    }
     mediaAssetMap[token] = {
       resourceType: normalizedType,
       content: String(asset.content || "").trim(),
-      alt: sanitizeImageAltText(asset.resourceName, "本地静态资源")
+      alt: sanitizeImageAltText(asset.resourceName, "本地静态资源"),
+      title: sanitizeResourceTitle(asset.resourceName, "本地静态资源")
     };
     return {
       chapterTitle: asset.chapterTitle,
@@ -1108,28 +1176,24 @@ const buildPlanImageContext = async ({
   };
 };
 
-const replaceMediaPlaceholders = (markdown, mediaAssetMap = {}, skipTokenSet = new Set()) => {
+const replaceMediaPlaceholders = (markdown, mediaAssetMap = {}, skipTokenSet = new Set(), captionCounter = { image: 0, table: 0 }) => {
   const replaced = [];
-  const content = String(markdown || "").replace(/\{\{((?:IMG_[A-Z0-9_]+|RES_(?:IMAGE|TEXT)_[A-Z0-9_]+))\}\}/g, (_, token) => {
+  const content = String(markdown || "").replace(/\{\{((?:IMG_[A-Z0-9_]+|RES_(?:IMAGE|TEXT|TABLE)_[A-Z0-9_]+))\}\}/g, (_, token) => {
     if (skipTokenSet.has(token)) {
       return `{{${token}}}`;
     }
     const asset = mediaAssetMap[token];
     if (!asset) {
-      return `<!-- WARNING: image placeholder '${token}' not found -->`;
+      return `<!-- WARNING: resource placeholder '${token}' not found -->`;
     }
 
-    const resourceType = normalizeResourceType(asset.resourceType, inferResourceTypeFromContent(asset.content || asset.src));
     const rawContent = String(asset.content || asset.src || "").trim();
     if (!rawContent) {
       return `<!-- WARNING: resource placeholder '${token}' has empty content -->`;
     }
 
     replaced.push(token);
-    if (resourceType === RESOURCE_TYPE_TEXT) {
-      return rawContent;
-    }
-    return `![${sanitizeImageAltText(asset.alt, token)}](${rawContent})`;
+    return renderTypedResourceMarkdown(asset, token, captionCounter);
   });
   return { content, replaced };
 };
@@ -1137,13 +1201,13 @@ const replaceMediaPlaceholders = (markdown, mediaAssetMap = {}, skipTokenSet = n
 const stripCommonImagePlaceholders = (markdown, tokens = []) => {
   const tokenSet = new Set(Array.isArray(tokens) ? tokens : []);
   if (tokenSet.size === 0) return markdown;
-  return String(markdown || "").replace(/\{\{((?:IMG_[A-Z0-9_]+|RES_(?:IMAGE|TEXT)_[A-Z0-9_]+))\}\}/g, (_, token) => {
+  return String(markdown || "").replace(/\{\{((?:IMG_[A-Z0-9_]+|RES_(?:IMAGE|TEXT|TABLE)_[A-Z0-9_]+))\}\}/g, (_, token) => {
     if (tokenSet.has(token)) return "";
     return `{{${token}}}`;
   });
 };
 
-const replaceDeviceImagePlaceholders = (markdown, deviceImageByName = {}) => {
+const replaceDeviceImagePlaceholders = (markdown, deviceImageByName = {}, captionCounter = { image: 0, table: 0 }) => {
   const replaced = [];
   const missing = [];
   const content = String(markdown || "").replace(/\[图片占位符[：:]\s*([^\]\r\n]+?)\s*\]/g, (full, rawName) => {
@@ -1155,7 +1219,7 @@ const replaceDeviceImagePlaceholders = (markdown, deviceImageByName = {}) => {
       return full;
     }
     replaced.push(deviceName || String(asset?.deviceName || ""));
-    return `![${sanitizeImageAltText(asset.alt || deviceName, deviceName || "设备图片")}](${String(asset.src).trim()})`;
+    return renderDeviceImageMarkdown(asset, deviceName, captionCounter);
   });
 
   return {
@@ -1165,7 +1229,7 @@ const replaceDeviceImagePlaceholders = (markdown, deviceImageByName = {}) => {
   };
 };
 
-const insertCommonImagesByChapterTitle = (markdown, commonImageGuidance = [], mediaAssetMap = {}, replacedTokens = []) => {
+const insertCommonImagesByChapterTitle = (markdown, commonImageGuidance = [], mediaAssetMap = {}, replacedTokens = [], captionCounter = { image: 0, table: 0 }) => {
   const lines = String(markdown || "").split(/\r?\n/);
   const replacedSet = new Set(Array.isArray(replacedTokens) ? replacedTokens : []);
   const inserted = [];
@@ -1211,17 +1275,19 @@ const insertCommonImagesByChapterTitle = (markdown, commonImageGuidance = [], me
       const asset = mediaAssetMap[token];
       if (!token || !asset || replacedSet.has(token)) return;
 
-      const resourceType = normalizeResourceType(asset.resourceType, item?.resourceType || inferResourceTypeFromContent(asset.content || asset.src));
-      const rawContent = String(asset.content || asset.src || "").trim();
-      if (!rawContent) return;
+      const renderedAssetMarkdown = renderTypedResourceMarkdown(
+        {
+          ...asset,
+          title: String(asset.title || item?.imageName || token).trim()
+        },
+        token,
+        captionCounter
+      );
+      if (!renderedAssetMarkdown) return;
 
       const explain = String(item?.explain || "").trim();
       if (explain) chunks.push(explain);
-      if (resourceType === RESOURCE_TYPE_TEXT) {
-        chunks.push(rawContent);
-      } else {
-        chunks.push(`![${sanitizeImageAltText(asset.alt || item?.imageName || token, token)}](${rawContent})`);
-      }
+      chunks.push(renderedAssetMarkdown);
       inserted.push(token);
       replacedSet.add(token);
     });
@@ -1319,22 +1385,23 @@ const injectStaticBlocks = (markdown, blockMap) => {
 const postProcessMarkdown = (markdown, blockMap, mediaAssetMap = {}, commonImageGuidance = [], deviceImageByName = {}) => {
   const { content, injected } = injectStaticBlocks(markdown, blockMap);
   const withToc = insertToc(content);
+  const captionCounter = { image: 0, table: 0 };
   const commonTokens = (Array.isArray(commonImageGuidance) ? commonImageGuidance : [])
     .map((item) => String(item?.token || "").trim())
     .filter(Boolean);
   const commonTokenSet = new Set(commonTokens);
-  const { content: withImages, replaced } = replaceMediaPlaceholders(withToc, mediaAssetMap, commonTokenSet);
+  const { content: withImages, replaced } = replaceMediaPlaceholders(withToc, mediaAssetMap, commonTokenSet, captionCounter);
   const {
     content: withChapterImages,
     inserted: chapterInserted,
     skipped: chapterSkipped
-  } = insertCommonImagesByChapterTitle(withImages, commonImageGuidance, mediaAssetMap, replaced);
+  } = insertCommonImagesByChapterTitle(withImages, commonImageGuidance, mediaAssetMap, replaced, captionCounter);
   const cleanedMarkdown = stripCommonImagePlaceholders(withChapterImages, commonTokens);
   const {
     content: withDeviceImages,
     replaced: deviceReplaced,
     missing: deviceMissing
-  } = replaceDeviceImagePlaceholders(cleanedMarkdown, deviceImageByName);
+  } = replaceDeviceImagePlaceholders(cleanedMarkdown, deviceImageByName, captionCounter);
   const replacedAll = Array.from(new Set([...(Array.isArray(replaced) ? replaced : []), ...chapterInserted]));
   return {
     markdownProcessed: withDeviceImages,
@@ -1348,7 +1415,9 @@ const postProcessMarkdown = (markdown, blockMap, mediaAssetMap = {}, commonImage
       chapter_inserted_images: chapterInserted,
       chapter_skipped_images: chapterSkipped,
       replaced_device_placeholders: deviceReplaced,
-      missing_device_placeholders: deviceMissing
+      missing_device_placeholders: deviceMissing,
+      figure_caption_count: captionCounter.image,
+      table_caption_count: captionCounter.table
     }
   };
 };
@@ -1733,7 +1802,7 @@ app.post("/api/inventory/:table", async (req, res) => {
 
   const payload = mapInventoryPayloadToTable(table, req.body || {});
   try {
-    if (table === LOCAL_STATIC_RESOURCE_TABLE || table === IMAGE_RESOURCE_TABLE) {
+    if (isLocalStaticResourceTable(table)) {
       if (!payload.block_key) {
         payload.block_key = createManualResourceBlockKey(payload.title || payload["图片名称"] || "");
       }
@@ -2070,6 +2139,37 @@ app.delete("/api/history/:id", async (req, res) => {
   } catch (error) {
     console.error("❌ Delete history failed:", error.message);
     res.status(500).json({ error: "Failed to delete history" });
+  }
+});
+
+app.post("/api/history/batch-delete", async (req, res) => {
+  const rawIds = Array.isArray(req.body?.ids) ? req.body.ids : [];
+  const ids = Array.from(
+    new Set(
+      rawIds
+        .map((value) => String(value ?? "").trim())
+        .filter((value) => /^\d+$/.test(value))
+    )
+  );
+
+  if (ids.length === 0) {
+    return res.status(400).json({ error: "Missing valid ids" });
+  }
+
+  try {
+    const placeholders = ids.map(() => "?").join(", ");
+    const [result] = await pool.query(
+      `DELETE FROM design_history WHERE id IN (${placeholders})`,
+      ids
+    );
+
+    res.json({
+      affectedRows: Number(result?.affectedRows || 0),
+      requestedRows: ids.length
+    });
+  } catch (error) {
+    console.error("❌ Batch delete history failed:", error.message);
+    res.status(500).json({ error: "Failed to batch delete history" });
   }
 });
 

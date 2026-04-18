@@ -174,8 +174,8 @@ const TABLE_NAME_MAP: Record<string, TableType> = {
   矩阵: TableType.FIXED_SCENE_EXTRA,
   视频会议系统: TableType.FIXED_SCENE_EXTRA,
   录播系统: TableType.FIXED_SCENE_EXTRA,
-  图片资源管理: TableType.LOCAL_STATIC_RESOURCE,
-  本地静态资源: TableType.LOCAL_STATIC_RESOURCE
+  本地静态资源: TableType.LOCAL_STATIC_RESOURCE,
+  本地静态资源管理: TableType.LOCAL_STATIC_RESOURCE
 };
 
 const normalizeTableName = (type: string): TableType | null => {
@@ -2296,6 +2296,42 @@ const deleteHistoryRecord = async (id: number) => {
   }
 };
 
+const deleteHistoryRecordsBatch = async (ids: number[]) => {
+  const validIds = Array.from(
+    new Set(
+      (Array.isArray(ids) ? ids : [])
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id) && id > 0)
+    )
+  );
+
+  if (validIds.length === 0) {
+    return { ok: false, deleted: 0, requested: 0 };
+  }
+
+  try {
+    const response = await fetch(`${API_BASE}/api/history/batch-delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: validIds })
+    });
+
+    if (!response.ok) throw new Error(`Batch delete history failed: ${response.status}`);
+
+    const data = await response.json().catch(() => ({}));
+    await fetchHistory(currentUser);
+    return {
+      ok: true,
+      deleted: Number(data?.affectedRows || 0),
+      requested: validIds.length
+    };
+  } catch (error) {
+    console.error('❌ Batch delete history failed:', error);
+    alert('历史记录批量删除失败，请检查后端日志。');
+    return { ok: false, deleted: 0, requested: validIds.length };
+  }
+};
+
 const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
   return {
     searchFilters, setSearchFilters,
@@ -2321,6 +2357,7 @@ const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
     deleteInventoryItemsBatch,
     updateHistoryRecord,
     deleteHistoryRecord,
+    deleteHistoryRecordsBatch,
     deleteUser,
     login,
     updateProfile,

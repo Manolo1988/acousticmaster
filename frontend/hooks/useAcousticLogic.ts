@@ -3,7 +3,7 @@ import React from 'react';
 import {
   Scenario, Page, SolutionTab, ResultTab, AcousticParams, DesignState,
   EquipmentItem, SolutionResult, User, AuthUser, HistoryRecord, MicConfig,
-  TableType, DbInventoryItem, ChatMessage
+  TableType, DbInventoryItem, ChatMessage, SolutionLayoutItem
 } from '../types';
 import { DEFAULT_PARAMS, MIC_TYPES } from '../constants';
 import { v4 as uuidv4 } from 'uuid';
@@ -33,6 +33,23 @@ const resolveBackendLink = (link: string) => {
 const buildReportPrintDomId = (resultId: string) => `report-print-${resultId}`;
 
 type ReportChapterConfig = { key: string; title: string };
+
+type AmplifierMatchAnalysisPayload = {
+  scenario: Scenario;
+  speaker: {
+    model?: string;
+    name?: string;
+    quantity?: number;
+    ratedPower?: string | number;
+    ratedImpedance?: string | number;
+  };
+  currentAmplifier?: {
+    model?: string;
+    name?: string;
+  };
+  items?: EquipmentItem[];
+  amplifierIndex?: number;
+};
 
 const REPORT_CHAPTERS: ReportChapterConfig[] = [
   { key: 'project_overview', title: '项目概述' },
@@ -161,19 +178,20 @@ const SYSTEM_API_BASE = API_BASE;
 const AI_CHAT_API_BASE = API_BASE;
 
 const TABLE_NAME_MAP: Record<string, TableType> = {
-  固定搭配: TableType.FIXED_COMBINATION,
+  固定搭配: TableType.SPEAKER,
   音箱: TableType.SPEAKER,
-  线阵列配套: TableType.SPEAKER,
+  线阵列配套: TableType.LINE_ARRAY_SUPPORT,
   定阻功放: TableType.AMPLIFIER,
   功放: TableType.AMPLIFIER,
   周边设备: TableType.PERIPHERAL,
-  固定搭配场景剩余周边设备: TableType.FIXED_SCENE_EXTRA,
-  非固定搭配场景剩余周边设备: TableType.NON_FIXED_SCENE_EXTRA,
-  其他设备: TableType.FIXED_SCENE_EXTRA,
-  中控系统: TableType.FIXED_SCENE_EXTRA,
-  矩阵: TableType.FIXED_SCENE_EXTRA,
-  视频会议系统: TableType.FIXED_SCENE_EXTRA,
-  录播系统: TableType.FIXED_SCENE_EXTRA,
+  子系统: TableType.SUBSYSTEM,
+  固定搭配场景剩余周边设备: TableType.SUBSYSTEM,
+  非固定搭配场景剩余周边设备: TableType.SUBSYSTEM,
+  其他设备: TableType.SUBSYSTEM,
+  中控系统: TableType.SUBSYSTEM,
+  矩阵: TableType.SUBSYSTEM,
+  视频会议系统: TableType.SUBSYSTEM,
+  录播系统: TableType.SUBSYSTEM,
   本地静态资源: TableType.LOCAL_STATIC_RESOURCE,
   本地静态资源管理: TableType.LOCAL_STATIC_RESOURCE
 };
@@ -724,35 +742,154 @@ const useAcousticAssistant = (
 // 新增：Dify 响应解析器（动态支持任意数量方案）
 // ========================================
 
+const TABLE_HEADER_TOKENS = new Set([
+  '类型', '产品类型', '设备类型', '产品名称', '名称', '型号', '规格', '数量', 'qty', 'quantity'
+]);
+
+const normalizeColumnToken = (value: string) =>
+  String(value || '')
+    .replace(/[*`~]/g, '')
+    .replace(/\s+/g, '')
+    .trim()
+    .toLowerCase();
+
+const trimPipeColumns = (rawColumns: string[]) => {
+  const cols = [...rawColumns];
+  while (cols.length > 0 && !String(cols[0] || '').trim()) cols.shift();
+  while (cols.length > 0 && !String(cols[cols.length - 1] || '').trim()) cols.pop();
+  return cols;
+};
+
+const inferTypeByNameOrModel = (name: string, model: string) => {
+  const text = `${name} ${model}`;
+  if (text.includes('功放')) return '功放';
+  if (text.includes('话筒') || text.includes('麦克风')) return '话筒';
+  if (text.includes('矩阵')) return '矩阵';
+  if (text.includes('中控')) return '中控系统';
+  if (text.includes('录播')) return '录播系统';
+  if (text.includes('视频会议')) return '视频会议系统';
+  if (text.includes('吊挂架') || text.includes('吊架')) return '线阵列音箱吊挂架';
+  if (text.includes('次低')) return '次低音箱';
+  if (text.includes('线阵列')) return '线阵列音箱';
+  if (text.includes('音箱')) return '音箱';
+  return '';
+};
+
 const parseTableLines = (tableText: string): EquipmentItem[] => {
   const items: EquipmentItem[] = [];
-  const lines = tableText
-    .split('\n')
-    .map(line => line.trim())
-    .filter(line => line && !line.includes('|:-:') && line.includes('|'));
+  const lines = String(tableText || '').split('\n');
 
-  for (const line of lines) {
-    const cols = line
-      .split('|')
-      .map(col => col.trim())
-      .filter(col => col !== '');
+  lines.forEach((rawLine) => {
+    const line = String(rawLine || '').trim();
+    if (!line || !line.includes('|')) return;
+
+    const rawCols = line.split('|').map((col) => col.trim());
+    const cols = trimPipeColumns(rawCols);
+    if (cols.length < 3) return;
+
+    const dividerLike = cols.every((col) => /^:?-{2,}:?$/.test(col));
+    if (dividerLike) return;
+
+    let type = '';
+    let name = '';
+    let model = '';
+    let qtyStr = '';
 
     if (cols.length >= 4) {
-      const [type, name, model, qtyStr] = cols;
-      // 跳过表头行
-      if (['类型', '产品名称', '型号', '数量'].includes(type)) continue;
-
-      const quantity = parseInt(qtyStr, 10) || 1;
-      items.push({
-        id: `${Math.random().toString(36).slice(2)}-${items.length}`,
-        type,
-        name,
-        model,
-        quantity
-      });
+      [type, name, model, qtyStr] = cols;
+    } else {
+      [name, model, qtyStr] = cols;
     }
-  }
+
+    const headerHitCount = [type, name, model, qtyStr]
+      .map((col) => normalizeColumnToken(col))
+      .filter((token) => TABLE_HEADER_TOKENS.has(token))
+      .length;
+    if (headerHitCount >= 3) return;
+
+    name = String(name || '').trim();
+    model = String(model || '').trim();
+    type = String(type || '').trim();
+    if (!type) {
+      type = inferTypeByNameOrModel(name, model);
+    }
+
+    if (!name || !model) return;
+
+    const qtyMatch = String(qtyStr || '').match(/\d+/);
+    const quantity = qtyMatch ? Math.max(1, Number(qtyMatch[0])) : 1;
+
+    items.push({
+      id: `${Math.random().toString(36).slice(2)}-${items.length}`,
+      type,
+      name,
+      model,
+      quantity
+    });
+  });
+
   return items;
+};
+
+const parseLayoutTableLines = (tableText: string): SolutionLayoutItem[] => {
+  const rows: SolutionLayoutItem[] = [];
+  const lines = String(tableText || '').split('\n');
+
+  lines.forEach((rawLine) => {
+    const line = String(rawLine || '').trim();
+    if (!line || !line.includes('|')) return;
+
+    const rawCols = line.split('|').map((col) => col.trim());
+    const cols = trimPipeColumns(rawCols);
+    if (cols.length < 8) return;
+
+    const dividerLike = cols.every((col) => /^:?-{2,}:?$/.test(col));
+    if (dividerLike) return;
+
+    const [fn, name, model, xText, yText, zText, pitchText, yawText] = cols;
+
+    const headerHitCount = [fn, name, model]
+      .map((col) => normalizeColumnToken(col))
+      .filter((token) => ['功能', '产品名称', '型号', 'x', 'y', 'z', '俯仰角', '偏航角'].includes(token))
+      .length;
+    if (headerHitCount >= 2) return;
+
+    const toNumber = (value: string) => {
+      const matched = String(value || '').match(/-?\d+(?:\.\d+)?/);
+      if (!matched) return 0;
+      const n = Number(matched[0]);
+      return Number.isFinite(n) ? n : 0;
+    };
+
+    rows.push({
+      id: `layout-${Math.random().toString(36).slice(2)}-${rows.length}`,
+      function: String(fn || '').trim(),
+      name: String(name || '').trim(),
+      model: String(model || '').trim(),
+      x: toNumber(xText),
+      y: toNumber(yText),
+      z: toNumber(zText),
+      pitch: toNumber(pitchText),
+      yaw: toNumber(yawText)
+    });
+  });
+
+  return rows;
+};
+
+const parseSectionIndex = (title: string, prefix: '方案' | '布局') => {
+  const matched = String(title || '').match(new RegExp(`${prefix}\\s*(\\d+)`));
+  if (!matched) return null;
+  const n = Number(matched[1]);
+  return Number.isFinite(n) ? n : null;
+};
+
+const normalizeDifyContentForBlocks = (content: string) => {
+  return String(content || '')
+    .replace(/<\/font>\s*\|/gi, '</font>\n|')
+    .replace(/\|\s*<font/gi, '|\n<font')
+    .replace(/<font([^>]*)>\s*(方案\d+)\s*<\/font>/gi, '<font$1>$2</font>')
+    .replace(/<font([^>]*)>\s*(布局\d+)\s*<\/font>/gi, '<font$1>$2</font>');
 };
 
 const normalizeRawText = (text: string) => {
@@ -834,12 +971,15 @@ const parseDifyResponseToResults = (rawText: string): SolutionResult[] => {
     content = content.slice(0, docStartIndex);
   }
 
-  // 按 <font size=5> 分割方案（支持任意数量）
-  const blocks = content.split(/<font[^>]*size\s*=\s*["']?5["']?[^>]*>/)
+  const normalizedContent = normalizeDifyContentForBlocks(content);
+
+  // 按 <font size=5> 分割段落（方案/布局）
+  const blocks = normalizedContent.split(/<font[^>]*size\s*=\s*["']?5["']?[^>]*>/)
     .map(b => b.replace(/<\/font>/gi, '').trim())
     .filter(b => b);
 
   const results: SolutionResult[] = [];
+  const layoutsByScheme = new Map<number, { items: SolutionLayoutItem[]; raw: string }>();
   for (const block of blocks) {
     const firstLineEnd = block.search(/[\n|]/);
     const title = firstLineEnd > 0 
@@ -850,12 +990,29 @@ const parseDifyResponseToResults = (rawText: string): SolutionResult[] => {
       ? block.substring(firstLineEnd).trim()
       : block;
 
+    if (title.includes('布局')) {
+      const layoutItems = parseLayoutTableLines(tablePart);
+      const schemeIndex = parseSectionIndex(title, '布局');
+      if (schemeIndex !== null) {
+        layoutsByScheme.set(schemeIndex, { items: layoutItems, raw: tablePart });
+      }
+      continue;
+    }
+
+    if (!title.includes('方案')) {
+      continue;
+    }
+
     const items = parseTableLines(tablePart);
     if (items.length > 0) {
+      const schemeIndex = parseSectionIndex(title, '方案');
+      const layout = schemeIndex !== null ? layoutsByScheme.get(schemeIndex) : null;
       results.push({
         id: `res-${Date.now()}-${results.length}`,
         title,
         items,
+        layoutItems: layout?.items || [],
+        layoutRaw: layout?.raw || '',
         wordLink: '',
         excelLink: ''
       });
@@ -863,19 +1020,48 @@ const parseDifyResponseToResults = (rawText: string): SolutionResult[] => {
   }
 
   if (results.length === 0) {
-    const tableBlocks = extractTableBlocks(content);
+    const tableBlocks = extractTableBlocks(normalizedContent);
     tableBlocks.forEach(block => {
+      if (block.title.includes('布局')) {
+        const idx = parseSectionIndex(block.title, '布局');
+        if (idx !== null) {
+          layoutsByScheme.set(idx, {
+            items: parseLayoutTableLines(block.tableText),
+            raw: block.tableText
+          });
+        }
+        return;
+      }
+
+      if (!block.title.includes('方案')) return;
+
       const items = parseTableLines(block.tableText);
       if (items.length === 0) return;
+
+      const schemeIndex = parseSectionIndex(block.title, '方案');
+      const layout = schemeIndex !== null ? layoutsByScheme.get(schemeIndex) : null;
       results.push({
         id: `res-${Date.now()}-${results.length}`,
         title: block.title,
         items,
+        layoutItems: layout?.items || [],
+        layoutRaw: layout?.raw || '',
         wordLink: '',
         excelLink: ''
       });
     });
   }
+
+  // 兜底：布局段落可能在方案段落之后出现，二次回填
+  results.forEach((res) => {
+    if ((res.layoutItems || []).length > 0) return;
+    const schemeIndex = parseSectionIndex(res.title, '方案');
+    if (schemeIndex === null) return;
+    const layout = layoutsByScheme.get(schemeIndex);
+    if (!layout) return;
+    res.layoutItems = layout.items;
+    res.layoutRaw = layout.raw;
+  });
 
   const docSectionIndex = normalizedText.indexOf('请耐心等待');
   const docText = docSectionIndex >= 0 ? normalizedText.slice(docSectionIndex) : normalizedText;
@@ -992,13 +1178,23 @@ export const useAcousticLogic = () => {
   const [users, setUsers] = useState<User[]>([]);
   const [userRoleFilter, setUserRoleFilter] = useState<string>('ALL');  // --- 方案设计核心状态 ---
   const [userNameFilter, setUserNameFilter] = useState("");
-  const [searchFilters, setSearchFilters] = useState({ 品牌: '', 产品名称: '', 用途: '', 场景: '' });
+  const [searchFilters, setSearchFilters] = useState({
+    品牌: '',
+    产品类型: '',
+    市场价最小值: '',
+    市场价最大值: '',
+    产品名称: '',
+    用途: '',
+    场景: ''
+  });
   const [sortConfig, setSortConfig] = useState<{ key: string, direction: 'asc' | 'desc' } | null>(null);
   // --- 资源管理状态 (对应 MySQL 数据库) ---
   const [activeTable, setActiveTable] = useState<TableType>(TableType.SPEAKER as TableType);
   const [inventory, setInventory] = useState<DbInventoryItem[]>([]);
   const [equipmentDetailCache, setEquipmentDetailCache] = useState<Record<string, DbInventoryItem>>({});
   const [inventoryOptionsByTable, setInventoryOptionsByTable] = useState<Record<string, DbInventoryItem[]>>({});
+  const [speakerProductTypeOptions, setSpeakerProductTypeOptions] = useState<string[]>([]);
+  const [speakerFunctionOptions, setSpeakerFunctionOptions] = useState<string[]>([]);
   const [history, setHistory] = useState<HistoryRecord[]>([]);
   const [micTypeOptions, setMicTypeOptions] = useState<string[]>([]);
   const [planChapterOptions, setPlanChapterOptions] = useState<string[]>(REPORT_CHAPTERS.map((chapter) => chapter.title));
@@ -1075,23 +1271,31 @@ export const useAcousticLogic = () => {
       result = sortedResult;
     }
     if (searchFilters.品牌) {
-      result = result.filter(item => String(item.品牌 || '').toLowerCase().includes(searchFilters.品牌.toLowerCase()));
+      const keyword = String(searchFilters.品牌 || '').trim().toLowerCase();
+      result = result.filter(item => String(item.品牌 || '').toLowerCase().includes(keyword));
     }
-    if (searchFilters.产品名称) {
-      const keyword = searchFilters.产品名称.toLowerCase();
+
+    if (searchFilters.产品类型) {
+      const keyword = String(searchFilters.产品类型 || '').trim().toLowerCase();
       result = result.filter(item => {
-        const name = String(item.产品名称 || item.图片名称 || '').toLowerCase();
-        return name.includes(keyword);
+        const productType = String((item as any).产品类型 || item.类型 || '').toLowerCase();
+        return productType.includes(keyword);
       });
     }
-    if (searchFilters.用途 && activeTable === TableType.SPEAKER as TableType) {
-      result = result.filter(item => Array.isArray(item.用途) ? item.用途.includes(searchFilters.用途) : item.用途 === searchFilters.用途);
-    }
-    if (searchFilters.场景) {
+
+    const minPriceRaw = String(searchFilters.市场价最小值 || '').trim();
+    const maxPriceRaw = String(searchFilters.市场价最大值 || '').trim();
+    const minPrice = Number(minPriceRaw);
+    const maxPrice = Number(maxPriceRaw);
+    const hasMin = minPriceRaw !== '' && Number.isFinite(minPrice);
+    const hasMax = maxPriceRaw !== '' && Number.isFinite(maxPrice);
+    if (hasMin || hasMax) {
       result = result.filter(item => {
-        const scene = item.场景 || item.使用场景 || '';
-        const usage = Array.isArray(item.用途) ? item.用途.join(',') : (item.用途 || '');
-        return scene.includes(searchFilters.场景) || usage.includes(searchFilters.场景);
+        const price = Number((item as any).市场价);
+        if (!Number.isFinite(price)) return false;
+        if (hasMin && price < minPrice) return false;
+        if (hasMax && price > maxPrice) return false;
+        return true;
       });
     }
 
@@ -1153,21 +1357,44 @@ export const useAcousticLogic = () => {
     }
   };
 
+  const fetchSpeakerMetadata = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/inventory/speaker-metadata`);
+      if (!response.ok) throw new Error(`Fetch speaker metadata failed: ${response.status}`);
+      const data = await response.json().catch(() => ({}));
+      const productTypes = Array.isArray(data?.productTypeOptions)
+        ? data.productTypeOptions.map((value: any) => String(value || '').trim()).filter(Boolean)
+        : [];
+      const functions = Array.isArray(data?.functionOptions)
+        ? data.functionOptions.map((value: any) => String(value || '').trim()).filter(Boolean)
+        : [];
+      setSpeakerProductTypeOptions(productTypes);
+      setSpeakerFunctionOptions(functions);
+    } catch (error) {
+      console.error('❌ Failed to fetch speaker metadata:', error);
+      setSpeakerProductTypeOptions(['全频音箱', '线阵列音箱', '台唇音箱', '拉声像音箱', '返听音箱', '超低音箱']);
+      setSpeakerFunctionOptions(['主扩声', '返听', '辅助扩声', '次低频补偿', '吊装', '壁挂', '吸顶', '舞台监听']);
+    }
+  };
+
   const resolveDetailTableCandidates = (type: string): TableType[] => {
     if (!type) return [TableType.PERIPHERAL];
-    if (type === TableType.SPEAKER) return [TableType.SPEAKER];
+    if (type === TableType.SPEAKER) return [TableType.SPEAKER, TableType.LINE_ARRAY_SUPPORT];
+    if (type === TableType.LINE_ARRAY_SUPPORT) return [TableType.LINE_ARRAY_SUPPORT, TableType.SPEAKER];
     if (type === TableType.AMPLIFIER || type === '功放') return [TableType.AMPLIFIER];
     if (type === TableType.PERIPHERAL) return [TableType.PERIPHERAL];
-    if (type === TableType.FIXED_SCENE_EXTRA) return [TableType.FIXED_SCENE_EXTRA, TableType.NON_FIXED_SCENE_EXTRA];
-    if (type === TableType.NON_FIXED_SCENE_EXTRA) return [TableType.NON_FIXED_SCENE_EXTRA, TableType.FIXED_SCENE_EXTRA];
+    if (type === TableType.SUBSYSTEM) return [TableType.SUBSYSTEM];
     if (SUBSYSTEM_DEVICE_TYPES.has(type)) {
-      return [TableType.FIXED_SCENE_EXTRA, TableType.NON_FIXED_SCENE_EXTRA];
+      return [TableType.SUBSYSTEM];
     }
     if (type.includes('定阻功放') || type.includes('功放')) {
       return [TableType.AMPLIFIER];
     }
-    if (type.includes('音箱')) {
-      return [TableType.SPEAKER];
+    if (type.includes('音箱') || type.includes('线阵列')) {
+      return [TableType.SPEAKER, TableType.LINE_ARRAY_SUPPORT];
+    }
+    if (['中控系统', '矩阵', '视频会议系统', '录播系统', '子系统'].some((keyword) => type.includes(keyword))) {
+      return [TableType.SUBSYSTEM];
     }
     return [TableType.PERIPHERAL];
   };
@@ -1209,6 +1436,20 @@ export const useAcousticLogic = () => {
       }
     }
     return null;
+  };
+
+  const analyzeAmplifierMatch = async (payload: AmplifierMatchAnalysisPayload) => {
+    const response = await fetch(`${API_BASE}/api/plan/amplifier-match-analysis`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(String(data?.message || data?.error || `Amplifier match analysis failed: ${response.status}`));
+    }
+    return data;
   };
 
   const fetchMicTypeOptions = async () => {
@@ -1305,7 +1546,10 @@ export const useAcousticLogic = () => {
         name: detail.产品名称 || currentItem.name,
         model: detail.型号 || currentItem.model,
         brand: detail.品牌 || currentItem.brand,
-        unitPrice: Number(detail.市场价) || currentItem.unitPrice || 0
+        unitPrice: Number(detail.市场价) || currentItem.unitPrice || 0,
+        inventoryMatched: true,
+        inventoryMatchNote: '',
+        recentlyUpdated: true
       };
 
       newResults[resIdx] = {
@@ -1319,6 +1563,10 @@ export const useAcousticLogic = () => {
   useEffect(() => {
     fetchInventoryByTable(activeTable);
   }, [activeTable]);
+
+  useEffect(() => {
+    fetchSpeakerMetadata();
+  }, []);
 
   useEffect(() => {
     fetchMicTypeOptions();
@@ -1600,13 +1848,21 @@ if (designState.scenario === Scenario.LECTURE_HALL) {
         const enrichedItems = await Promise.all(
           res.items.map(async (item) => {
             const detail = await fetchEquipmentDetail(item);
-            if (!detail) return item;
+            if (!detail) {
+              return {
+                ...item,
+                inventoryMatched: false,
+                inventoryMatchNote: '未匹配到库存'
+              };
+            }
             return {
               ...item,
               name: detail.产品名称 || item.name,
               model: detail.型号 || item.model,
               brand: detail.品牌 || item.brand,
-              unitPrice: Number(detail.市场价) || item.unitPrice || 0
+              unitPrice: Number(detail.市场价) || item.unitPrice || 0,
+              inventoryMatched: true,
+              inventoryMatchNote: ''
             };
           })
         );
@@ -1679,11 +1935,49 @@ if (designState.scenario === Scenario.LECTURE_HALL) {
 };
 
 
-  const saveEdit = () => {
+  const saveEdit = (
+    linkedUpdateOrUpdates?:
+      | { resIdx: number; itemIdx: number; itemPatch: Partial<EquipmentItem> }
+      | Array<{ resIdx: number; itemIdx: number; itemPatch: Partial<EquipmentItem> }>
+      | null
+  ) => {
     if (!editingItem) return;
-    const newResults = [...designState.results];
-    newResults[editingItem.resIdx].items[editingItem.itemIdx] = editingItem.item;
-    setDesignState(prev => ({ ...prev, results: newResults }));
+
+    const linkedUpdates = Array.isArray(linkedUpdateOrUpdates)
+      ? linkedUpdateOrUpdates
+      : linkedUpdateOrUpdates
+        ? [linkedUpdateOrUpdates]
+        : [];
+
+    setDesignState(prev => {
+      const newResults = [...prev.results];
+      const result = newResults[editingItem.resIdx];
+      if (!result) return prev;
+
+      const nextItems = [...result.items];
+      if (!nextItems[editingItem.itemIdx]) return prev;
+      nextItems[editingItem.itemIdx] = {
+        ...editingItem.item,
+        recentlyUpdated: true
+      };
+
+      linkedUpdates.forEach((linkedUpdate) => {
+        if (!linkedUpdate || linkedUpdate.resIdx !== editingItem.resIdx) return;
+        const linkedItem = nextItems[linkedUpdate.itemIdx];
+        if (!linkedItem) return;
+        nextItems[linkedUpdate.itemIdx] = {
+          ...linkedItem,
+          ...linkedUpdate.itemPatch,
+          recentlyUpdated: true
+        };
+      });
+
+      newResults[editingItem.resIdx] = {
+        ...result,
+        items: nextItems
+      };
+      return { ...prev, results: newResults };
+    });
     setEditingItem(null);
   };
 
@@ -2190,6 +2484,44 @@ const handleSaveEquipment = async (table: TableType, item: Partial<DbInventoryIt
   }
 };
 
+const parseInventoryBatch = async (params: {
+  table: TableType;
+  inputType: 'text' | 'image' | 'excel' | 'chat';
+  text?: string;
+  imageData?: string;
+  items?: Array<Record<string, any>>;
+}) => {
+  try {
+    const response = await fetch(`${API_BASE}/api/inventory/parse-batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params)
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return {
+        ok: false,
+        items: [] as Array<{ id: number; payload: Partial<DbInventoryItem>; errors: string[]; complete: boolean }>,
+        error: String(data?.details || data?.error || '批量解析失败')
+      };
+    }
+
+    return {
+      ok: true,
+      items: Array.isArray(data?.items) ? data.items : [],
+      error: ''
+    };
+  } catch (error: any) {
+    console.error('❌ Parse inventory batch failed:', error);
+    return {
+      ok: false,
+      items: [] as Array<{ id: number; payload: Partial<DbInventoryItem>; errors: string[]; complete: boolean }>,
+      error: String(error?.message || '批量解析失败')
+    };
+  }
+};
+
 const updateInventoryItem = async (table: TableType, id: number, updates: Partial<DbInventoryItem>) => {
   try {
     const response = await fetch(`${API_BASE}/api/inventory/${encodeURIComponent(table)}/${id}`,
@@ -2352,6 +2684,7 @@ const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
     // 补全 image_54f2c6.png 缺失的方法
     handleGenerateReports,
     handleSaveEquipment,
+    parseInventoryBatch,
     updateInventoryItem,
     deleteInventoryItem,
     deleteInventoryItemsBatch,
@@ -2369,12 +2702,15 @@ const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
     setHistory,
     micTypeOptions,
     planChapterOptions,
+    speakerProductTypeOptions,
+    speakerFunctionOptions,
     addMic,
     removeMic,
     handleMicChange,
     handleParamChange,
     handleUpdateProjectName, handleSendMessage, startDesign, saveEdit, handleLogout,
     fetchEquipmentDetail,
+    analyzeAmplifierMatch,
     getCachedEquipmentDetail,
     ensureInventoryOptions,
     getInventoryOptions,

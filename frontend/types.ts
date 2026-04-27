@@ -59,6 +59,9 @@ export interface EquipmentItem {
   quantity: number;  // 数量
   brand?: string;    // 品牌（可选）
   unitPrice?: number; // 单价（可选）
+  inventoryMatched?: boolean; // 是否匹配到库存
+  inventoryMatchNote?: string; // 匹配提示
+  recentlyUpdated?: boolean; // 最近被编辑/联动更新，用于行高亮
 }
 
 export type ReportGenerationStatus = 'idle' | 'generating' | 'done' | 'error';
@@ -72,10 +75,24 @@ export interface ReportChapterState {
   error?: string;
 }
 
+export interface SolutionLayoutItem {
+  id: string;
+  function: string;
+  name: string;
+  model: string;
+  x: number;
+  y: number;
+  z: number;
+  pitch: number;
+  yaw: number;
+}
+
 export interface SolutionResult {
   id: string;
   title: string;
   items: EquipmentItem[];
+  layoutItems?: SolutionLayoutItem[];
+  layoutRaw?: string;
   wordLink?: string;
   excelLink?: string;
   markdownRaw?: string;
@@ -169,12 +186,11 @@ export interface HistoryRecord {
 }
 
 export enum TableType {
-  FIXED_COMBINATION = '固定搭配',
   SPEAKER = '音箱',
+  LINE_ARRAY_SUPPORT = '线阵列配套',
   AMPLIFIER = '定阻功放',
   PERIPHERAL = '周边设备',
-  FIXED_SCENE_EXTRA = '固定搭配场景剩余周边设备',
-  NON_FIXED_SCENE_EXTRA = '非固定搭配场景剩余周边设备',
+  SUBSYSTEM = '子系统',
   LOCAL_STATIC_RESOURCE = '本地静态资源管理'
 }
 export interface DbInventoryItem {
@@ -184,6 +200,10 @@ export interface DbInventoryItem {
   市场价: number;
   品牌?: string;
   类型?: string;
+  产品类型?: string;
+  功能?: string | string[];
+  水平覆盖角?: string | number;
+  垂直覆盖角?: string | number;
   // 定阻功放/线阵配套/音箱共有
   额定功率?: string;
   额定阻抗?: string;

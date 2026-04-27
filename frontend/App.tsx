@@ -9,6 +9,7 @@ import { Scenario, Page, SolutionTab, ResultTab, User, TableType, DbInventoryIte
 import { SCENARIO_THEMES, VERIFY_THEME } from './constants';
 import Visualization from './components/Visualization';
 import { useAcousticLogic } from './hooks/useAcousticLogic';
+import * as XLSX from 'xlsx';
 
 declare global {
   namespace JSX {
@@ -19,6 +20,26 @@ declare global {
 }
 
 type ResultView = 'TABLE' | 'WORD';
+
+type LinkedPlanUpdate = {
+  resIdx: number;
+  itemIdx: number;
+  itemPatch: Partial<EquipmentItem>;
+};
+
+type AmplifierRecommendationPrompt = {
+  message: string;
+  recommendation: {
+    name: string;
+    model: string;
+    brand?: string;
+    unitPrice?: number;
+    requiredQuantity: number;
+    mode?: string;
+  };
+  applyUpdates: LinkedPlanUpdate[];
+  rejectUpdates: LinkedPlanUpdate[];
+};
 
 const markdownReportStyles = `
 .markdown-report {
@@ -377,7 +398,7 @@ const markdownReportStyles = `
 }
 `;
 
-type FieldType = 'text' | 'number' | 'select' | 'textarea' | 'file';
+type FieldType = 'text' | 'number' | 'select' | 'textarea' | 'file' | 'multiselect';
 type FieldConfig = {
   key: string;
   label: string;
@@ -389,40 +410,73 @@ type FieldConfig = {
   accept?: string;
 };
 
-const FIXED_SCENES = [
-  '400人以上报告厅',
-  '300-400人报告厅',
-  '60-80平方会议室',
-  '30-60平方会议室',
-  '30平方以下会议室'
-];
+type TableColumnPreference = {
+  order: string[];
+  visible: string[];
+};
 
-const NON_FIXED_SCENES = ['270平方以上', '90-270平方', '90平方以下'];
+type ParsedBatchItem = {
+  id: number;
+  payload: Partial<DbInventoryItem>;
+  errors: string[];
+  complete: boolean;
+  expanded: boolean;
+};
+
 const SPEAKER_TYPES = ['全频音箱', '线阵列音箱', '台唇音箱', '拉声像音箱', '返听音箱', '超低音箱'];
+const SPEAKER_FUNCTIONS = ['主扩声', '返听', '辅助扩声', '次低频补偿', '吊装', '壁挂', '吸顶', '舞台监听'];
 const PERIPHERAL_TYPES = ['调音台', '电源时序器', '音频处理器', '话筒', '天线放大系统'];
 const EXTRA_DEVICE_TYPES = ['中控系统', '矩阵', '视频会议系统', '录播系统'];
 const REPORT_CHAPTER_OPTIONS = ['项目概述', '设计依据和目标', '方案设计', '设备介绍', '装修建议', '环境要求'];
+const MANAGEMENT_TABLES: TableType[] = [
+  TableType.SPEAKER,
+  TableType.LINE_ARRAY_SUPPORT,
+  TableType.AMPLIFIER,
+  TableType.PERIPHERAL,
+  TableType.SUBSYSTEM,
+  TableType.LOCAL_STATIC_RESOURCE
+];
+
+const ENTRY_TARGET_TABLES: TableType[] = [
+  TableType.SPEAKER,
+  TableType.AMPLIFIER,
+  TableType.PERIPHERAL,
+  TableType.SUBSYSTEM,
+  TableType.LOCAL_STATIC_RESOURCE
+];
 
 const TABLE_FIELD_CONFIG: Record<TableType, FieldConfig[]> = {
-  [TableType.FIXED_COMBINATION]: [
-    { key: '场景', label: '场景', type: 'select', options: FIXED_SCENES, required: true },
-    { key: '类型', label: '类型', type: 'select', options: SPEAKER_TYPES, required: true },
-    { key: '品牌', label: '品牌', type: 'text', required: true },
-    { key: '型号', label: '型号', type: 'text', required: true, placeholder: '型号（与音箱表一致）' },
-    { key: '设备图片', label: '设备图片', type: 'file', accept: 'image/*' }
-  ],
   [TableType.SPEAKER]: [
-    { key: '类型', label: '类型', type: 'select', options: SPEAKER_TYPES, required: true },
+    { key: '产品类型', label: '产品类型', type: 'select', options: SPEAKER_TYPES, required: true },
+    { key: '功能', label: '功能', type: 'multiselect', options: SPEAKER_FUNCTIONS, required: true },
     { key: '品牌', label: '品牌', type: 'text', required: true },
     { key: '产品名称', label: '产品名称', type: 'text', required: true },
     { key: '型号', label: '型号', type: 'text', required: true },
-    { key: '市场价', label: '市场价', type: 'number', required: true, defaultValue: 0 },
+    { key: '市场价', label: '市场价', type: 'number', required: true, defaultValue: 100 },
+    { key: '额定阻抗', label: '额定阻抗', type: 'text', required: true, placeholder: '如 8Ω' },
+    { key: '额定功率', label: '额定功率', type: 'text', required: true, placeholder: '如 200W' },
+    { key: '灵敏度', label: '灵敏度', type: 'text', required: true, placeholder: '如 93dB' },
+    { key: '最大声压级', label: '最大声压级', type: 'text', required: true, placeholder: '如 120dB' },
+    { key: '水平覆盖角', label: '水平覆盖角', type: 'number', required: true, placeholder: '单位°，如 90' },
+    { key: '垂直覆盖角', label: '垂直覆盖角', type: 'number', required: true, placeholder: '单位°，如 60' },
+    { key: '面高', label: '面高', type: 'number', required: true, placeholder: '单位米，如 0.4' },
+    { key: '设备图片', label: '设备图片', type: 'file', accept: 'image/*' }
+  ],
+  [TableType.LINE_ARRAY_SUPPORT]: [
+    { key: '类型', label: '类型', type: 'text', required: true, placeholder: '如 次低音音箱/线阵列音箱吊挂架' },
+    { key: '品牌', label: '品牌', type: 'text' },
+    { key: '产品名称', label: '产品名称', type: 'text', required: true },
+    { key: '型号', label: '型号', type: 'text', required: true },
+    { key: '市场价', label: '市场价', type: 'number', required: true, defaultValue: 100 },
     { key: '额定阻抗', label: '额定阻抗', type: 'text', placeholder: '如 8Ω' },
     { key: '额定功率', label: '额定功率', type: 'text', placeholder: '如 200W' },
     { key: '灵敏度', label: '灵敏度', type: 'text', placeholder: '如 93dB' },
     { key: '最大声压级', label: '最大声压级', type: 'text', placeholder: '如 120dB' },
-    { key: '覆盖角', label: '覆盖角', type: 'text', placeholder: '如 90°×60°' },
+    { key: '水平覆盖角', label: '水平覆盖角', type: 'number', placeholder: '单位°，如 90' },
+    { key: '垂直覆盖角', label: '垂直覆盖角', type: 'number', placeholder: '单位°，如 60' },
     { key: '面高', label: '面高', type: 'number', placeholder: '单位米，如 0.4' },
+    { key: '用途', label: '用途', type: 'text', required: true, placeholder: '如 次低音箱 / 挂架' },
+    { key: 'main_id', label: '主音箱ID', type: 'number', placeholder: '关联主线阵列音箱ID' },
     { key: '设备图片', label: '设备图片', type: 'file', accept: 'image/*' }
   ],
   [TableType.AMPLIFIER]: [
@@ -430,7 +484,7 @@ const TABLE_FIELD_CONFIG: Record<TableType, FieldConfig[]> = {
     { key: '品牌', label: '品牌', type: 'text', required: true },
     { key: '产品名称', label: '产品名称', type: 'text', required: true },
     { key: '型号', label: '型号', type: 'text', required: true },
-    { key: '市场价', label: '市场价', type: 'number', required: true, defaultValue: 0 },
+    { key: '市场价', label: '市场价', type: 'number', required: true, defaultValue: 100 },
     { key: '额定功率', label: '额定功率', type: 'text', required: true },
     { key: '额定阻抗', label: '额定阻抗', type: 'text', required: true },
     { key: '通道数', label: '通道数', type: 'text', required: true },
@@ -443,25 +497,17 @@ const TABLE_FIELD_CONFIG: Record<TableType, FieldConfig[]> = {
     { key: '型号', label: '型号', type: 'text', required: true },
     { key: '输入通道', label: '输入通道', type: 'number' },
     { key: '输出通道', label: '输出通道', type: 'number' },
-    { key: '市场价', label: '市场价', type: 'number', required: true, defaultValue: 0 },
+    { key: '市场价', label: '市场价', type: 'number', required: true, defaultValue: 100 },
     { key: '设备图片', label: '设备图片', type: 'file', accept: 'image/*' }
   ],
-  [TableType.FIXED_SCENE_EXTRA]: [
-    { key: '场景', label: '场景', type: 'select', options: FIXED_SCENES, required: true },
+  [TableType.SUBSYSTEM]: [
     { key: '类型', label: '类型', type: 'select', options: EXTRA_DEVICE_TYPES, required: true },
     { key: '品牌', label: '品牌', type: 'text', required: true },
     { key: '产品名称', label: '产品名称', type: 'text', required: true },
     { key: '型号', label: '型号', type: 'text', required: true },
     { key: '数量', label: '数量', type: 'number', required: true, defaultValue: 1 },
-    { key: '设备图片', label: '设备图片', type: 'file', accept: 'image/*' }
-  ],
-  [TableType.NON_FIXED_SCENE_EXTRA]: [
-    { key: '场景', label: '场景', type: 'select', options: NON_FIXED_SCENES, required: true },
-    { key: '类型', label: '类型', type: 'select', options: EXTRA_DEVICE_TYPES, required: true },
-    { key: '品牌', label: '品牌', type: 'text', required: true },
-    { key: '产品名称', label: '产品名称', type: 'text', required: true },
-    { key: '型号', label: '型号', type: 'text', required: true },
-    { key: '数量', label: '数量', type: 'number', required: true, defaultValue: 1 },
+    { key: '市场价', label: '市场价', type: 'number', required: true, defaultValue: 100 },
+    { key: '场景', label: '场景', type: 'select', options: ['通用', '会议室', '报告厅'], required: true, defaultValue: '通用' },
     { key: '设备图片', label: '设备图片', type: 'file', accept: 'image/*' }
   ],
   [TableType.LOCAL_STATIC_RESOURCE]: [
@@ -474,6 +520,27 @@ const TABLE_FIELD_CONFIG: Record<TableType, FieldConfig[]> = {
     { key: '是否启用', label: '是否启用', type: 'select', options: ['是', '否'], required: true, defaultValue: '是' }
   ]
 };
+
+const LINE_ARRAY_SUBWOOFER_FIELDS: Array<{ key: string; label: string; placeholder?: string }> = [
+  { key: '类型', label: '类型', placeholder: '如 次低音音箱' },
+  { key: '产品名称', label: '产品名称' },
+  { key: '型号', label: '型号' },
+  { key: '市场价', label: '市场价', placeholder: '数字，单位元' },
+  { key: '额定阻抗', label: '额定阻抗', placeholder: '如 8Ω' },
+  { key: '额定功率', label: '额定功率', placeholder: '如 300W' },
+  { key: '灵敏度', label: '灵敏度', placeholder: '如 98dB' },
+  { key: '最大声压级', label: '最大声压级', placeholder: '如 130dB' },
+  { key: '水平覆盖角', label: '水平覆盖角', placeholder: '单位°，如 90' },
+  { key: '垂直覆盖角', label: '垂直覆盖角', placeholder: '单位°，如 60' },
+  { key: '面高', label: '面高', placeholder: '单位米，如 0.5' },
+  { key: '品牌', label: '品牌' }
+];
+
+const LINE_ARRAY_HANGER_FIELDS: Array<{ key: string; label: string; placeholder?: string }> = [
+  { key: '产品名称', label: '产品名称' },
+  { key: '型号', label: '型号' },
+  { key: '市场价', label: '市场价', placeholder: '数字，单位元' }
+];
 
 const App: React.FC = () => {
   const logic = useAcousticLogic();
@@ -503,6 +570,8 @@ const App: React.FC = () => {
   const [replacementId, setReplacementId] = useState<number | ''>('');
   const [editingOptions, setEditingOptions] = useState<DbInventoryItem[]>([]);
   const [isReplacementPickerOpen, setIsReplacementPickerOpen] = useState(false);
+  const [pendingLinkedUpdates, setPendingLinkedUpdates] = useState<LinkedPlanUpdate[]>([]);
+  const [ampRecommendationPrompt, setAmpRecommendationPrompt] = useState<AmplifierRecommendationPrompt | null>(null);
   const [solutionSidebarWidth, setSolutionSidebarWidth] = useState(360);
   const [isResizingSolutionLayout, setIsResizingSolutionLayout] = useState(false);
   const solutionResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -514,7 +583,42 @@ const App: React.FC = () => {
   const [tempType, setTempType] = useState<TableType>(logic.activeTable);
   const [newResourceType, setNewResourceType] = useState<'图片' | '文字' | '表格'>('文字');
   const [editResourceType, setEditResourceType] = useState<'图片' | '文字' | '表格'>('文字');
+  const [newSpeakerProductType, setNewSpeakerProductType] = useState<string>(SPEAKER_TYPES[0]);
+  const [editSpeakerProductType, setEditSpeakerProductType] = useState<string>(SPEAKER_TYPES[0]);
+  const [lineArraySubwooferExpanded, setLineArraySubwooferExpanded] = useState(true);
+  const [lineArrayHangerExpanded, setLineArrayHangerExpanded] = useState(true);
+  const [entryMode, setEntryMode] = useState<'single' | 'batch'>('single');
+  const [batchText, setBatchText] = useState('');
+  const [batchImageFile, setBatchImageFile] = useState<File | null>(null);
+  const [batchSheetFile, setBatchSheetFile] = useState<File | null>(null);
+  const [batchParsing, setBatchParsing] = useState(false);
+  const [parsedBatchItems, setParsedBatchItems] = useState<ParsedBatchItem[]>([]);
+  const [isColumnConfigOpen, setIsColumnConfigOpen] = useState(false);
+  const [columnPreferences, setColumnPreferences] = useState<Record<string, TableColumnPreference>>(() => {
+    try {
+      const raw = localStorage.getItem('inventory-column-preferences');
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (error) {
+      return {};
+    }
+  });
   const activeResult = logic.designState.results[logic.designState.activeResultIndex];
+  const speakerTypeOptions = logic.speakerProductTypeOptions?.length
+    ? logic.speakerProductTypeOptions
+    : SPEAKER_TYPES;
+  const speakerFunctionOptions = logic.speakerFunctionOptions?.length
+    ? logic.speakerFunctionOptions
+    : SPEAKER_FUNCTIONS;
+  const productTypeFilterOptions = useMemo(() => {
+    const rowValues = (logic.inventory || [])
+      .map((item) => String((item as any).产品类型 || item.类型 || '').trim())
+      .filter(Boolean);
+    const baseValues = logic.activeTable === TableType.SPEAKER
+      ? [...speakerTypeOptions, ...rowValues]
+      : rowValues;
+    return Array.from(new Set(baseValues));
+  }, [logic.inventory, logic.activeTable, speakerTypeOptions]);
 
   const theme = logic.currentSolutionTab === SolutionTab.VERIFICATION
     ? VERIFY_THEME
@@ -589,6 +693,35 @@ const App: React.FC = () => {
   const hasPdfExport = hasGeneratedReport;
   const hasExcelExport = logic.designState.results.length > 0;
   const detailOptions = detailDialog?.table ? logic.getInventoryOptions(detailDialog.table) : [];
+  const detailTargetType = String(
+    detailDialog?.detail?.类型 || detailDialog?.detail?.产品类型 || detailDialog?.item?.type || ''
+  ).trim();
+  const detailReplacementOptions = detailOptions.filter((opt) => {
+    const rowType = String(opt.类型 || opt.产品类型 || '').trim();
+    if (!detailTargetType || !rowType) return true;
+    const normalizeTypeClass = (value: string) => {
+      const text = String(value || '').trim();
+      if (!text) return '';
+      if (text.includes('功放')) return '功放';
+      if (text.includes('话筒') || text.includes('麦克风')) return '话筒';
+      if (text.includes('反馈抑制')) return '反馈抑制器';
+      if (text.includes('调音台')) return '调音台';
+      if (text.includes('音频处理')) return '音频处理器';
+      if (text.includes('天线放大')) return '天线放大系统';
+      if (text.includes('电源时序')) return '电源时序器';
+      if (text.includes('吊挂架') || text.includes('吊架')) return '线阵列吊架';
+      if (text.includes('次低')) return '线阵列次低';
+      if (text.includes('线阵列音箱')) return '线阵列音箱';
+      if (text.includes('超低音箱')) return '超低音箱';
+      if (text.includes('音箱')) return '音箱';
+      if (text.includes('中控')) return '中控系统';
+      if (text.includes('矩阵')) return '矩阵';
+      if (text.includes('视频会议')) return '视频会议系统';
+      if (text.includes('录播')) return '录播系统';
+      return text;
+    };
+    return normalizeTypeClass(detailTargetType) === normalizeTypeClass(rowType);
+  });
 
   const glassThemePalette = logic.currentSolutionTab === SolutionTab.VERIFICATION
     ? {
@@ -716,13 +849,19 @@ const App: React.FC = () => {
 
   const getFieldsByTable = (table: TableType) => TABLE_FIELD_CONFIG[table] || [];
   const getFieldOptions = (field: FieldConfig) => {
+    if (field.key === '产品类型') {
+      return speakerTypeOptions;
+    }
+    if (field.key === '功能') {
+      return speakerFunctionOptions;
+    }
     if (field.key === '插入章节') {
       return logic.planChapterOptions?.length ? logic.planChapterOptions : (field.options || []);
     }
     return field.options || [];
   };
 
-  const getDisplayColumns = (table: TableType, rows: DbInventoryItem[]) => {
+  const getBaseDisplayColumns = (table: TableType, rows: DbInventoryItem[]) => {
     const preferred = getFieldsByTable(table).map((f) => f.key);
     const dynamic = new Set<string>();
     rows.forEach((row) => {
@@ -733,13 +872,53 @@ const App: React.FC = () => {
       });
     });
     const merged = [...preferred, ...Array.from(dynamic).filter((k) => !preferred.includes(k))];
-    const hiddenColumns = table === TableType.LOCAL_STATIC_RESOURCE
-      ? new Set(['资源内容', 'content'])
-      : new Set<string>();
-    return ['序号', ...merged.filter((key) => key !== '序号' && !hiddenColumns.has(key))];
+    return ['序号', ...merged.filter((key) => key !== '序号')];
+  };
+
+  const getDisplayColumns = (table: TableType, rows: DbInventoryItem[]) => {
+    const base = getBaseDisplayColumns(table, rows);
+    if (!isAdminUser) return base;
+
+    const preference = columnPreferences[table];
+    if (!preference) return base;
+
+    const baseWithoutSerial = base.filter((col) => col !== '序号');
+    const ordered = [
+      ...preference.order.filter((col) => baseWithoutSerial.includes(col)),
+      ...baseWithoutSerial.filter((col) => !preference.order.includes(col))
+    ];
+
+    const visibleSet = new Set(preference.visible || []);
+    const visibleOrdered = ordered.filter((col) => visibleSet.size === 0 || visibleSet.has(col));
+    return ['序号', ...visibleOrdered];
+  };
+
+  const updateTableColumnPreference = (table: TableType, next: TableColumnPreference) => {
+    setColumnPreferences((prev) => ({
+      ...prev,
+      [table]: {
+        order: Array.from(new Set(next.order.filter(Boolean))),
+        visible: Array.from(new Set(next.visible.filter(Boolean)))
+      }
+    }));
+  };
+
+  const ensureTableColumnPreference = (table: TableType, columns: string[]) => {
+    const current = columnPreferences[table];
+    if (current) return current;
+    const initialColumns = columns.filter((col) => col !== '序号');
+    const initialPreference: TableColumnPreference = {
+      order: initialColumns,
+      visible: initialColumns
+    };
+    updateTableColumnPreference(table, initialPreference);
+    return initialPreference;
   };
 
   const getDisplayColumnLabel = (table: TableType, column: string) => {
+    if (column === '类型' && (table === TableType.SPEAKER || table === TableType.LINE_ARRAY_SUPPORT)) {
+      return '产品类型';
+    }
     if (table === TableType.LOCAL_STATIC_RESOURCE) {
       if (column === '图片名称') return '资源名称';
       if (column === '图片解释') return '资源解释';
@@ -754,6 +933,113 @@ const App: React.FC = () => {
       reader.onerror = () => reject(new Error('读取图片失败'));
       reader.readAsDataURL(file);
     });
+  };
+
+  const parseCoveragePair = (value: any) => {
+    const text = String(value || '').trim();
+    if (!text) return { horizontal: '', vertical: '' };
+    const matched = text.match(/([0-9]+(?:\.[0-9]+)?)\s*°?\s*[x×X＊*]\s*([0-9]+(?:\.[0-9]+)?)\s*°?/);
+    if (!matched) return { horizontal: '', vertical: '' };
+    return {
+      horizontal: matched[1],
+      vertical: matched[2]
+    };
+  };
+
+  const normalizeFeatureValues = (value: any) => {
+    if (Array.isArray(value)) {
+      return value.map((item) => String(item || '').trim()).filter(Boolean);
+    }
+    const text = String(value || '').trim();
+    if (!text) return [];
+    return text
+      .split(/[、,，;；|/]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  };
+
+  const validatePayloadByTable = (table: TableType, payload: Record<string, any>) => {
+    const errors: string[] = [];
+    const requiredError = (label: string) => `${label}为必填项`;
+
+    const isPositiveNumber = (value: any) => {
+      const num = Number(value);
+      return Number.isFinite(num) && num > 0;
+    };
+
+    const matchUnit = (value: any, reg: RegExp) => reg.test(String(value || '').trim());
+
+    if (table === TableType.SPEAKER) {
+      const requiredFields = ['类型', '品牌', '产品名称', '型号', '市场价', '额定阻抗', '额定功率', '灵敏度', '最大声压级', '水平覆盖角', '垂直覆盖角', '面高', '功能'];
+      requiredFields.forEach((key) => {
+        const value = payload[key];
+        const isEmpty = Array.isArray(value) ? value.length === 0 : String(value ?? '').trim() === '';
+        if (isEmpty) {
+          errors.push(requiredError(key === '类型' ? '产品类型' : key));
+        }
+      });
+
+      const productTypeValue = String(payload['类型'] || payload['产品类型'] || '').trim();
+      if (productTypeValue && !speakerTypeOptions.includes(productTypeValue)) {
+        errors.push(`产品类型不在音箱表允许值中：${productTypeValue}`);
+      }
+
+      if (!isPositiveNumber(payload['市场价'])) errors.push('市场价必须为大于0的数字');
+      if (!isPositiveNumber(payload['面高'])) errors.push('面高必须为大于0的数字');
+      if (!isPositiveNumber(payload['水平覆盖角']) || !isPositiveNumber(payload['垂直覆盖角'])) {
+        errors.push('水平覆盖角和垂直覆盖角必须为大于0的数字');
+      }
+      if (!matchUnit(payload['额定阻抗'], /^\d+(?:\.\d+)?\s*(?:Ω|ohm|OHM)$/)) errors.push('额定阻抗格式应为数值+Ω');
+      if (!matchUnit(payload['额定功率'], /^\d+(?:\.\d+)?\s*[wW]$/)) errors.push('额定功率格式应为数值+W');
+      if (!matchUnit(payload['灵敏度'], /^\d+(?:\.\d+)?\s*dB$/i)) errors.push('灵敏度格式应为数值+dB');
+      if (!matchUnit(payload['最大声压级'], /^\d+(?:\.\d+)?\s*dB$/i)) errors.push('最大声压级格式应为数值+dB');
+      const fnValues = normalizeFeatureValues(payload['功能']);
+      if (fnValues.length === 0) {
+        errors.push('功能至少选择1项');
+      } else {
+        const allowed = new Set(speakerFunctionOptions.map((item) => String(item || '').trim()).filter(Boolean));
+        const invalid = fnValues.filter((item) => !allowed.has(item));
+        if (invalid.length > 0) {
+          errors.push(`功能选项不合法：${invalid.join('、')}`);
+        }
+      }
+    }
+
+    if (table === TableType.LINE_ARRAY_SUPPORT) {
+      const usage = String(payload['用途'] || '').trim();
+      if (usage === '挂架') {
+        ['产品名称', '型号', '市场价'].forEach((key) => {
+          if (String(payload[key] ?? '').trim() === '') errors.push(requiredError(key));
+        });
+      }
+      if (String(payload['市场价'] ?? '').trim() !== '' && !isPositiveNumber(payload['市场价'])) {
+        errors.push('市场价必须为大于0的数字');
+      }
+    }
+
+    return errors;
+  };
+
+  const buildLineArraySupportPayloadFromForm = () => {
+    const subwoofer: Record<string, any> = {};
+    LINE_ARRAY_SUBWOOFER_FIELDS.forEach((field) => {
+      const input = document.getElementById(`new-line-subwoofer-${field.key}`) as HTMLInputElement | null;
+      if (!input) return;
+      const text = input.value.trim();
+      subwoofer[field.key] = field.key === '市场价' && !text ? '100' : text;
+    });
+    subwoofer['用途'] = '次低音箱';
+
+    const hanger: Record<string, any> = {};
+    LINE_ARRAY_HANGER_FIELDS.forEach((field) => {
+      const input = document.getElementById(`new-line-hanger-${field.key}`) as HTMLInputElement | null;
+      if (!input) return;
+      const text = input.value.trim();
+      hanger[field.key] = field.key === '市场价' && !text ? '100' : text;
+    });
+    hanger['用途'] = '挂架';
+
+    return { subwoofer, hanger };
   };
 
   const buildPayloadFromForm = async (prefix: string, table: TableType) => {
@@ -772,9 +1058,14 @@ const App: React.FC = () => {
 
     for (const field of fields) {
       const element = document.getElementById(`${prefix}-${field.key}`) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null;
-      if (!element) continue;
+      if (!element && field.type !== 'multiselect') continue;
 
       let value: any = null;
+
+      if (field.type === 'multiselect') {
+        const checkedNodes = Array.from(document.querySelectorAll<HTMLInputElement>(`input[name="${prefix}-${field.key}"]:checked`));
+        value = checkedNodes.map((node) => node.value).filter(Boolean);
+      }
 
       if (table === TableType.LOCAL_STATIC_RESOURCE && field.key === '资源内容') {
         const resourceType = getFormResourceType();
@@ -806,6 +1097,7 @@ const App: React.FC = () => {
           continue;
         }
       } else if (value === null) {
+        if (!element) continue;
         value = element.value;
       }
 
@@ -815,9 +1107,9 @@ const App: React.FC = () => {
       }
       if (typeof value === 'string') value = value.trim();
 
-      if (value === '' || value === null) {
+      if (value === '' || value === null || (Array.isArray(value) && value.length === 0)) {
         if (field.required) {
-          value = field.defaultValue ?? (field.type === 'number' ? 0 : '');
+          throw new Error(`${field.label}为必填项`);
         } else {
           continue;
         }
@@ -825,11 +1117,82 @@ const App: React.FC = () => {
       payload[field.key] = value;
     }
 
+    if ((table === TableType.SPEAKER || table === TableType.LINE_ARRAY_SUPPORT) && payload['产品类型'] && !payload['类型']) {
+      payload['类型'] = payload['产品类型'];
+    }
+
+    if ((table === TableType.SPEAKER || table === TableType.LINE_ARRAY_SUPPORT) && payload['水平覆盖角'] && payload['垂直覆盖角']) {
+      payload['覆盖角'] = `${String(payload['水平覆盖角']).trim()}°×${String(payload['垂直覆盖角']).trim()}°`;
+    }
+
+    if (table === TableType.SPEAKER && payload['功能']) {
+      payload['功能'] = normalizeFeatureValues(payload['功能']);
+    }
+
+    const formatErrors = validatePayloadByTable(table, payload);
+    if (formatErrors.length > 0) {
+      throw new Error(formatErrors.join('；'));
+    }
+
+    if (table === TableType.SPEAKER && prefix === 'new' && String(payload['类型'] || '').trim() === '线阵列音箱') {
+      const lineArraySupport = buildLineArraySupportPayloadFromForm();
+      const subwooferPayload = {
+        ...lineArraySupport.subwoofer,
+        覆盖角: `${lineArraySupport.subwoofer['水平覆盖角'] || ''}°×${lineArraySupport.subwoofer['垂直覆盖角'] || ''}°`
+      };
+      const hangerPayload = {
+        ...lineArraySupport.hanger,
+        类型: '线阵列音箱吊挂架'
+      };
+      const subwooferErrors = validatePayloadByTable(TableType.LINE_ARRAY_SUPPORT, subwooferPayload);
+      const hangerErrors = validatePayloadByTable(TableType.LINE_ARRAY_SUPPORT, { ...hangerPayload, 用途: '挂架' });
+      if (subwooferErrors.length > 0 || hangerErrors.length > 0) {
+        throw new Error([...subwooferErrors, ...hangerErrors].join('；'));
+      }
+
+      payload.lineArraySupport = {
+        subwoofer: lineArraySupport.subwoofer,
+        hanger: lineArraySupport.hanger
+      };
+    }
+
     return payload;
   };
 
+  const normalizePayloadForSave = (table: TableType, payload: Record<string, any>) => {
+    const next = { ...(payload || {}) };
+    if ((table === TableType.SPEAKER || table === TableType.LINE_ARRAY_SUPPORT) && next['产品类型'] && !next['类型']) {
+      next['类型'] = String(next['产品类型']).trim();
+    }
+    if ((table === TableType.SPEAKER || table === TableType.LINE_ARRAY_SUPPORT) && next['水平覆盖角'] && next['垂直覆盖角']) {
+      next['覆盖角'] = `${String(next['水平覆盖角']).trim()}°×${String(next['垂直覆盖角']).trim()}°`;
+    }
+    if (table === TableType.SPEAKER && Object.prototype.hasOwnProperty.call(next, '功能')) {
+      next['功能'] = normalizeFeatureValues(next['功能']);
+    }
+    return next;
+  };
+
+  const updateParsedBatchItemField = (id: number, key: string, value: any) => {
+    setParsedBatchItems((prev) => prev.map((item) => {
+      if (item.id !== id) return item;
+      const payload = { ...(item.payload || {}), [key]: value } as Record<string, any>;
+      if (key === '产品类型') {
+        payload['类型'] = value;
+      }
+      const normalizedPayload = normalizePayloadForSave(tempType, payload);
+      const errors = validatePayloadByTable(tempType, normalizedPayload);
+      return {
+        ...item,
+        payload: normalizedPayload,
+        errors,
+        complete: errors.length === 0
+      };
+    }));
+  };
+
   const imageColumnSet = new Set(['设备图片', '图片文件']);
-  const centerColumnSet = new Set(['类型', '资源类型', '场景', '使用场景', '插入章节', '是否启用', '额定功率', '额定阻抗', '输入通道', '输出通道', '通道数', '数量', '面高', '覆盖角']);
+  const centerColumnSet = new Set(['类型', '产品类型', '资源类型', '场景', '使用场景', '插入章节', '是否启用', '额定功率', '额定阻抗', '输入通道', '输出通道', '通道数', '数量', '面高', '覆盖角', '水平覆盖角', '垂直覆盖角', '功能']);
 
   const getColumnAlignmentClass = (column: string) => {
     if (column === '序号') return 'text-center';
@@ -948,12 +1311,195 @@ const App: React.FC = () => {
     alert(`已删除 ${result.deleted} 条历史记录。`);
   };
 
+  const parseExcelRows = async (file: File) => {
+    const buffer = await file.arrayBuffer();
+    const workbook = XLSX.read(buffer, { type: 'array' });
+    const firstSheetName = workbook.SheetNames[0];
+    const firstSheet = firstSheetName ? workbook.Sheets[firstSheetName] : null;
+    if (!firstSheet) return [];
+    return XLSX.utils.sheet_to_json<Record<string, any>>(firstSheet, { defval: '' });
+  };
+
+  const handleParseBatchInput = async () => {
+    if (batchParsing) return;
+    try {
+      setBatchParsing(true);
+      let params: {
+        table: TableType;
+        inputType: 'chat';
+        text?: string;
+        imageData?: string;
+        items?: Array<Record<string, any>>;
+      } = {
+        table: tempType,
+        inputType: 'chat'
+      };
+
+      if (!batchText.trim() && !batchImageFile && !batchSheetFile) {
+        throw new Error('请在对话输入框填写文字，或上传图片/Excel/CSV 后再解析');
+      }
+
+      if (batchText.trim()) {
+        params.text = batchText.trim();
+      }
+
+      if (batchImageFile) {
+        params.imageData = await readFileAsDataUrl(batchImageFile);
+      }
+
+      if (batchSheetFile) {
+        params.items = await parseExcelRows(batchSheetFile);
+      }
+
+      const result = await logic.parseInventoryBatch(params);
+      if (!result.ok) {
+        throw new Error(result.error || '批量解析失败');
+      }
+
+      const items: ParsedBatchItem[] = (result.items || []).map((item: any, idx: number) => {
+        const payload = normalizePayloadForSave(tempType, (item?.payload || {}) as Record<string, any>);
+        const errors = validatePayloadByTable(tempType, payload);
+        return {
+        id: Number(item?.id || idx + 1),
+        payload: payload as Partial<DbInventoryItem>,
+        errors,
+        complete: errors.length === 0,
+        expanded: true
+      };
+      });
+
+      setParsedBatchItems(items);
+    } catch (error: any) {
+      alert(error?.message || '批量解析失败');
+      setParsedBatchItems([]);
+    } finally {
+      setBatchParsing(false);
+    }
+  };
+
+  const handleConfirmBatchSave = async () => {
+    if (parsedBatchItems.length === 0) {
+      alert('请先完成批量解析');
+      return;
+    }
+
+    const normalizedItems = parsedBatchItems.map((item) => {
+      const normalizedPayload = normalizePayloadForSave(tempType, item.payload as Record<string, any>);
+      const errors = validatePayloadByTable(tempType, normalizedPayload);
+      return {
+        ...item,
+        payload: normalizedPayload,
+        errors,
+        complete: errors.length === 0
+      };
+    });
+
+    setParsedBatchItems(normalizedItems);
+
+    const invalid = normalizedItems.filter((item) => !item.complete || item.errors.length > 0);
+    if (invalid.length > 0) {
+      alert(`存在 ${invalid.length} 条解析异常数据，请修正后再录入。`);
+      return;
+    }
+
+    let saved = 0;
+    for (const item of normalizedItems) {
+      const ok = await logic.handleSaveEquipment(tempType, item.payload);
+      if (!ok) {
+        alert('批量录入中断，请检查后端日志后重试。');
+        return;
+      }
+      saved += 1;
+    }
+
+    alert(`批量录入完成，共录入 ${saved} 条。`);
+    setIsAddingEq(false);
+  };
+
   const resolvePlanItemTable = (type: string): TableType | null => {
     if (Object.values(TableType).includes(type as TableType)) return type as TableType;
     if (type === '功放' || type.includes('定阻功放')) return TableType.AMPLIFIER;
     if (type.includes('音箱')) return TableType.SPEAKER;
-    if (['中控系统', '矩阵', '视频会议系统', '录播系统'].includes(type)) return TableType.FIXED_SCENE_EXTRA;
+    if (['中控系统', '矩阵', '视频会议系统', '录播系统', '子系统'].includes(type)) return TableType.SUBSYSTEM;
     return TableType.PERIPHERAL;
+  };
+
+  const isSpeakerPlanType = (type: string) => {
+    const text = String(type || '');
+    return text.includes('音箱') || text.includes('线阵列');
+  };
+
+  const isAmplifierPlanType = (type: string) => {
+    const text = String(type || '');
+    return text.includes('功放');
+  };
+
+  const normalizeTypeClass = (value: string) => {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    if (text.includes('功放')) return '功放';
+    if (text.includes('话筒') || text.includes('麦克风')) return '话筒';
+    if (text.includes('反馈抑制')) return '反馈抑制器';
+    if (text.includes('调音台')) return '调音台';
+    if (text.includes('音频处理')) return '音频处理器';
+    if (text.includes('天线放大')) return '天线放大系统';
+    if (text.includes('电源时序')) return '电源时序器';
+    if (text.includes('吊挂架') || text.includes('吊架')) return '线阵列吊架';
+    if (text.includes('次低')) return '线阵列次低';
+    if (text.includes('线阵列音箱')) return '线阵列音箱';
+    if (text.includes('超低音箱')) return '超低音箱';
+    if (text.includes('音箱')) return '音箱';
+    if (text.includes('中控')) return '中控系统';
+    if (text.includes('矩阵')) return '矩阵';
+    if (text.includes('视频会议')) return '视频会议系统';
+    if (text.includes('录播')) return '录播系统';
+    return text;
+  };
+
+  const isSameReplacementCategory = (targetType: string, candidateType: string) => {
+    const targetClass = normalizeTypeClass(targetType);
+    const candidateClass = normalizeTypeClass(candidateType);
+    if (!targetClass || !candidateClass) return false;
+    return targetClass === candidateClass;
+  };
+
+  const isLineArraySupportChildType = (value: string) => {
+    const text = String(value || '');
+    return text.includes('次低') || text.includes('吊挂架') || text.includes('吊架');
+  };
+
+  const isLineArraySupportChildItem = (item: EquipmentItem) => {
+    const detail = getItemDetail(item);
+    const mainId = Number(detail?.main_id || 0);
+    if (mainId > 0) return true;
+    const typeText = `${item.type || ''} ${item.name || ''}`;
+    return typeText.includes('线阵列') && isLineArraySupportChildType(typeText);
+  };
+
+  const isLineArraySpeakerItem = (item: EquipmentItem, detail?: DbInventoryItem | null) => {
+    const productType = String(detail?.产品类型 || detail?.类型 || item.type || '').trim();
+    const mainId = Number(detail?.main_id || 0);
+    return productType.includes('线阵列音箱') && mainId <= 0;
+  };
+
+  const findPairedAmplifierIndex = (items: EquipmentItem[], speakerIndex: number) => {
+    if (!Array.isArray(items) || speakerIndex < 0) return -1;
+    for (let i = speakerIndex + 1; i < items.length; i += 1) {
+      const type = String(items[i]?.type || '');
+      if (isSpeakerPlanType(type)) break;
+      if (isAmplifierPlanType(type)) return i;
+    }
+    return -1;
+  };
+
+  const findPairedSpeakerIndex = (items: EquipmentItem[], amplifierIndex: number) => {
+    if (!Array.isArray(items) || amplifierIndex < 0) return -1;
+    for (let i = amplifierIndex - 1; i >= 0; i -= 1) {
+      const type = String(items[i]?.type || '');
+      if (isSpeakerPlanType(type)) return i;
+      if (isAmplifierPlanType(type)) break;
+    }
+    return -1;
   };
 
   useEffect(() => {
@@ -968,6 +1514,41 @@ const App: React.FC = () => {
     if (tempType === TableType.LOCAL_STATIC_RESOURCE) {
       setNewResourceType('文字');
     }
+    if (tempType === TableType.SPEAKER) {
+      setNewSpeakerProductType(speakerTypeOptions[0] || SPEAKER_TYPES[0]);
+    }
+  }, [tempType, speakerTypeOptions]);
+
+  useEffect(() => {
+    if (!isAddingEq) return;
+    if (ENTRY_TARGET_TABLES.includes(tempType)) return;
+    setTempType(ENTRY_TARGET_TABLES[0]);
+  }, [isAddingEq, tempType]);
+
+  useEffect(() => {
+    localStorage.setItem('inventory-column-preferences', JSON.stringify(columnPreferences));
+  }, [columnPreferences]);
+
+  useEffect(() => {
+    if (isAddingEq) {
+      setNewResourceType('文字');
+      if (tempType === TableType.SPEAKER) {
+        setNewSpeakerProductType(speakerTypeOptions[0] || SPEAKER_TYPES[0]);
+      }
+      return;
+    }
+    setEntryMode('single');
+    setBatchText('');
+    setBatchImageFile(null);
+    setBatchSheetFile(null);
+    setParsedBatchItems([]);
+    setBatchParsing(false);
+    setLineArraySubwooferExpanded(true);
+    setLineArrayHangerExpanded(true);
+  }, [isAddingEq, tempType, speakerTypeOptions]);
+
+  useEffect(() => {
+    setParsedBatchItems([]);
   }, [tempType]);
 
   useEffect(() => {
@@ -976,6 +1557,29 @@ const App: React.FC = () => {
     const inferred = inferResourceTypeByContent(String((editingEq as any).资源内容 || ''));
     setEditResourceType(normalizeResourceType(current, inferred));
   }, [editingEq, logic.activeTable]);
+
+  useEffect(() => {
+    if (!editingEq || logic.activeTable !== TableType.SPEAKER) return;
+    const fallbackType = speakerTypeOptions[0] || SPEAKER_TYPES[0];
+    const currentType = String((editingEq as any).产品类型 || (editingEq as any).类型 || fallbackType).trim();
+    setEditSpeakerProductType(currentType || fallbackType);
+  }, [editingEq, logic.activeTable, speakerTypeOptions]);
+
+  useEffect(() => {
+    if (tempType !== TableType.SPEAKER) return;
+    if (speakerTypeOptions.length === 0) return;
+    if (!speakerTypeOptions.includes(newSpeakerProductType)) {
+      setNewSpeakerProductType(speakerTypeOptions[0]);
+    }
+  }, [tempType, speakerTypeOptions, newSpeakerProductType]);
+
+  useEffect(() => {
+    if (logic.activeTable !== TableType.SPEAKER) return;
+    if (speakerTypeOptions.length === 0) return;
+    if (!speakerTypeOptions.includes(editSpeakerProductType)) {
+      setEditSpeakerProductType(speakerTypeOptions[0]);
+    }
+  }, [logic.activeTable, speakerTypeOptions, editSpeakerProductType]);
 
   useEffect(() => {
     setSelectedInventoryIds((prev) => {
@@ -1573,10 +2177,22 @@ const App: React.FC = () => {
                         </thead>
                         <tbody className="divide-y divide-slate-100">
                           {activeResult?.items.map((item, idx) => (
-                            <tr key={item.id} className="hover:bg-slate-50/50 transition-all group">
+                            <tr
+                              key={item.id}
+                              className={`${item.recentlyUpdated ? 'bg-amber-100/40 hover:bg-amber-100/50' : 'hover:bg-slate-50/50'} transition-all group`}
+                            >
                               <td className="px-5 py-2.5 text-slate-500 font-medium">{item.type}</td>
                               <td className="px-5 py-2.5 text-slate-600 font-bold">{getItemBrand(item) || '--'}</td>
-                              <td className="px-5 py-2.5 font-bold text-slate-900">{item.name}</td>
+                              <td className="px-5 py-2.5 font-bold text-slate-900">
+                                <div className="flex items-center gap-2">
+                                  <span>{item.name}</span>
+                                  {item.inventoryMatched === false && (
+                                    <span className="px-2 py-0.5 rounded-full text-[11px] font-black bg-rose-100 text-rose-700 border border-rose-200">
+                                      {item.inventoryMatchNote || '未匹配到库存'}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
                               <td className="px-5 py-2.5 text-slate-400 font-mono text-[13px]">{item.model}</td>
                               <td className="px-5 py-2.5 text-center">
                                 <input
@@ -1585,6 +2201,10 @@ const App: React.FC = () => {
                                   step={1}
                                   value={item.quantity}
                                   onChange={(e) => {
+                                    if (isLineArraySupportChildItem(item)) {
+                                      alert('该设备为线阵列音箱配套设备，请修改对应线阵列音箱型号。');
+                                      return;
+                                    }
                                     const nextQuantity = Number(e.target.value);
                                     logic.setDesignState((prev) => {
                                       const newResults = [...prev.results];
@@ -1593,7 +2213,8 @@ const App: React.FC = () => {
                                       const nextItems = [...targetResult.items];
                                       nextItems[idx] = {
                                         ...nextItems[idx],
-                                        quantity: Number.isFinite(nextQuantity) ? Math.max(0, Math.floor(nextQuantity)) : 0
+                                        quantity: Number.isFinite(nextQuantity) ? Math.max(0, Math.floor(nextQuantity)) : 0,
+                                        recentlyUpdated: true
                                       };
                                       newResults[prev.activeResultIndex] = {
                                         ...targetResult,
@@ -1627,27 +2248,69 @@ const App: React.FC = () => {
                                   onClick={async () => {
                                     const table = resolvePlanItemTable(item.type);
                                     const currentDetail = await logic.fetchEquipmentDetail(item);
-                                    const targetDetailType = String(currentDetail?.类型 || item.type || '').trim();
+                                    if (isLineArraySupportChildItem(item) || (Number(currentDetail?.main_id || 0) > 0 && isLineArraySupportChildType(String(currentDetail?.用途 || currentDetail?.类型 || item.type)))) {
+                                      alert('该设备为线阵列音箱配套设备，必须通过修改线阵列音箱来联动更新。');
+                                      return;
+                                    }
+                                    const targetDetailType = String(currentDetail?.类型 || currentDetail?.产品类型 || item.type || '').trim();
+                                    let options: DbInventoryItem[] = [];
+                                    let nextLinkedUpdates: LinkedPlanUpdate[] = [];
+
                                     if (table) {
                                       await logic.ensureInventoryOptions(table);
-                                      let options = logic.getInventoryOptions(table);
-                                      if (table === TableType.FIXED_SCENE_EXTRA) {
-                                        await logic.ensureInventoryOptions(TableType.NON_FIXED_SCENE_EXTRA);
-                                        options = [
-                                          ...options,
-                                          ...logic.getInventoryOptions(TableType.NON_FIXED_SCENE_EXTRA)
-                                        ];
-                                      }
+                                      options = logic.getInventoryOptions(table);
                                       if (targetDetailType) {
                                         options = options.filter((opt) => {
-                                          const rowType = String(opt.类型 || '').trim();
-                                          return rowType ? rowType === targetDetailType : true;
+                                          const rowType = String(opt.类型 || opt.产品类型 || '').trim();
+                                          if (!rowType) return false;
+                                          return isSameReplacementCategory(targetDetailType, rowType);
                                         });
                                       }
-                                      setEditingOptions(options);
-                                    } else {
-                                      setEditingOptions([]);
+
+                                      if (isAmplifierPlanType(item.type)) {
+                                        const currentItems = activeResult?.items || [];
+                                        const pairedSpeakerIdx = findPairedSpeakerIndex(currentItems, idx);
+                                        if (pairedSpeakerIdx >= 0) {
+                                          const pairedSpeaker = currentItems[pairedSpeakerIdx];
+                                          try {
+                                            const analysis = await logic.analyzeAmplifierMatch({
+                                              scenario: logic.designState.scenario,
+                                              speaker: {
+                                                model: pairedSpeaker.model,
+                                                name: pairedSpeaker.name,
+                                                quantity: pairedSpeaker.quantity
+                                              }
+                                            });
+
+                                            const recommendationMap = new Map<string, any>();
+                                            const recommendedList = Array.isArray(analysis?.recommended) ? analysis.recommended : [];
+                                            recommendedList.forEach((entry: any) => {
+                                              const model = String(entry?.model || '').trim();
+                                              if (!model || recommendationMap.has(model)) return;
+                                              recommendationMap.set(model, entry);
+                                            });
+
+                                            options = options
+                                              .filter((opt) => recommendationMap.has(String(opt.型号 || '').trim()))
+                                              .map((opt) => {
+                                                const model = String(opt.型号 || '').trim();
+                                                const rec = recommendationMap.get(model);
+                                                return {
+                                                  ...opt,
+                                                  推荐数量: Number(rec?.requiredQuantity || 0),
+                                                  匹配模式: String(rec?.mode || '')
+                                                } as DbInventoryItem;
+                                              });
+                                          } catch (error) {
+                                            console.error('❌ Failed to filter compatible amplifiers:', error);
+                                          }
+                                        }
+                                      }
                                     }
+
+                                    setEditingOptions(options);
+                                    setPendingLinkedUpdates(nextLinkedUpdates);
+                                    setAmpRecommendationPrompt(null);
                                     setIsReplacementPickerOpen(false);
                                     logic.setEditingItem({ resIdx: logic.designState.activeResultIndex, itemIdx: idx, item: { ...item } });
                                   }}
@@ -1655,7 +2318,18 @@ const App: React.FC = () => {
                                 >
                                   编辑
                                 </button>
-                                <button onClick={() => logic.deleteItem(logic.designState.activeResultIndex, idx)} className="text-slate-300 hover:text-red-500 font-bold">删除</button>
+                                <button
+                                  onClick={() => {
+                                    if (isLineArraySupportChildItem(item)) {
+                                      alert('该设备为线阵列音箱配套设备，必须通过修改线阵列音箱来联动更新。');
+                                      return;
+                                    }
+                                    logic.deleteItem(logic.designState.activeResultIndex, idx);
+                                  }}
+                                  className="text-slate-300 hover:text-red-500 font-bold"
+                                >
+                                  删除
+                                </button>
                               </td>
                             </tr>
                           ))}
@@ -1805,7 +2479,7 @@ const App: React.FC = () => {
       <aside className="w-60 bg-white border-r border-slate-200 flex flex-col p-4 shrink-0 min-h-0">
         <h2 className="text-xs font-black text-slate-700 uppercase tracking-[0.16em] mb-4 px-2">资源目录</h2>
         <nav className="space-y-1.5 flex-1 min-h-0 overflow-y-auto pr-1">
-          {Object.values(TableType).map((t) => (
+          {MANAGEMENT_TABLES.map((t) => (
             <button
               key={t}
               onClick={() => logic.setActiveTable(t)}
@@ -1835,6 +2509,17 @@ const App: React.FC = () => {
             >
               批量删除
             </button>
+            {isAdminUser && (
+              <button
+                onClick={() => {
+                  ensureTableColumnPreference(logic.activeTable, getBaseDisplayColumns(logic.activeTable, logic.inventory));
+                  setIsColumnConfigOpen(true);
+                }}
+                className={`px-4 h-10 rounded-xl text-[13px] font-black tracking-wide active:scale-[0.98] transition-all border ${managementTheme.softBtn}`}
+              >
+                列设置
+              </button>
+            )}
             <button
               onClick={() => setIsAddingEq(true)}
               className={`px-4 h-10 rounded-xl text-white text-[13px] font-black tracking-wide active:scale-[0.98] transition-all ${managementTheme.primaryBtn}`}
@@ -1845,31 +2530,66 @@ const App: React.FC = () => {
         </div>
 
         <div className="px-6 py-4 bg-white border-b border-slate-200">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-            <input
-              value={logic.searchFilters.品牌}
-              onChange={e => logic.setSearchFilters(prev => ({ ...prev, 品牌: e.target.value }))}
-              placeholder="筛选品牌"
-              className={`w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-semibold outline-none focus:ring-2 ${managementTheme.focusRing}`}
-            />
-            <input
-              value={logic.searchFilters.产品名称}
-              onChange={e => logic.setSearchFilters(prev => ({ ...prev, 产品名称: e.target.value }))}
-              placeholder={logic.activeTable === TableType.LOCAL_STATIC_RESOURCE ? '筛选名称 / 资源名称' : '筛选名称 / 图片名称'}
-              className={`w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-semibold outline-none focus:ring-2 ${managementTheme.focusRing}`}
-            />
-            <select
-              value={logic.searchFilters.场景}
-              onChange={e => logic.setSearchFilters(prev => ({ ...prev, 场景: e.target.value }))}
-              className={`w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-semibold outline-none focus:ring-2 ${managementTheme.focusRing}`}
-            >
-              <option value="">场景：全部</option>
-              <option value="通用">通用</option>
-              <option value="会议室">会议室</option>
-              <option value="报告厅">报告厅</option>
-            </select>
-            <div className="text-[12px] text-slate-500 font-semibold flex items-center justify-end pr-1">
-              共 {logic.inventory.length} 条
+          <div className="flex flex-col lg:flex-row gap-3 lg:items-center">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 flex-1">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2">
+                <div className="text-[12px] font-black text-slate-500 uppercase tracking-wide">筛选框 1：品牌 / 产品类型</div>
+                <input
+                  value={logic.searchFilters.品牌}
+                  onChange={e => logic.setSearchFilters(prev => ({ ...prev, 品牌: e.target.value }))}
+                  placeholder="输入品牌关键词"
+                  className={`w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-semibold outline-none focus:ring-2 ${managementTheme.focusRing}`}
+                />
+                <select
+                  value={logic.searchFilters.产品类型}
+                  onChange={e => logic.setSearchFilters(prev => ({ ...prev, 产品类型: e.target.value }))}
+                  className={`w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-semibold outline-none focus:ring-2 ${managementTheme.focusRing}`}
+                >
+                  <option value="">产品类型：全部</option>
+                  {productTypeFilterOptions.map((opt) => (
+                    <option key={`filter-type-${opt}`} value={opt}>{opt}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2">
+                <div className="text-[12px] font-black text-slate-500 uppercase tracking-wide">筛选框 2：市场价格区间</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    type="number"
+                    min="0"
+                    value={logic.searchFilters.市场价最小值}
+                    onChange={e => logic.setSearchFilters(prev => ({ ...prev, 市场价最小值: e.target.value }))}
+                    placeholder="最小价格"
+                    className={`w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-semibold outline-none focus:ring-2 ${managementTheme.focusRing}`}
+                  />
+                  <input
+                    type="number"
+                    min="0"
+                    value={logic.searchFilters.市场价最大值}
+                    onChange={e => logic.setSearchFilters(prev => ({ ...prev, 市场价最大值: e.target.value }))}
+                    placeholder="最大价格"
+                    className={`w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-semibold outline-none focus:ring-2 ${managementTheme.focusRing}`}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="text-[12px] text-slate-500 font-semibold flex items-center justify-end gap-3 pr-1 shrink-0">
+              <span>共 {logic.inventory.length} 条</span>
+              <button
+                type="button"
+                onClick={() => logic.setSearchFilters(prev => ({
+                  ...prev,
+                  品牌: '',
+                  产品类型: '',
+                  市场价最小值: '',
+                  市场价最大值: ''
+                }))}
+                className="h-8 px-3 rounded-lg border border-slate-200 bg-white text-slate-600 font-bold hover:bg-slate-50"
+              >
+                清空筛选
+              </button>
             </div>
           </div>
         </div>
@@ -1894,7 +2614,14 @@ const App: React.FC = () => {
                       key={col}
                       className={`px-4 py-3.5 font-black text-slate-700 ${col === '序号' ? 'w-20 text-center' : 'text-left'}`}
                     >
-                      {getDisplayColumnLabel(logic.activeTable, col)}
+                      <button
+                        type="button"
+                        onClick={() => toggleSort(col)}
+                        className={`inline-flex items-center ${col === '序号' ? 'justify-center w-full' : ''}`}
+                      >
+                        {getDisplayColumnLabel(logic.activeTable, col)}
+                        {renderSortArrow(col)}
+                      </button>
                     </th>
                   ))}
                   <th className="w-44 px-4 py-3.5 text-center font-black text-slate-700">操作</th>
@@ -2001,6 +2728,140 @@ const App: React.FC = () => {
           </div>
         </div>
       </section>
+
+      {isColumnConfigOpen && isAdminUser && (
+        <div className="fixed inset-0 z-[620] bg-slate-900/55 backdrop-blur-sm flex items-center justify-center p-5">
+          <div className="w-full max-w-xl bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+              <div>
+                <div className="text-[15px] font-black text-slate-900">列设置</div>
+                <div className="text-[12px] text-slate-500 font-semibold">{logic.activeTable}</div>
+              </div>
+              <button onClick={() => setIsColumnConfigOpen(false)} className="text-slate-400 hover:text-slate-900 text-xl">✕</button>
+            </div>
+
+            <div className="p-4 space-y-3 max-h-[65vh] overflow-y-auto">
+              {(() => {
+                const allColumns = getBaseDisplayColumns(logic.activeTable, logic.inventory).filter((col) => col !== '序号');
+                const current = columnPreferences[logic.activeTable] || { order: allColumns, visible: allColumns };
+                const ordered = [
+                  ...current.order.filter((col) => allColumns.includes(col)),
+                  ...allColumns.filter((col) => !current.order.includes(col))
+                ];
+                const visibleSet = new Set((current.visible || []).length > 0 ? current.visible : ordered);
+
+                return ordered.map((col, idx) => (
+                  <div key={`column-setting-${col}`} className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+                    <label className="inline-flex items-center gap-2 text-[13px] font-bold text-slate-700 flex-1">
+                      <input
+                        type="checkbox"
+                        checked={visibleSet.has(col)}
+                        onChange={(e) => {
+                          setColumnPreferences((prev) => {
+                            const existing = prev[logic.activeTable] || { order: ordered, visible: ordered };
+                            const nextVisible = new Set((existing.visible || []).length > 0 ? existing.visible : ordered);
+                            if (e.target.checked) {
+                              nextVisible.add(col);
+                            } else {
+                              nextVisible.delete(col);
+                            }
+                            return {
+                              ...prev,
+                              [logic.activeTable]: {
+                                order: existing.order,
+                                visible: Array.from(nextVisible)
+                              }
+                            };
+                          });
+                        }}
+                        className="h-4 w-4 rounded border-slate-300"
+                      />
+                      <span>{getDisplayColumnLabel(logic.activeTable, col)}</span>
+                    </label>
+
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        disabled={idx === 0}
+                        onClick={() => {
+                          setColumnPreferences((prev) => {
+                            const existing = prev[logic.activeTable] || { order: ordered, visible: ordered };
+                            const nextOrder = [...existing.order];
+                            const from = nextOrder.indexOf(col);
+                            if (from <= 0) return prev;
+                            const to = from - 1;
+                            [nextOrder[from], nextOrder[to]] = [nextOrder[to], nextOrder[from]];
+                            return {
+                              ...prev,
+                              [logic.activeTable]: {
+                                ...existing,
+                                order: nextOrder
+                              }
+                            };
+                          });
+                        }}
+                        className={`h-7 px-2 rounded-md border text-[12px] font-black ${idx === 0 ? 'border-slate-100 text-slate-300 cursor-not-allowed' : 'border-slate-200 text-slate-600 hover:bg-white'}`}
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        disabled={idx === ordered.length - 1}
+                        onClick={() => {
+                          setColumnPreferences((prev) => {
+                            const existing = prev[logic.activeTable] || { order: ordered, visible: ordered };
+                            const nextOrder = [...existing.order];
+                            const from = nextOrder.indexOf(col);
+                            if (from < 0 || from >= nextOrder.length - 1) return prev;
+                            const to = from + 1;
+                            [nextOrder[from], nextOrder[to]] = [nextOrder[to], nextOrder[from]];
+                            return {
+                              ...prev,
+                              [logic.activeTable]: {
+                                ...existing,
+                                order: nextOrder
+                              }
+                            };
+                          });
+                        }}
+                        className={`h-7 px-2 rounded-md border text-[12px] font-black ${idx === ordered.length - 1 ? 'border-slate-100 text-slate-300 cursor-not-allowed' : 'border-slate-200 text-slate-600 hover:bg-white'}`}
+                      >
+                        ↓
+                      </button>
+                    </div>
+                  </div>
+                ));
+              })()}
+            </div>
+
+            <div className="px-4 py-3 border-t border-slate-200 flex items-center justify-end gap-2 bg-slate-50">
+              <button
+                type="button"
+                onClick={() => {
+                  const allColumns = getBaseDisplayColumns(logic.activeTable, logic.inventory).filter((col) => col !== '序号');
+                  setColumnPreferences((prev) => ({
+                    ...prev,
+                    [logic.activeTable]: {
+                      order: allColumns,
+                      visible: allColumns
+                    }
+                  }));
+                }}
+                className="h-9 px-3 rounded-lg border border-slate-200 text-[12px] font-black text-slate-600 hover:bg-white"
+              >
+                重置默认
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsColumnConfigOpen(false)}
+                className="h-9 px-3 rounded-lg bg-slate-900 text-white text-[12px] font-black hover:bg-black"
+              >
+                完成
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
   const renderHistoryView = () => (
@@ -2538,118 +3399,384 @@ const App: React.FC = () => {
       {/* --- 核心修改：动态录入弹窗 (基于 TableType 切换字段) --- */}
       {isAddingEq && (
         <div className="fixed inset-0 z-[600] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-5">
-          <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl p-8 space-y-6 animate-in zoom-in-95 duration-200">
-            {/* 头部：标题与关闭 */}
-            <div className="flex items-center justify-between border-b pb-4">
+          <div className="bg-white w-full max-w-3xl max-h-[92vh] rounded-3xl shadow-2xl animate-in zoom-in-95 duration-200 flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between border-b px-8 py-5 shrink-0">
               <h3 className="text-lg font-black text-slate-900 uppercase tracking-tight">
                 录入新设备
               </h3>
               <button onClick={() => setIsAddingEq(false)} className="text-slate-300 hover:text-slate-900 transition-colors text-xl font-black">✕</button>
             </div>
 
-            <div className="space-y-6">
-              {/* 第一步：选择设备类型 - 这是核心控制点 */}
-              <div className="space-y-1.5">
-                <label className={`text-[13px] font-black uppercase ml-1 ${isLectureHallManagement ? 'text-fuchsia-600' : 'text-blue-600'}`}>第一步：选择设备大类</label>
-                <select
-                  value={tempType}
-                  onChange={(e) => setTempType(e.target.value as TableType)}
-                  className={`w-full border rounded-xl px-4 py-3 text-[13px] font-bold outline-none focus:ring-2 ${isLectureHallManagement ? 'bg-fuchsia-50/50 border-fuchsia-100 focus:ring-fuchsia-500/20' : 'bg-blue-50/50 border-blue-100 focus:ring-blue-500/20'}`}
+            <div className="px-8 py-6 space-y-6 overflow-y-auto">
+              <div className="bg-slate-100 rounded-xl p-1 flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setEntryMode('single')}
+                  className={`flex-1 h-9 rounded-lg text-[13px] font-black transition-all ${entryMode === 'single' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
                 >
-                  {Object.values(TableType).map(t => (
-                    <option key={t} value={t}>{t}</option>
-                  ))}
-                </select>
+                  单条录入
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEntryMode('batch')}
+                  className={`flex-1 h-9 rounded-lg text-[13px] font-black transition-all ${entryMode === 'batch' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                  批量录入
+                </button>
               </div>
 
-              {/* 第二步：填写详细参数 - 根据 tempType 动态变化 */}
-              <div className="space-y-4">
-                <label className="text-[13px] font-black text-slate-400 uppercase ml-1">第二步：填写设备属性</label>
-                <div className="grid grid-cols-2 gap-4">
-                  {getFieldsByTable(tempType).map((field) => (
-                    <div key={`new-${field.key}`} className="space-y-1">
-                      <label className="text-[13px] font-black text-slate-500 ml-1">{field.label}</label>
-                      {tempType === TableType.LOCAL_STATIC_RESOURCE && field.key === '资源内容' ? (
-                        newResourceType === '图片' ? (
-                          <input
-                            id={`new-${field.key}`}
-                            type="file"
-                            accept="image/*"
-                            className={`w-full bg-slate-50 border rounded-xl px-3 py-2 text-[12px] outline-none file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:font-bold ${managementTheme.fileBtn}`}
-                          />
-                        ) : (
-                          <textarea
-                            id={`new-${field.key}`}
-                            defaultValue={String(field.defaultValue ?? '')}
-                            placeholder={field.placeholder || `${field.label}${field.required ? ' (必填)' : ''}`}
-                            rows={3}
-                            className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none resize-y"
-                          />
-                        )
-                      ) : field.type === 'select' ? (
-                        <select
-                          id={`new-${field.key}`}
-                          defaultValue={String(field.defaultValue ?? getFieldOptions(field)[0] ?? '')}
-                          onChange={(e) => {
-                            if (tempType === TableType.LOCAL_STATIC_RESOURCE && field.key === '资源类型') {
-                              setNewResourceType(normalizeResourceType(e.target.value));
-                            }
-                          }}
-                          className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none"
-                        >
-                          {getFieldOptions(field).map((opt) => (
-                            <option key={opt} value={opt}>{opt}</option>
-                          ))}
-                        </select>
-                      ) : field.type === 'textarea' ? (
-                        <textarea
-                          id={`new-${field.key}`}
-                          defaultValue={String(field.defaultValue ?? '')}
-                          placeholder={field.placeholder || `${field.label}${field.required ? ' (必填)' : ''}`}
-                          rows={3}
-                          className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none resize-y"
-                        />
-                      ) : field.type === 'file' ? (
-                        <input
-                          id={`new-${field.key}`}
-                          type="file"
-                          accept={field.accept || 'image/*'}
-                          className={`w-full bg-slate-50 border rounded-xl px-3 py-2 text-[12px] outline-none file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:font-bold ${managementTheme.fileBtn}`}
-                        />
-                      ) : (
-                        <input
-                          id={`new-${field.key}`}
-                          type={field.type === 'number' ? 'number' : 'text'}
-                          defaultValue={field.defaultValue ?? ''}
-                          placeholder={field.placeholder || `${field.label}${field.required ? ' (必填)' : ''}`}
-                          className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none"
-                        />
-                      )}
+              {entryMode === 'single' ? (
+                <>
+                  <div className="space-y-1.5">
+                    <label className={`text-[13px] font-black uppercase ml-1 ${isLectureHallManagement ? 'text-fuchsia-600' : 'text-blue-600'}`}>第一步：选择设备大类</label>
+                    <select
+                      value={tempType}
+                      onChange={(e) => setTempType(e.target.value as TableType)}
+                      className={`w-full border rounded-xl px-4 py-3 text-[13px] font-bold outline-none focus:ring-2 ${isLectureHallManagement ? 'bg-fuchsia-50/50 border-fuchsia-100 focus:ring-fuchsia-500/20' : 'bg-blue-50/50 border-blue-100 focus:ring-blue-500/20'}`}
+                    >
+                      {ENTRY_TARGET_TABLES.map(t => (
+                        <option key={t} value={t}>{t}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-4">
+                    <label className="text-[13px] font-black text-slate-400 uppercase ml-1">第二步：填写设备属性</label>
+                    <div className="grid grid-cols-2 gap-4">
+                      {getFieldsByTable(tempType).map((field) => (
+                        <div key={`new-${field.key}`} className="space-y-1">
+                          <label className="text-[13px] font-black text-slate-500 ml-1">{field.label}</label>
+                          {tempType === TableType.LOCAL_STATIC_RESOURCE && field.key === '资源内容' ? (
+                            newResourceType === '图片' ? (
+                              <input
+                                id={`new-${field.key}`}
+                                type="file"
+                                accept="image/*"
+                                className={`w-full bg-slate-50 border rounded-xl px-3 py-2 text-[12px] outline-none file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:font-bold ${managementTheme.fileBtn}`}
+                              />
+                            ) : (
+                              <textarea
+                                id={`new-${field.key}`}
+                                defaultValue={String(field.defaultValue ?? '')}
+                                placeholder={field.placeholder || `${field.label}${field.required ? ' (必填)' : ''}`}
+                                rows={3}
+                                className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none resize-y"
+                              />
+                            )
+                          ) : field.type === 'multiselect' ? (
+                            <div className="grid grid-cols-2 gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                              {getFieldOptions(field).map((opt) => (
+                                <label key={opt} className="inline-flex items-center gap-2 text-[12px] font-semibold text-slate-700">
+                                  <input name={`new-${field.key}`} type="checkbox" value={opt} className="h-4 w-4 rounded border-slate-300" />
+                                  <span>{opt}</span>
+                                </label>
+                              ))}
+                            </div>
+                          ) : field.type === 'select' ? (
+                            <select
+                              id={`new-${field.key}`}
+                              defaultValue={String(field.defaultValue ?? getFieldOptions(field)[0] ?? '')}
+                              onChange={(e) => {
+                                if (tempType === TableType.LOCAL_STATIC_RESOURCE && field.key === '资源类型') {
+                                  setNewResourceType(normalizeResourceType(e.target.value));
+                                }
+                                if (tempType === TableType.SPEAKER && (field.key === '产品类型' || field.key === '类型')) {
+                                  setNewSpeakerProductType(e.target.value);
+                                }
+                              }}
+                              className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none"
+                            >
+                              {getFieldOptions(field).map((opt) => (
+                                <option key={opt} value={opt}>{opt}</option>
+                              ))}
+                            </select>
+                          ) : field.type === 'textarea' ? (
+                            <textarea
+                              id={`new-${field.key}`}
+                              defaultValue={String(field.defaultValue ?? '')}
+                              placeholder={field.placeholder || `${field.label}${field.required ? ' (必填)' : ''}`}
+                              rows={3}
+                              className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none resize-y"
+                            />
+                          ) : field.type === 'file' ? (
+                            <input
+                              id={`new-${field.key}`}
+                              type="file"
+                              accept={field.accept || 'image/*'}
+                              className={`w-full bg-slate-50 border rounded-xl px-3 py-2 text-[12px] outline-none file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:font-bold ${managementTheme.fileBtn}`}
+                            />
+                          ) : (
+                            <input
+                              id={`new-${field.key}`}
+                              type={field.type === 'number' ? 'number' : 'text'}
+                              defaultValue={field.defaultValue ?? ''}
+                              placeholder={field.placeholder || `${field.label}${field.required ? ' (必填)' : ''}`}
+                              className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none"
+                            />
+                          )}
+                        </div>
+                      ))}
                     </div>
-                  ))}
+
+                    {tempType === TableType.SPEAKER && newSpeakerProductType === '线阵列音箱' && (
+                      <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/60 p-4">
+                        <div className="text-[13px] font-black text-slate-700">线阵列配套设备（必填）</div>
+
+                        <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3 space-y-3">
+                          <button
+                            type="button"
+                            onClick={() => setLineArraySubwooferExpanded((prev) => !prev)}
+                            className="w-full flex items-center justify-between text-left"
+                          >
+                            <span className="text-[13px] font-black text-emerald-700">配套1：次低音音箱（用途自动填充为“次低音箱”）</span>
+                            <span className="text-emerald-700 text-[12px] font-black">{lineArraySubwooferExpanded ? '收起' : '展开'}</span>
+                          </button>
+                          {lineArraySubwooferExpanded && (
+                            <div className="grid grid-cols-2 gap-3">
+                              {LINE_ARRAY_SUBWOOFER_FIELDS.map((field) => (
+                                <div key={`new-line-subwoofer-${field.key}`} className="space-y-1">
+                                  <label className="text-[12px] font-black text-slate-600">{field.label}</label>
+                                  <input
+                                    id={`new-line-subwoofer-${field.key}`}
+                                    defaultValue={field.key === '市场价' ? 100 : ''}
+                                    placeholder={field.placeholder || `${field.label}（必填）`}
+                                    className="w-full bg-white border border-emerald-100 rounded-lg px-3 py-2 text-[12px] outline-none"
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="rounded-xl border border-sky-200 bg-sky-50/70 p-3 space-y-3">
+                          <button
+                            type="button"
+                            onClick={() => setLineArrayHangerExpanded((prev) => !prev)}
+                            className="w-full flex items-center justify-between text-left"
+                          >
+                            <span className="text-[13px] font-black text-sky-700">配套2：线阵列音箱吊挂架（用途自动填充为“挂架”）</span>
+                            <span className="text-sky-700 text-[12px] font-black">{lineArrayHangerExpanded ? '收起' : '展开'}</span>
+                          </button>
+                          {lineArrayHangerExpanded && (
+                            <div className="grid grid-cols-2 gap-3">
+                              {LINE_ARRAY_HANGER_FIELDS.map((field) => (
+                                <div key={`new-line-hanger-${field.key}`} className="space-y-1">
+                                  <label className="text-[12px] font-black text-slate-600">{field.label}</label>
+                                  <input
+                                    id={`new-line-hanger-${field.key}`}
+                                    defaultValue={field.key === '市场价' ? 100 : ''}
+                                    placeholder={field.placeholder || `${field.label}（必填）`}
+                                    className="w-full bg-white border border-sky-100 rounded-lg px-3 py-2 text-[12px] outline-none"
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="space-y-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[13px] font-black text-slate-500">目标表</label>
+                    <select
+                      value={tempType}
+                      onChange={(e) => setTempType(e.target.value as TableType)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[13px] font-bold outline-none"
+                    >
+                      {ENTRY_TARGET_TABLES.map((t) => (
+                        <option key={`batch-${t}`} value={t}>{t}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-3">
+                    <div className="text-[13px] font-black text-slate-600">统一对话式输入</div>
+                    <textarea
+                      value={batchText}
+                      onChange={(e) => setBatchText(e.target.value)}
+                      rows={6}
+                      placeholder="在这里输入设备描述；也可同时上传图片或 Excel/CSV 文件。"
+                      className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-[12px] outline-none resize-y"
+                    />
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <label className="block">
+                        <div className="text-[12px] font-black text-slate-500 mb-1">上传图片（可选）</div>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={(e) => setBatchImageFile(e.target.files?.[0] || null)}
+                          className={`w-full bg-white border rounded-xl px-3 py-2 text-[12px] outline-none file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:font-bold ${managementTheme.fileBtn}`}
+                        />
+                        {batchImageFile && <div className="mt-1 text-[12px] text-slate-500 truncate">已选择：{batchImageFile.name}</div>}
+                      </label>
+
+                      <label className="block">
+                        <div className="text-[12px] font-black text-slate-500 mb-1">上传 Excel/CSV（可选）</div>
+                        <input
+                          type="file"
+                          accept=".xlsx,.xls,.csv"
+                          onChange={(e) => setBatchSheetFile(e.target.files?.[0] || null)}
+                          className={`w-full bg-white border rounded-xl px-3 py-2 text-[12px] outline-none file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:font-bold ${managementTheme.fileBtn}`}
+                        />
+                        {batchSheetFile && <div className="mt-1 text-[12px] text-slate-500 truncate">已选择：{batchSheetFile.name}</div>}
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={handleParseBatchInput}
+                      disabled={batchParsing}
+                      className={`h-9 px-4 rounded-lg text-[12px] font-black text-white transition-all ${batchParsing ? 'bg-slate-400' : 'bg-slate-900 hover:bg-black'}`}
+                    >
+                      {batchParsing ? '解析中...' : '开始解析'}
+                    </button>
+                  </div>
+
+                  <div className="max-h-[420px] overflow-y-auto space-y-2 pr-1">
+                    {parsedBatchItems.length === 0 ? (
+                      <div className="text-[12px] text-slate-400 font-semibold py-6 text-center border border-dashed border-slate-200 rounded-xl">解析结果会以和单条录入一致的参数表单展示，并支持直接编辑。</div>
+                    ) : (
+                      parsedBatchItems.map((item) => {
+                        const title = String(item.payload.产品名称 || item.payload.图片名称 || item.payload.型号 || `设备${item.id}`);
+                        const isValid = item.complete && item.errors.length === 0;
+                        return (
+                          <div key={`batch-item-${item.id}`} className={`rounded-xl border ${isValid ? 'border-emerald-300 bg-emerald-50/60' : 'border-rose-300 bg-rose-50/60'}`}>
+                            <button
+                              type="button"
+                              onClick={() => setParsedBatchItems((prev) => prev.map((row) => row.id === item.id ? { ...row, expanded: !row.expanded } : row))}
+                              className="w-full px-3 py-2.5 flex items-center justify-between text-left"
+                            >
+                              <span className="text-[12px] font-black text-slate-800">{title}</span>
+                              <span className={`text-[12px] font-black ${isValid ? 'text-emerald-700' : 'text-rose-700'}`}>{isValid ? '信息完整' : '存在缺失/格式错误'}</span>
+                            </button>
+                            {item.expanded && (
+                              <div className="px-3 pb-3 space-y-3">
+                                <div className="grid grid-cols-2 gap-3">
+                                  {getFieldsByTable(tempType).filter((field) => field.type !== 'file').map((field) => {
+                                    const value = (item.payload as any)?.[field.key];
+                                    const options = getFieldOptions(field);
+                                    if (field.type === 'multiselect') {
+                                      const values = normalizeFeatureValues(value);
+                                      return (
+                                        <div key={`batch-edit-${item.id}-${field.key}`} className="space-y-1 col-span-2">
+                                          <label className="text-[12px] font-black text-slate-600">{field.label}</label>
+                                          <div className="grid grid-cols-2 gap-2 rounded-lg border border-slate-200 bg-white p-2">
+                                            {options.map((opt) => {
+                                              const checked = values.includes(opt);
+                                              return (
+                                                <label key={`batch-check-${item.id}-${field.key}-${opt}`} className="inline-flex items-center gap-2 text-[12px] text-slate-700">
+                                                  <input
+                                                    type="checkbox"
+                                                    checked={checked}
+                                                    onChange={(e) => {
+                                                      const next = new Set(values);
+                                                      if (e.target.checked) next.add(opt);
+                                                      else next.delete(opt);
+                                                      updateParsedBatchItemField(item.id, field.key, Array.from(next));
+                                                    }}
+                                                  />
+                                                  <span>{opt}</span>
+                                                </label>
+                                              );
+                                            })}
+                                          </div>
+                                        </div>
+                                      );
+                                    }
+
+                                    if (field.type === 'select') {
+                                      return (
+                                        <div key={`batch-edit-${item.id}-${field.key}`} className="space-y-1">
+                                          <label className="text-[12px] font-black text-slate-600">{field.label}</label>
+                                          <select
+                                            value={String(value ?? field.defaultValue ?? options[0] ?? '')}
+                                            onChange={(e) => updateParsedBatchItemField(item.id, field.key, e.target.value)}
+                                            className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-[12px] font-semibold outline-none"
+                                          >
+                                            {options.map((opt) => (
+                                              <option key={`batch-option-${item.id}-${field.key}-${opt}`} value={opt}>{opt}</option>
+                                            ))}
+                                          </select>
+                                        </div>
+                                      );
+                                    }
+
+                                    if (field.type === 'textarea') {
+                                      return (
+                                        <div key={`batch-edit-${item.id}-${field.key}`} className="space-y-1 col-span-2">
+                                          <label className="text-[12px] font-black text-slate-600">{field.label}</label>
+                                          <textarea
+                                            value={String(value ?? '')}
+                                            onChange={(e) => updateParsedBatchItemField(item.id, field.key, e.target.value)}
+                                            rows={3}
+                                            className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-[12px] outline-none resize-y"
+                                          />
+                                        </div>
+                                      );
+                                    }
+
+                                    return (
+                                      <div key={`batch-edit-${item.id}-${field.key}`} className="space-y-1">
+                                        <label className="text-[12px] font-black text-slate-600">{field.label}</label>
+                                        <input
+                                          type={field.type === 'number' ? 'number' : 'text'}
+                                          value={String(value ?? (field.key === '市场价' ? 100 : field.defaultValue ?? ''))}
+                                          onChange={(e) => updateParsedBatchItemField(item.id, field.key, e.target.value)}
+                                          className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-[12px] outline-none"
+                                        />
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                                {item.errors.length > 0 && (
+                                  <div className="rounded-lg border border-rose-200 bg-rose-100/70 p-2 text-[12px] text-rose-700">
+                                    {item.errors.map((err, idx) => <div key={`error-${item.id}-${idx}`}>- {err}</div>)}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
 
-            {/* 底部按钮 */}
-            <div className="flex space-x-3 pt-4 border-t">
+            <div className="flex space-x-3 px-8 py-4 border-t shrink-0">
               <button onClick={() => setIsAddingEq(false)} className="flex-1 py-3.5 rounded-2xl border text-slate-400 font-black text-[13px] uppercase tracking-widest hover:bg-slate-50 transition-all">取消</button>
-              <button
-                onClick={async () => {
-                  try {
-                    const payload = await buildPayloadFromForm('new', tempType);
-                    const ok = await logic.handleSaveEquipment(tempType, payload);
-                    if (ok) {
-                      setIsAddingEq(false);
+              {entryMode === 'single' ? (
+                <button
+                  onClick={async () => {
+                    try {
+                      const payload = await buildPayloadFromForm('new', tempType);
+                      const ok = await logic.handleSaveEquipment(tempType, payload);
+                      if (ok) {
+                        setIsAddingEq(false);
+                      }
+                    } catch (error: any) {
+                      alert(error?.message || '录入失败，请检查输入后重试。');
                     }
-                  } catch (error: any) {
-                    alert(error?.message || '录入失败，请检查输入后重试。');
-                  }
-                }}
-                className="flex-1 py-3.5 bg-slate-900 text-white rounded-2xl font-black text-[13px] uppercase shadow-xl hover:bg-black transition-all"
-              >
-                确认保存
-              </button>
+                  }}
+                  className="flex-1 py-3.5 bg-slate-900 text-white rounded-2xl font-black text-[13px] uppercase shadow-xl hover:bg-black transition-all"
+                >
+                  确认保存
+                </button>
+              ) : (
+                <button
+                  onClick={handleConfirmBatchSave}
+                  className="flex-1 py-3.5 bg-slate-900 text-white rounded-2xl font-black text-[13px] uppercase shadow-xl hover:bg-black transition-all"
+                >
+                  确定录入
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -2696,13 +3823,34 @@ const App: React.FC = () => {
                           className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] outline-none resize-y"
                         />
                       )
+                    ) : field.type === 'multiselect' ? (
+                      <div className="grid grid-cols-2 gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        {getFieldOptions(field).map((opt) => {
+                          const currentValues = normalizeFeatureValues((editingEq as any)[field.key]);
+                          return (
+                            <label key={`edit-${field.key}-${opt}`} className="inline-flex items-center gap-2 text-[12px] font-semibold text-slate-700">
+                              <input
+                                name={`edit-${field.key}`}
+                                type="checkbox"
+                                value={opt}
+                                defaultChecked={currentValues.includes(opt)}
+                                className="h-4 w-4 rounded border-slate-300"
+                              />
+                              <span>{opt}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
                     ) : field.type === 'select' ? (
                       <select
                         id={`edit-${field.key}`}
-                        defaultValue={String((editingEq as any)[field.key] ?? field.defaultValue ?? getFieldOptions(field)[0] ?? '')}
+                        defaultValue={String((editingEq as any)[field.key] ?? (field.key === '产品类型' ? (editingEq as any).类型 : undefined) ?? field.defaultValue ?? getFieldOptions(field)[0] ?? '')}
                         onChange={(e) => {
                           if (logic.activeTable === TableType.LOCAL_STATIC_RESOURCE && field.key === '资源类型') {
                             setEditResourceType(normalizeResourceType(e.target.value));
+                          }
+                          if (logic.activeTable === TableType.SPEAKER && (field.key === '产品类型' || field.key === '类型')) {
+                            setEditSpeakerProductType(e.target.value);
                           }
                         }}
                         className="w-full bg-slate-50 border rounded-xl px-4 py-2.5 text-[12px] font-bold outline-none"
@@ -3009,7 +4157,16 @@ const App: React.FC = () => {
           <div className="bg-white w-full max-md rounded-3xl shadow-2xl overflow-hidden">
             <div className={`px-6 py-4 ${themeBg} text-white flex items-center justify-between`}>
               <h3 className="text-sm font-black uppercase tracking-widest">编辑设备属性</h3>
-              <button onClick={() => logic.setEditingItem(null)} className="text-white/60 hover:text-white transition-colors">✕</button>
+              <button
+                onClick={() => {
+                  logic.setEditingItem(null);
+                  setPendingLinkedUpdates([]);
+                  setAmpRecommendationPrompt(null);
+                }}
+                className="text-white/60 hover:text-white transition-colors"
+              >
+                ✕
+              </button>
             </div>
             <div className="p-6 space-y-4">
               <div className="grid grid-cols-1 gap-3 text-[12px]">
@@ -3022,7 +4179,13 @@ const App: React.FC = () => {
                   <div className="flex items-center justify-between gap-3">
                     <div className="font-bold text-slate-800">{logic.editingItem.item.name || '-'}</div>
                     <button
-                      onClick={() => setIsReplacementPickerOpen(true)}
+                      onClick={() => {
+                        if (isLineArraySupportChildItem(logic.editingItem!.item)) {
+                          alert('该设备为线阵列音箱配套设备，必须通过修改线阵列音箱来联动更新。');
+                          return;
+                        }
+                        setIsReplacementPickerOpen(true);
+                      }}
                       className="w-7 h-7 rounded-lg border border-slate-200 text-slate-600 hover:bg-white flex items-center justify-center"
                       title="替换同类型设备"
                     >
@@ -3045,12 +4208,56 @@ const App: React.FC = () => {
               </div>
               <div className="space-y-1">
                 <label className="text-[13px] font-black text-slate-500">数量</label>
-                <input type="number" value={logic.editingItem.item.quantity} onChange={e => logic.setEditingItem({ ...logic.editingItem!, item: { ...logic.editingItem!.item, quantity: parseInt(e.target.value) || 0 } })} className="w-full bg-slate-50 border border-slate-100 rounded-xl px-4 py-2.5 text-xs font-bold outline-none" />
+                <input
+                  type="number"
+                  value={logic.editingItem.item.quantity}
+                  onChange={e => {
+                    if (isLineArraySupportChildItem(logic.editingItem!.item)) {
+                      alert('该设备为线阵列音箱配套设备，必须通过修改线阵列音箱来联动更新。');
+                      return;
+                    }
+                    logic.setEditingItem({
+                      ...logic.editingItem!,
+                      item: {
+                        ...logic.editingItem!.item,
+                        quantity: parseInt(e.target.value) || 0
+                      }
+                    });
+                  }}
+                  className="w-full bg-slate-50 border border-slate-100 rounded-xl px-4 py-2.5 text-xs font-bold outline-none"
+                />
               </div>
+              {pendingLinkedUpdates.length > 0 && (
+                <div className="px-4 py-3 rounded-xl border border-amber-200 bg-amber-50 text-amber-800 text-[12px] font-bold">
+                  已检测到配套联动，保存后将同步更新关联设备配置。
+                </div>
+              )}
             </div>
             <div className="p-6 bg-slate-50 border-t border-slate-100 flex space-x-3">
-              <button onClick={() => { logic.setEditingItem(null); setEditingOptions([]); setIsReplacementPickerOpen(false); }} className="flex-1 py-3 rounded-xl border border-slate-200 text-[13px] font-black uppercase tracking-widest text-slate-500">取消</button>
-              <button onClick={logic.saveEdit} className={`flex-1 py-3 rounded-xl ${themeBg} text-white shadow-lg text-[13px] font-black uppercase tracking-widest hover:brightness-110`}>保存更改</button>
+              <button
+                onClick={() => {
+                  logic.setEditingItem(null);
+                  setEditingOptions([]);
+                  setIsReplacementPickerOpen(false);
+                  setPendingLinkedUpdates([]);
+                  setAmpRecommendationPrompt(null);
+                }}
+                className="flex-1 py-3 rounded-xl border border-slate-200 text-[13px] font-black uppercase tracking-widest text-slate-500"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => {
+                  logic.saveEdit(pendingLinkedUpdates);
+                  setEditingOptions([]);
+                  setIsReplacementPickerOpen(false);
+                  setPendingLinkedUpdates([]);
+                  setAmpRecommendationPrompt(null);
+                }}
+                className={`flex-1 py-3 rounded-xl ${themeBg} text-white shadow-lg text-[13px] font-black uppercase tracking-widest hover:brightness-110`}
+              >
+                保存更改
+              </button>
             </div>
           </div>
         </div>
@@ -3065,26 +4272,192 @@ const App: React.FC = () => {
             </div>
             <div className="p-6 space-y-3 max-h-[65vh] overflow-y-auto">
               {editingOptions.length === 0 ? (
-                <div className="text-[12px] text-slate-400 font-bold">数据库中未找到同类型设备。</div>
+                <div className="text-[12px] text-slate-400 font-bold">无同类可替换。</div>
               ) : (
                 editingOptions.map((opt) => (
                   <div key={opt.id} className="border border-slate-100 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
                     <div className="min-w-0">
                       <div className="text-[12px] font-black text-slate-900 truncate">{opt.产品名称 || '-'}</div>
                       <div className="text-[13px] text-slate-500 truncate">{opt.品牌 || '-'} / {opt.型号 || '-'}</div>
+                      {Number((opt as any).推荐数量 || 0) > 0 && (
+                        <div className="text-[12px] text-emerald-700 font-bold mt-1">
+                          推荐数量: {Number((opt as any).推荐数量)}
+                          {String((opt as any).匹配模式 || '') ? `（${String((opt as any).匹配模式) === 'bridged' ? '桥接模式' : '常规模式'}）` : ''}
+                        </div>
+                      )}
                     </div>
                     <button
-                      onClick={() => {
-                        logic.setEditingItem({
-                          ...logic.editingItem!,
-                          item: {
-                            ...logic.editingItem!.item,
-                            name: opt.产品名称 || logic.editingItem!.item.name,
-                            model: opt.型号 || logic.editingItem!.item.model,
-                            brand: opt.品牌 || logic.editingItem!.item.brand,
-                            unitPrice: Number(opt.市场价) || logic.editingItem!.item.unitPrice || 0
+                      onClick={async () => {
+                        const editing = logic.editingItem;
+                        if (!editing) return;
+
+                        const nextItem: EquipmentItem = {
+                          ...editing.item,
+                          name: opt.产品名称 || editing.item.name,
+                          model: opt.型号 || editing.item.model,
+                          brand: opt.品牌 || editing.item.brand,
+                          unitPrice: Number(opt.市场价) || editing.item.unitPrice || 0,
+                          inventoryMatched: true,
+                          inventoryMatchNote: '',
+                          recentlyUpdated: true
+                        };
+
+                        let nextLinkedUpdates: LinkedPlanUpdate[] = [];
+                        let waitingAmpDecision = false;
+                        setAmpRecommendationPrompt(null);
+
+                        if (isAmplifierPlanType(editing.item.type)) {
+                          const recommendedQuantity = Number((opt as any).推荐数量);
+                          if (Number.isFinite(recommendedQuantity) && recommendedQuantity > 0) {
+                            nextItem.quantity = Math.max(1, Math.floor(recommendedQuantity));
                           }
+                        }
+
+                        if (isSpeakerPlanType(editing.item.type)) {
+                          const currentItems = logic.designState.results[editing.resIdx]?.items || [];
+
+                          try {
+                            const currentSpeakerDetail = await logic.fetchEquipmentDetail(editing.item);
+                            if (isLineArraySpeakerItem(editing.item, currentSpeakerDetail)) {
+                              const currentSpeakerMainId = Number(currentSpeakerDetail?.id || 0);
+                              const nextSpeakerMainId = Number(opt?.id || 0);
+
+                              if (currentSpeakerMainId > 0 && nextSpeakerMainId > 0 && currentSpeakerMainId !== nextSpeakerMainId) {
+                                await logic.ensureInventoryOptions(TableType.LINE_ARRAY_SUPPORT);
+                                const supportRows = logic
+                                  .getInventoryOptions(TableType.LINE_ARRAY_SUPPORT)
+                                  .filter((row) => Number(row.main_id || 0) === nextSpeakerMainId);
+
+                                const nextSubwoofer = supportRows.find((row) => String(row.用途 || row.类型 || '').includes('次低'));
+                                const nextHanger = supportRows.find((row) => {
+                                  const text = String(row.用途 || row.类型 || '');
+                                  return text.includes('吊挂架') || text.includes('吊架');
+                                });
+
+                                for (let i = 0; i < currentItems.length; i += 1) {
+                                  if (i === editing.itemIdx) continue;
+                                  const candidate = currentItems[i];
+                                  const candidateDetail = await logic.fetchEquipmentDetail(candidate);
+                                  if (Number(candidateDetail?.main_id || 0) !== currentSpeakerMainId) continue;
+
+                                  const purposeText = `${candidateDetail?.用途 || ''} ${candidateDetail?.类型 || candidate.type || ''}`;
+                                  if (purposeText.includes('次低') && nextSubwoofer) {
+                                    nextLinkedUpdates.push({
+                                      resIdx: editing.resIdx,
+                                      itemIdx: i,
+                                      itemPatch: {
+                                        type: String(nextSubwoofer.类型 || candidate.type || ''),
+                                        name: String(nextSubwoofer.产品名称 || candidate.name || ''),
+                                        model: String(nextSubwoofer.型号 || candidate.model || ''),
+                                        brand: String(nextSubwoofer.品牌 || candidate.brand || ''),
+                                        unitPrice: Number(nextSubwoofer.市场价 || candidate.unitPrice || 0),
+                                        inventoryMatched: true,
+                                        inventoryMatchNote: ''
+                                      }
+                                    });
+                                  } else if (isLineArraySupportChildType(purposeText) && nextHanger) {
+                                    nextLinkedUpdates.push({
+                                      resIdx: editing.resIdx,
+                                      itemIdx: i,
+                                      itemPatch: {
+                                        type: String(nextHanger.类型 || candidate.type || ''),
+                                        name: String(nextHanger.产品名称 || candidate.name || ''),
+                                        model: String(nextHanger.型号 || candidate.model || ''),
+                                        brand: String(nextHanger.品牌 || candidate.brand || ''),
+                                        unitPrice: Number(nextHanger.市场价 || candidate.unitPrice || 0),
+                                        inventoryMatched: true,
+                                        inventoryMatchNote: ''
+                                      }
+                                    });
+                                  }
+                                }
+
+                                if (nextLinkedUpdates.length > 0) {
+                                  alert('线阵列音箱型号已变更，关联次低音箱与吊架将同步联动更新，保存后生效。');
+                                }
+                              }
+                            }
+                          } catch (lineArrayError) {
+                            console.error('❌ Line-array linked replacement failed:', lineArrayError);
+                          }
+
+                          const pairedAmpIdx = findPairedAmplifierIndex(currentItems, editing.itemIdx);
+                          if (pairedAmpIdx >= 0) {
+                            const currentAmp = currentItems[pairedAmpIdx];
+                            try {
+                              const analysis = await logic.analyzeAmplifierMatch({
+                                scenario: logic.designState.scenario,
+                                speaker: {
+                                  model: nextItem.model,
+                                  name: nextItem.name,
+                                  quantity: nextItem.quantity,
+                                  ratedPower: (opt as any).额定功率,
+                                  ratedImpedance: (opt as any).额定阻抗
+                                },
+                                currentAmplifier: {
+                                  model: currentAmp.model,
+                                  name: currentAmp.name
+                                }
+                              });
+
+                              const currentMatch = analysis?.current;
+                              const requiredQty = Number(currentMatch?.requiredQuantity || 0);
+                              if (currentMatch?.matched && requiredQty > 0) {
+                                nextLinkedUpdates.push({
+                                  resIdx: editing.resIdx,
+                                  itemIdx: pairedAmpIdx,
+                                  itemPatch: {
+                                    quantity: requiredQty
+                                  }
+                                });
+                                alert(`已按匹配关系重算功放数量为 ${requiredQty}，保存后生效。`);
+                              } else {
+                                const rec = analysis?.recommendation;
+                                const recQty = Number(rec?.requiredQuantity || 0);
+                                if (analysis?.needsConfirmation && rec && recQty > 0) {
+                                  waitingAmpDecision = true;
+                                  const recommendAmpUpdate: LinkedPlanUpdate = {
+                                    resIdx: editing.resIdx,
+                                    itemIdx: pairedAmpIdx,
+                                    itemPatch: {
+                                      name: String(rec?.name || currentAmp.name || ''),
+                                      model: String(rec?.model || currentAmp.model || ''),
+                                      brand: String(rec?.brand || currentAmp.brand || ''),
+                                      unitPrice: Number(rec?.unitPrice || currentAmp.unitPrice || 0),
+                                      quantity: recQty
+                                    }
+                                  };
+                                  setAmpRecommendationPrompt({
+                                    message: '新音箱与当前功放不匹配。已自动推荐可配套功放，是否应用推荐结果？',
+                                    recommendation: {
+                                      name: String(rec?.name || ''),
+                                      model: String(rec?.model || ''),
+                                      brand: String(rec?.brand || ''),
+                                      unitPrice: Number(rec?.unitPrice || 0),
+                                      requiredQuantity: recQty,
+                                      mode: String(rec?.mode || '')
+                                    },
+                                    applyUpdates: [...nextLinkedUpdates, recommendAmpUpdate],
+                                    rejectUpdates: [...nextLinkedUpdates]
+                                  });
+                                } else if (currentMatch?.matched === false) {
+                                  alert('当前功放与新音箱不匹配，已按规则保留原功放型号与数量不变。');
+                                }
+                              }
+                            } catch (error) {
+                              console.error('❌ Speaker replacement match analysis failed:', error);
+                              alert('音箱已替换，但功放匹配分析失败，请手动检查功放型号与数量。');
+                            }
+                          }
+                        }
+
+                        logic.setEditingItem({
+                          ...editing,
+                          item: nextItem
                         });
+                        if (!waitingAmpDecision) {
+                          setPendingLinkedUpdates(nextLinkedUpdates);
+                        }
                         setIsReplacementPickerOpen(false);
                       }}
                       className="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-[13px] font-black"
@@ -3097,6 +4470,50 @@ const App: React.FC = () => {
             </div>
             <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex justify-end">
               <button onClick={() => setIsReplacementPickerOpen(false)} className="px-4 py-2 rounded-lg border border-slate-200 text-[13px] font-black text-slate-500">取消</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {logic.editingItem && ampRecommendationPrompt && (
+        <div className="fixed inset-0 z-[415] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden">
+            <div className={`px-6 py-4 ${themeBg} text-white`}>
+              <h3 className="text-sm font-black uppercase tracking-widest">功放匹配确认</h3>
+            </div>
+            <div className="p-6 space-y-4 text-[13px]">
+              <div className="text-slate-700 font-bold">{ampRecommendationPrompt.message}</div>
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 space-y-1">
+                <div className="text-emerald-800 font-black">推荐功放</div>
+                <div className="text-slate-700 font-bold">
+                  {ampRecommendationPrompt.recommendation.brand || '-'} / {ampRecommendationPrompt.recommendation.name || '-'} / {ampRecommendationPrompt.recommendation.model || '-'}
+                </div>
+                <div className="text-emerald-700 font-bold">
+                  建议数量: {ampRecommendationPrompt.recommendation.requiredQuantity}
+                  {ampRecommendationPrompt.recommendation.mode ? `（${ampRecommendationPrompt.recommendation.mode === 'bridged' ? '桥接模式' : '常规模式'}）` : ''}
+                </div>
+              </div>
+              <div className="text-slate-500 font-medium">确认后将在保存时同步替换功放并更新数量；不接受则保留原功放型号和数量。</div>
+            </div>
+            <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex gap-3">
+              <button
+                onClick={() => {
+                  setPendingLinkedUpdates(ampRecommendationPrompt.rejectUpdates);
+                  setAmpRecommendationPrompt(null);
+                }}
+                className="flex-1 py-2.5 rounded-lg border border-slate-200 text-slate-600 text-[13px] font-black"
+              >
+                保持原功放
+              </button>
+              <button
+                onClick={() => {
+                  setPendingLinkedUpdates(ampRecommendationPrompt.applyUpdates);
+                  setAmpRecommendationPrompt(null);
+                }}
+                className={`flex-1 py-2.5 rounded-lg ${themeBg} text-white text-[13px] font-black`}
+              >
+                应用推荐
+              </button>
             </div>
           </div>
         </div>
@@ -3139,32 +4556,57 @@ const App: React.FC = () => {
                 <div className="text-[12px] text-slate-400 font-bold">未找到该设备的数据库信息。</div>
               )}
 
-              {detailDialog.table && detailOptions.length > 0 && (
+              {detailDialog.table && (
                 <div className="border-t border-slate-100 pt-4 space-y-3">
                   <div className="text-[13px] font-black text-slate-400 uppercase tracking-widest">替换设备</div>
-                  <div className="flex items-center space-x-3">
-                    <select
-                      value={replacementId}
-                      onChange={e => setReplacementId(e.target.value ? Number(e.target.value) : '')}
-                      className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-bold outline-none"
-                    >
-                      <option value="">请选择替换设备</option>
-                      {detailOptions.map(opt => (
-                        <option key={opt.id} value={opt.id}>{opt.品牌} / {opt.产品名称} / {opt.型号}</option>
-                      ))}
-                    </select>
-                    <button
-                      onClick={() => {
-                        const selected = detailOptions.find(opt => opt.id === Number(replacementId));
-                        if (!selected) return;
-                        logic.replacePlanItem(detailDialog.resIdx, detailDialog.itemIdx, selected);
-                        setDetailDialog(prev => prev ? { ...prev, detail: selected, item: { ...prev.item, name: selected.产品名称 || prev.item.name, model: selected.型号 || prev.item.model, brand: selected.品牌 || prev.item.brand, unitPrice: Number(selected.市场价) || prev.item.unitPrice } } : prev);
-                      }}
-                      className="px-4 py-2 rounded-lg bg-slate-900 text-white text-[13px] font-black uppercase"
-                    >
-                      确认替换
-                    </button>
-                  </div>
+                  {isLineArraySupportChildItem(detailDialog.item) || (Number(detailDialog.detail?.main_id || 0) > 0 && isLineArraySupportChildType(String(detailDialog.detail?.用途 || detailDialog.detail?.类型 || ''))) ? (
+                    <div className="text-[12px] text-amber-700 font-bold bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                      该设备为线阵列音箱配套设备，必须通过修改线阵列音箱进行联动更新。
+                    </div>
+                  ) : detailReplacementOptions.length === 0 ? (
+                    <div className="text-[12px] text-slate-400 font-bold">无同类可替换。</div>
+                  ) : (
+                    <div className="flex items-center space-x-3">
+                      <select
+                        value={replacementId}
+                        onChange={e => setReplacementId(e.target.value ? Number(e.target.value) : '')}
+                        className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-bold outline-none"
+                      >
+                        <option value="">请选择替换设备</option>
+                        {detailReplacementOptions.map(opt => (
+                          <option key={opt.id} value={opt.id}>{opt.品牌} / {opt.产品名称} / {opt.型号}</option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={() => {
+                          const selected = detailReplacementOptions.find(opt => opt.id === Number(replacementId));
+                          if (!selected) return;
+                          if (isLineArraySpeakerItem(detailDialog.item, detailDialog.detail)) {
+                            alert('线阵列音箱请在“编辑设备”窗口替换，以便同步联动次低音箱和吊架。');
+                            return;
+                          }
+                          logic.replacePlanItem(detailDialog.resIdx, detailDialog.itemIdx, selected);
+                          setDetailDialog(prev => prev ? {
+                            ...prev,
+                            detail: selected,
+                            item: {
+                              ...prev.item,
+                              name: selected.产品名称 || prev.item.name,
+                              model: selected.型号 || prev.item.model,
+                              brand: selected.品牌 || prev.item.brand,
+                              unitPrice: Number(selected.市场价) || prev.item.unitPrice,
+                              inventoryMatched: true,
+                              inventoryMatchNote: '',
+                              recentlyUpdated: true
+                            }
+                          } : prev);
+                        }}
+                        className="px-4 py-2 rounded-lg bg-slate-900 text-white text-[13px] font-black uppercase"
+                      >
+                        确认替换
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

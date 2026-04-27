@@ -48,20 +48,22 @@ const DB_CONFIG = {
   port: Number(process.env.DB_PORT || 3306),
   user: process.env.DB_USER || "user1",
   password: process.env.DB_PASSWORD || "UasbecrD1!1",
-  database: process.env.DB_NAME || "equipment",
+  database: process.env.DB_NAME || "longdata_new",
   charset: "utf8mb4",
   connectionLimit: 10
 };
 
 const pool = mysql.createPool(DB_CONFIG);
 const isProduction = process.env.NODE_ENV === 'production';
+const LINE_ARRAY_SUPPORT_TABLE = "线阵列配套";
+const SUBSYSTEM_TABLE = "子系统";
+const LEGACY_SUBSYSTEM_TABLES = ["固定搭配场景剩余周边设备", "非固定搭配场景剩余周边设备"];
 const INVENTORY_TABLES = [
-  "固定搭配",
   "音箱",
+  LINE_ARRAY_SUPPORT_TABLE,
   "定阻功放",
   "周边设备",
-  "固定搭配场景剩余周边设备",
-  "非固定搭配场景剩余周边设备"
+  SUBSYSTEM_TABLE
 ];
 const LEGACY_IMAGE_RESOURCE_TABLE = "图片资源管理";
 const LOCAL_STATIC_RESOURCE_TABLE = SERVICE_LOCAL_STATIC_RESOURCE_TABLE;
@@ -149,9 +151,282 @@ const inferResourceTypeFromContent = (content) => {
   return RESOURCE_TYPE_TEXT;
 };
 
+const normalizeSpeakerFunctionValue = (value) => {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || "").trim()).filter(Boolean);
+  }
+  const text = String(value || "").trim();
+  if (!text) return [];
+  return text
+    .split(/[、,，;；|/]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
+
+const parseCoverageAngles = (value) => {
+  const text = String(value || "").trim();
+  if (!text) {
+    return {
+      horizontal: "",
+      vertical: ""
+    };
+  }
+  const match = text.match(/([0-9]+(?:\.[0-9]+)?)\s*°?\s*[x×X＊*]\s*([0-9]+(?:\.[0-9]+)?)\s*°?/);
+  if (!match) {
+    return {
+      horizontal: "",
+      vertical: ""
+    };
+  }
+  return {
+    horizontal: match[1],
+    vertical: match[2]
+  };
+};
+
+const buildCoverageText = (horizontal, vertical) => {
+  const h = String(horizontal ?? "").trim();
+  const v = String(vertical ?? "").trim();
+  if (!h || !v) return "";
+  return `${h}°×${v}°`;
+};
+
+const isSpeakerLikeTable = (table) => table === "音箱" || table === LINE_ARRAY_SUPPORT_TABLE;
+
+const asPositiveNumber = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+
+const asNumericText = (value) => {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  const matched = text.match(/^-?\d+(?:\.\d+)?/);
+  return matched ? matched[0] : "";
+};
+
+const normalizeWithUnit = (value, unitType) => {
+  const text = String(value ?? "").trim();
+  if (!text) return text;
+
+  if (unitType === "ohm") {
+    const matched = text.match(/^(-?\d+(?:\.\d+)?)\s*(?:Ω|ohm)$/i);
+    if (matched) return `${matched[1]}Ω`;
+    if (/^-?\d+(?:\.\d+)?$/.test(text)) return `${text}Ω`;
+    return text;
+  }
+
+  if (unitType === "w") {
+    const matched = text.match(/^(-?\d+(?:\.\d+)?)\s*w$/i);
+    if (matched) return `${matched[1]}W`;
+    if (/^-?\d+(?:\.\d+)?$/.test(text)) return `${text}W`;
+    return text;
+  }
+
+  if (unitType === "db") {
+    const matched = text.match(/^(-?\d+(?:\.\d+)?)\s*db$/i);
+    if (matched) return `${matched[1]}dB`;
+    if (/^-?\d+(?:\.\d+)?$/.test(text)) return `${text}dB`;
+    return text;
+  }
+
+  return text;
+};
+
+const normalizeAcousticSpecUnits = (payload = {}) => {
+  const next = { ...(payload || {}) };
+  if (Object.prototype.hasOwnProperty.call(next, "额定阻抗")) {
+    next["额定阻抗"] = normalizeWithUnit(next["额定阻抗"], "ohm");
+  }
+  if (Object.prototype.hasOwnProperty.call(next, "额定功率")) {
+    next["额定功率"] = normalizeWithUnit(next["额定功率"], "w");
+  }
+  if (Object.prototype.hasOwnProperty.call(next, "灵敏度")) {
+    next["灵敏度"] = normalizeWithUnit(next["灵敏度"], "db");
+  }
+  if (Object.prototype.hasOwnProperty.call(next, "最大声压级")) {
+    next["最大声压级"] = normalizeWithUnit(next["最大声压级"], "db");
+  }
+
+  if (Object.prototype.hasOwnProperty.call(next, "水平覆盖角")) {
+    next["水平覆盖角"] = asNumericText(next["水平覆盖角"]);
+  }
+  if (Object.prototype.hasOwnProperty.call(next, "垂直覆盖角")) {
+    next["垂直覆盖角"] = asNumericText(next["垂直覆盖角"]);
+  }
+
+  return next;
+};
+
+const validateUnitField = (value, suffixPattern) => {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return suffixPattern.test(text);
+};
+
+const validateSpeakerPayload = (payload = {}) => {
+  const errors = [];
+  const requiredKeys = [
+    "类型",
+    "品牌",
+    "产品名称",
+    "型号",
+    "市场价",
+    "额定阻抗",
+    "额定功率",
+    "灵敏度",
+    "最大声压级",
+    "覆盖角",
+    "面高",
+    "功能"
+  ];
+
+  requiredKeys.forEach((key) => {
+    const value = payload[key];
+    if (value === undefined || value === null || String(value).trim() === "") {
+      errors.push(`${key}为必填项`);
+    }
+  });
+
+  if (payload["市场价"] !== undefined && asPositiveNumber(payload["市场价"]) === null) {
+    errors.push("市场价必须为大于0的数字");
+  }
+  if (payload["面高"] !== undefined && asPositiveNumber(payload["面高"]) === null) {
+    errors.push("面高必须为大于0的数字");
+  }
+  if (payload["额定阻抗"] !== undefined && !validateUnitField(payload["额定阻抗"], /^\d+(?:\.\d+)?\s*(?:Ω|ohm|OHM)$/)) {
+    errors.push("额定阻抗格式应为数值+Ω");
+  }
+  if (payload["额定功率"] !== undefined && !validateUnitField(payload["额定功率"], /^\d+(?:\.\d+)?\s*[wW]$/)) {
+    errors.push("额定功率格式应为数值+W");
+  }
+  if (payload["灵敏度"] !== undefined && !validateUnitField(payload["灵敏度"], /^\d+(?:\.\d+)?\s*dB$/i)) {
+    errors.push("灵敏度格式应为数值+dB");
+  }
+  if (payload["最大声压级"] !== undefined && !validateUnitField(payload["最大声压级"], /^\d+(?:\.\d+)?\s*dB$/i)) {
+    errors.push("最大声压级格式应为数值+dB");
+  }
+
+  const coverage = parseCoverageAngles(payload["覆盖角"]);
+  if (!coverage.horizontal || !coverage.vertical) {
+    errors.push("覆盖角格式应为 水平°×垂直°");
+  }
+
+  const fnList = normalizeSpeakerFunctionValue(payload["功能"]);
+  if (fnList.length === 0) {
+    errors.push("功能至少选择1项");
+  }
+
+  return errors;
+};
+
+const validateLineArraySupportPayload = (support = {}) => {
+  const errors = [];
+  const subwoofer = support?.subwoofer || {};
+  const hanger = support?.hanger || {};
+
+  const subwooferRequired = [
+    "类型",
+    "产品名称",
+    "型号",
+    "市场价",
+    "额定阻抗",
+    "额定功率",
+    "灵敏度",
+    "最大声压级",
+    "覆盖角",
+    "面高",
+    "品牌"
+  ];
+  subwooferRequired.forEach((key) => {
+    const value = subwoofer[key];
+    if (value === undefined || value === null || String(value).trim() === "") {
+      errors.push(`次低音音箱-${key}为必填项`);
+    }
+  });
+
+  const hangerRequired = ["产品名称", "型号", "市场价"];
+  hangerRequired.forEach((key) => {
+    const value = hanger[key];
+    if (value === undefined || value === null || String(value).trim() === "") {
+      errors.push(`线阵列吊挂架-${key}为必填项`);
+    }
+  });
+
+  if (subwoofer["市场价"] !== undefined && asPositiveNumber(subwoofer["市场价"]) === null) {
+    errors.push("次低音音箱-市场价必须为大于0的数字");
+  }
+  if (hanger["市场价"] !== undefined && asPositiveNumber(hanger["市场价"]) === null) {
+    errors.push("线阵列吊挂架-市场价必须为大于0的数字");
+  }
+
+  if (subwoofer["额定阻抗"] !== undefined && !validateUnitField(subwoofer["额定阻抗"], /^\d+(?:\.\d+)?\s*(?:Ω|ohm|OHM)$/)) {
+    errors.push("次低音音箱-额定阻抗格式应为数值+Ω");
+  }
+  if (subwoofer["额定功率"] !== undefined && !validateUnitField(subwoofer["额定功率"], /^\d+(?:\.\d+)?\s*[wW]$/)) {
+    errors.push("次低音音箱-额定功率格式应为数值+W");
+  }
+  if (subwoofer["灵敏度"] !== undefined && !validateUnitField(subwoofer["灵敏度"], /^\d+(?:\.\d+)?\s*dB$/i)) {
+    errors.push("次低音音箱-灵敏度格式应为数值+dB");
+  }
+  if (subwoofer["最大声压级"] !== undefined && !validateUnitField(subwoofer["最大声压级"], /^\d+(?:\.\d+)?\s*dB$/i)) {
+    errors.push("次低音音箱-最大声压级格式应为数值+dB");
+  }
+
+  const coverage = parseCoverageAngles(subwoofer["覆盖角"]);
+  if (subwoofer["覆盖角"] !== undefined && (!coverage.horizontal || !coverage.vertical)) {
+    errors.push("次低音音箱-覆盖角格式应为 水平°×垂直°");
+  }
+
+  return errors;
+};
+
+const validateInventoryPayloadByTable = (table, payload = {}) => {
+  if (table === "音箱") {
+    return validateSpeakerPayload(payload);
+  }
+
+  if (table === LINE_ARRAY_SUPPORT_TABLE) {
+    const useCase = String(payload["用途"] || "").trim();
+    if (useCase === "挂架") {
+      const required = ["产品名称", "型号", "市场价"];
+      return required
+        .filter((key) => payload[key] === undefined || payload[key] === null || String(payload[key]).trim() === "")
+        .map((key) => `挂架-${key}为必填项`);
+    }
+
+    const required = [
+      "类型",
+      "产品名称",
+      "型号",
+      "市场价",
+      "额定阻抗",
+      "额定功率",
+      "灵敏度",
+      "最大声压级",
+      "覆盖角",
+      "面高",
+      "品牌"
+    ];
+    const errors = required
+      .filter((key) => payload[key] === undefined || payload[key] === null || String(payload[key]).trim() === "")
+      .map((key) => `线阵列配套-${key}为必填项`);
+
+    if (payload["市场价"] !== undefined && asPositiveNumber(payload["市场价"]) === null) {
+      errors.push("线阵列配套-市场价必须为大于0的数字");
+    }
+    return errors;
+  }
+
+  return [];
+};
+
 const resolvePhysicalTableName = (table) => {
   if (table === LOCAL_STATIC_RESOURCE_MANAGEMENT_TABLE) return LOCAL_STATIC_RESOURCE_TABLE;
   if (table === LOCAL_STATIC_RESOURCE_TABLE) return LOCAL_STATIC_RESOURCE_TABLE;
+  if (table === SUBSYSTEM_TABLE) {
+    return process.env.SUBSYSTEM_TABLE_NAME || SUBSYSTEM_TABLE;
+  }
   return table;
 };
 
@@ -170,6 +445,129 @@ const getTableColumns = async (table) => {
     [DB_CONFIG.database, physicalTable]
   );
   return rows.map((row) => row.COLUMN_NAME);
+};
+
+const getColumnType = async (table, columnName) => {
+  const physicalTable = resolvePhysicalTableName(table);
+  const [rows] = await pool.query(
+    "SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1",
+    [DB_CONFIG.database, physicalTable, columnName]
+  );
+  return String(rows?.[0]?.COLUMN_TYPE || "").trim();
+};
+
+const isAutoIncrementColumn = async (table, columnName = "id") => {
+  const physicalTable = resolvePhysicalTableName(table);
+  const [rows] = await pool.query(
+    "SELECT EXTRA FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1",
+    [DB_CONFIG.database, physicalTable, columnName]
+  );
+  const extra = String(rows?.[0]?.EXTRA || "").toLowerCase();
+  return extra.includes("auto_increment");
+};
+
+const ensureManualIdForInsert = async (table, payload = {}, queryExecutor = pool) => {
+  const next = { ...(payload || {}) };
+  if (next.id !== undefined && next.id !== null && String(next.id).trim() !== "") {
+    return next;
+  }
+
+  const columns = await getTableColumns(table);
+  if (!columns.includes("id")) return next;
+
+  const autoIncrement = await isAutoIncrementColumn(table, "id");
+  if (autoIncrement) return next;
+
+  const physicalTable = resolvePhysicalTableName(table);
+  const [rows] = await queryExecutor.query(
+    `SELECT COALESCE(MAX(\`id\`), 0) + 1 AS nextId FROM \`${physicalTable}\``
+  );
+  next.id = Number(rows?.[0]?.nextId || 1);
+  return next;
+};
+
+const tableExists = async (table) => {
+  const physicalTable = resolvePhysicalTableName(table);
+  const [rows] = await pool.query(
+    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? LIMIT 1",
+    [DB_CONFIG.database, physicalTable]
+  );
+  return Array.isArray(rows) && rows.length > 0;
+};
+
+const parseEnumColumnOptions = (columnType) => {
+  const text = String(columnType || "").trim();
+  if (!/^enum\(/i.test(text)) return [];
+  const body = text.replace(/^enum\((.*)\)$/i, "$1");
+  if (!body) return [];
+  return body
+    .split(/','/)
+    .map((item) => item.replace(/^'/, "").replace(/'$/, "").replace(/\\'/g, "'"))
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
+
+const getColumnEnumOptions = async (table, columnName) => {
+  const physicalTable = resolvePhysicalTableName(table);
+  const [rows] = await pool.query(
+    "SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1",
+    [DB_CONFIG.database, physicalTable, columnName]
+  );
+  return parseEnumColumnOptions(rows?.[0]?.COLUMN_TYPE);
+};
+
+const getDistinctColumnValues = async (table, columnName) => {
+  if (!(await tableExists(table))) return [];
+  const columns = await getTableColumns(table);
+  if (!columns.includes(columnName)) return [];
+
+  const physicalTable = resolvePhysicalTableName(table);
+  const [rows] = await pool.query(
+    `SELECT DISTINCT \`${columnName}\` AS value FROM \`${physicalTable}\` WHERE \`${columnName}\` IS NOT NULL AND \`${columnName}\` <> ''`
+  );
+  return (Array.isArray(rows) ? rows : [])
+    .map((row) => String(row?.value || "").trim())
+    .filter(Boolean);
+};
+
+const getSpeakerMetadataOptions = async () => {
+  const fallbackProductTypes = ["全频音箱", "线阵列音箱", "台唇音箱", "拉声像音箱", "返听音箱", "超低音箱"];
+  const fallbackFunctions = ["主扩声", "返听", "辅助扩声", "次低频补偿", "吊装", "壁挂", "吸顶", "舞台监听"];
+
+  let productTypeOptions = await getColumnEnumOptions("音箱", "产品类型");
+  if (productTypeOptions.length === 0) {
+    productTypeOptions = await getColumnEnumOptions("音箱", "类型");
+  }
+  if (productTypeOptions.length === 0) {
+    productTypeOptions = await getDistinctColumnValues("音箱", "产品类型");
+  }
+  if (productTypeOptions.length === 0) {
+    productTypeOptions = await getDistinctColumnValues("音箱", "类型");
+  }
+
+  let functionOptions = await getColumnEnumOptions("音箱", "功能");
+  if (functionOptions.length === 0) {
+    const functionTexts = await getDistinctColumnValues("音箱", "功能");
+    functionOptions = functionTexts.flatMap((value) =>
+      String(value || "")
+        .split(/[、,，;；|/]/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+    );
+  }
+
+  const normalizedProductTypeOptions = productTypeOptions.length > 0
+    ? Array.from(new Set(productTypeOptions))
+    : fallbackProductTypes;
+
+  const normalizedFunctionOptions = functionOptions.length > 0
+    ? Array.from(new Set(functionOptions))
+    : fallbackFunctions;
+
+  return {
+    productTypeOptions: normalizedProductTypeOptions,
+    functionOptions: normalizedFunctionOptions
+  };
 };
 
 const getPrimaryKey = async (table) => {
@@ -228,9 +626,26 @@ const normalizeInventoryRowForResponse = (table, row, index = 0) => {
     }
   }
 
-  if (table === "固定搭配") {
+  if (table === SUBSYSTEM_TABLE) {
     if (!next["类型"] && next["设备类型"]) {
       next["类型"] = next["设备类型"];
+    }
+  }
+
+  if (isSpeakerLikeTable(table)) {
+    if (!next["产品类型"] && next["类型"]) {
+      next["产品类型"] = next["类型"];
+    }
+    const coverage = parseCoverageAngles(next["覆盖角"]);
+    if (!next["水平覆盖角"] && coverage.horizontal) {
+      next["水平覆盖角"] = coverage.horizontal;
+    }
+    if (!next["垂直覆盖角"] && coverage.vertical) {
+      next["垂直覆盖角"] = coverage.vertical;
+    }
+    const functionList = normalizeSpeakerFunctionValue(next["功能"]);
+    if (functionList.length > 0) {
+      next["功能"] = functionList;
     }
   }
 
@@ -253,11 +668,26 @@ const normalizeInventoryRowForResponse = (table, row, index = 0) => {
 };
 
 const mapInventoryPayloadToTable = (table, payload = {}) => {
-  const next = { ...(payload || {}) };
+  const next = normalizeAcousticSpecUnits(payload || {});
 
-  if (table === "固定搭配") {
+  if (table === SUBSYSTEM_TABLE) {
     if (next["类型"] && !next["设备类型"]) {
       next["设备类型"] = next["类型"];
+    }
+  }
+
+  if (isSpeakerLikeTable(table)) {
+    if (next["产品类型"] && !next["类型"]) {
+      next["类型"] = String(next["产品类型"]).trim();
+    }
+    const coverageText = buildCoverageText(next["水平覆盖角"], next["垂直覆盖角"]);
+    if (coverageText) {
+      next["覆盖角"] = coverageText;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(next, "功能")) {
+      const functionList = normalizeSpeakerFunctionValue(next["功能"]);
+      next["功能"] = functionList.join("、");
     }
   }
 
@@ -316,11 +746,214 @@ const getDeviceImageTableCandidates = (type) => {
   const text = String(type || "");
   if (!text) return ["周边设备"];
   if (text.includes("功放")) return ["定阻功放"];
-  if (text.includes("音箱")) return ["音箱"];
+  if (text.includes("音箱") || text.includes("线阵列")) return ["音箱", LINE_ARRAY_SUPPORT_TABLE];
   if (["中控系统", "矩阵", "视频会议系统", "录播系统"].includes(text)) {
-    return ["固定搭配场景剩余周边设备", "非固定搭配场景剩余周边设备"];
+    return [SUBSYSTEM_TABLE, ...LEGACY_SUBSYSTEM_TABLES];
   }
-  return ["周边设备", "固定搭配场景剩余周边设备", "非固定搭配场景剩余周边设备"];
+  return ["周边设备", SUBSYSTEM_TABLE, ...LEGACY_SUBSYSTEM_TABLES];
+};
+
+const parseVersionParts = (rawValue) => {
+  const text = String(rawValue || "").trim();
+  if (!text) return { outside: [], inside: [] };
+
+  const match = text.match(/^(.*?)(?:\((.*?)\))?$/);
+  const outsideRaw = String(match?.[1] || "").trim();
+  const insideRaw = String(match?.[2] || "").trim();
+
+  const splitBySlash = (input) => {
+    if (!input) return [];
+    return input
+      .split("/")
+      .map((part) => String(part || "").trim())
+      .filter(Boolean);
+  };
+
+  return {
+    outside: splitBySlash(outsideRaw),
+    inside: splitBySlash(insideRaw)
+  };
+};
+
+const parsePowerValue = (value) => {
+  const matched = String(value || "").match(/-?\d+(?:\.\d+)?/);
+  if (!matched) return null;
+  const n = Number(matched[0]);
+  return Number.isFinite(n) ? n : null;
+};
+
+const parseChannelValue = (value) => {
+  const matched = String(value || "").match(/\d+/);
+  if (!matched) return null;
+  const n = Number(matched[0]);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+};
+
+const normalizeOhmValue = (value) => {
+  const matched = String(value || "").match(/-?\d+(?:\.\d+)?/);
+  if (!matched) return "";
+  return `${matched[0]}Ω`;
+};
+
+const buildAmplifierVersions = (row) => {
+  const powerParts = parseVersionParts(row?.额定功率);
+  const impedanceParts = parseVersionParts(row?.额定阻抗);
+  const channelParts = parseVersionParts(row?.通道数);
+
+  const build = (mode, powerList, impedanceList, channelList) => {
+    const len = Math.min(powerList.length, impedanceList.length, channelList.length);
+    if (len <= 0) return [];
+    const result = [];
+    for (let i = 0; i < len; i += 1) {
+      const power = parsePowerValue(powerList[i]);
+      const impedance = normalizeOhmValue(impedanceList[i]);
+      const channels = parseChannelValue(channelList[i]);
+      if (!power || !impedance || !channels) continue;
+      result.push({
+        mode,
+        power,
+        impedance,
+        channels
+      });
+    }
+    return result;
+  };
+
+  return [
+    ...build("normal", powerParts.outside, impedanceParts.outside, channelParts.outside),
+    ...build("bridged", powerParts.inside, impedanceParts.inside, channelParts.inside)
+  ];
+};
+
+const getScenarioPowerMultiplier = (scenario) => {
+  const normalized = String(scenario || "").toUpperCase();
+  return normalized === "LECTURE_HALL" ? 2.0 : 1.5;
+};
+
+const getSpeakerMatchTableCandidates = () => ["音箱", LINE_ARRAY_SUPPORT_TABLE];
+
+const queryInventoryRecordByModelOrName = async ({ table, model, name }) => {
+  if (!(await tableExists(table))) return null;
+
+  const columns = await getTableColumns(table);
+  const conditions = [];
+  const values = [];
+
+  if (columns.includes("型号") && model) {
+    conditions.push("`型号` = ?");
+    values.push(model);
+  }
+  if (columns.includes("产品名称") && name) {
+    conditions.push("`产品名称` = ?");
+    values.push(name);
+  }
+  if (conditions.length === 0) return null;
+
+  const [rows] = await pool.query(
+    `SELECT * FROM \`${resolvePhysicalTableName(table)}\` WHERE ${conditions.join(" OR ")} LIMIT 1`,
+    values
+  );
+  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+};
+
+const resolveSpeakerForAmpMatch = async (speakerPayload = {}) => {
+  const model = String(speakerPayload.model || "").trim();
+  const name = String(speakerPayload.name || "").trim();
+  const quantityRaw = Number(speakerPayload.quantity);
+  const quantity = Number.isFinite(quantityRaw) && quantityRaw > 0 ? Math.ceil(quantityRaw) : 1;
+
+  let ratedPower = parsePowerValue(
+    speakerPayload.ratedPower
+      ?? speakerPayload["额定功率"]
+      ?? speakerPayload.power
+  );
+  let ratedImpedance = normalizeOhmValue(
+    speakerPayload.ratedImpedance
+      ?? speakerPayload["额定阻抗"]
+      ?? speakerPayload.impedance
+  );
+
+  let source = "payload";
+  if (!(ratedPower && ratedImpedance) && (model || name)) {
+    const candidates = getSpeakerMatchTableCandidates();
+    for (const table of candidates) {
+      try {
+        const row = await queryInventoryRecordByModelOrName({ table, model, name });
+        if (!row) continue;
+        const rowPower = parsePowerValue(row?.额定功率);
+        const rowImpedance = normalizeOhmValue(row?.额定阻抗);
+        if (rowPower && rowImpedance) {
+          ratedPower = rowPower;
+          ratedImpedance = rowImpedance;
+          source = table;
+          break;
+        }
+      } catch (error) {
+        console.warn(`⚠️ resolveSpeakerForAmpMatch failed on table ${table}:`, error.message);
+      }
+    }
+  }
+
+  return {
+    model,
+    name,
+    quantity,
+    ratedPower,
+    ratedImpedance,
+    source
+  };
+};
+
+const findAmpMatchVersion = ({ versions, targetPower, targetImpedance }) => {
+  if (!Array.isArray(versions) || versions.length === 0) return null;
+  for (const mode of ["normal", "bridged"]) {
+    for (const version of versions) {
+      if (version.mode !== mode) continue;
+      if (version.impedance !== targetImpedance) continue;
+      if (version.power < targetPower) continue;
+      return version;
+    }
+  }
+  return null;
+};
+
+const serializeAmpMatchResult = (row, version, speakerQuantity) => {
+  const channels = Number(version?.channels || 0);
+  const quantity = channels > 0 ? Math.ceil(Number(speakerQuantity || 1) / channels) : null;
+  return {
+    id: Number(row?.id || 0),
+    name: String(row?.产品名称 || "").trim(),
+    model: String(row?.型号 || "").trim(),
+    brand: String(row?.品牌 || "").trim(),
+    unitPrice: Number(row?.市场价 || 0),
+    mode: version?.mode || "normal",
+    matchedVersion: {
+      power: Number(version?.power || 0),
+      impedance: String(version?.impedance || ""),
+      channels: Number(version?.channels || 0)
+    },
+    requiredQuantity: quantity
+  };
+};
+
+const isSpeakerPlanType = (value) => {
+  const text = String(value || "");
+  return text.includes("音箱") || text.includes("线阵列");
+};
+
+const isAmplifierPlanType = (value) => {
+  const text = String(value || "");
+  return text.includes("功放");
+};
+
+const findPairedSpeakerForAmplifier = (items, amplifierIndex) => {
+  if (!Array.isArray(items) || amplifierIndex < 0) return null;
+  for (let i = amplifierIndex - 1; i >= 0; i -= 1) {
+    const type = String(items[i]?.type || "");
+    if (isSpeakerPlanType(type)) return { index: i, item: items[i] };
+    if (isAmplifierPlanType(type)) break;
+  }
+  return null;
 };
 
 const ensureColumnExists = async (table, columnName, sqlDefinition) => {
@@ -335,38 +968,53 @@ const ensureColumnExists = async (table, columnName, sqlDefinition) => {
 
 const ensureInventorySchema = async () => {
   for (const table of INVENTORY_TABLES) {
+    const physicalTable = resolvePhysicalTableName(table);
+    if (!(await tableExists(table))) {
+      console.warn(`⚠️ Inventory table not found, skipped schema ensure: ${physicalTable}`);
+      continue;
+    }
+
     const columns = await getTableColumns(table);
     if (!columns.includes("id")) {
-      await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`id\` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY FIRST`);
+      await pool.query(`ALTER TABLE \`${physicalTable}\` ADD COLUMN \`id\` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY FIRST`);
     } else {
+      const idColumnType = (await getColumnType(table, "id")) || "bigint";
       const [pkRows] = await pool.query(
         "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY'",
-        [DB_CONFIG.database, table]
+        [DB_CONFIG.database, physicalTable]
       );
       if (pkRows.length === 0) {
         try {
-          await pool.query(`ALTER TABLE \`${table}\` MODIFY COLUMN \`id\` BIGINT NOT NULL`);
-          await pool.query(`ALTER TABLE \`${table}\` ADD PRIMARY KEY (\`id\`)`);
+          await pool.query(`ALTER TABLE \`${physicalTable}\` MODIFY COLUMN \`id\` ${idColumnType} NOT NULL`);
+          await pool.query(`ALTER TABLE \`${physicalTable}\` ADD PRIMARY KEY (\`id\`)`);
         } catch (error) {
-          console.warn(`⚠️ Failed to promote id as primary key for ${table}:`, error.message);
+          console.warn(`⚠️ Failed to promote id as primary key for ${physicalTable}:`, error.message);
+        }
+      }
+
+      try {
+        await pool.query(`ALTER TABLE \`${physicalTable}\` MODIFY COLUMN \`id\` ${idColumnType} NOT NULL AUTO_INCREMENT`);
+      } catch (error) {
+        const message = String(error?.message || "");
+        if (!/foreign key constraint/i.test(message)) {
+          console.warn(`⚠️ Failed to set id as auto_increment for ${physicalTable}:`, message);
         }
       }
     }
 
-    await ensureColumnExists(table, "设备图片", "LONGTEXT NULL");
-    await ensureColumnExists(table, "品牌", "TEXT NULL");
+    await ensureColumnExists(physicalTable, "设备图片", "LONGTEXT NULL");
+    await ensureColumnExists(physicalTable, "品牌", "TEXT NULL");
   }
 
   try {
-    await ensureColumnExists("固定搭配", "类型", "TEXT NULL");
-    const fixedColumns = await getTableColumns("固定搭配");
-    if (fixedColumns.includes("设备类型") && fixedColumns.includes("类型")) {
-      await pool.query(
-        "UPDATE `固定搭配` SET `类型` = `设备类型` WHERE (`类型` IS NULL OR `类型` = '') AND `设备类型` IS NOT NULL"
-      );
+    if (await tableExists("音箱")) {
+      await ensureColumnExists("音箱", "功能", "TEXT NULL");
+    }
+    if (await tableExists(LINE_ARRAY_SUPPORT_TABLE)) {
+      await ensureColumnExists(LINE_ARRAY_SUPPORT_TABLE, "功能", "TEXT NULL");
     }
   } catch (error) {
-    console.warn("⚠️ Fixed combination alias column init failed:", error.message);
+    console.warn("⚠️ Speaker extra columns ensure failed:", error.message);
   }
 
 };
@@ -1676,7 +2324,7 @@ app.post("/api/run-dify-chatflow", async (req, res) => {
   }
 
   // === ⚠️ 替换为你自己的 Dify 信息（可用环境变量覆盖） ===
-  const DIFY_API_KEY = "app-NB3lEaGg14fyON5fYhENY1oV"; // ← 已保留你的 key 
+  const DIFY_API_KEY = "app-f3xzV8aGpe4crb7ezMFiSnwi"; // ← 已替换为最新 key
   // const DIFY_API_KEY = "app-rmJ6pmkpBuf4KGAChHYrcZBP";
   const DIFY_CHAT_API_URL = process.env.DIFY_CHAT_API_URL || "http://115.231.236.153:20000/v1/chat-messages";
   const queryText = isProduction ? "请执行声学方案设计流程。" : "请执行声学方案设计流程（测试）。";
@@ -1725,6 +2373,336 @@ app.post("/api/run-dify-chatflow", async (req, res) => {
     res.status(500).json({
       error: "Failed to run Dify Chatflow",
       details: error.response?.data?.message || error.message
+    });
+  }
+});
+
+app.post("/api/plan/amplifier-match-analysis", async (req, res) => {
+  const scenario = req.body?.scenario;
+  const speakerInput = req.body?.speaker || {};
+  const currentAmplifierInput = req.body?.currentAmplifier || null;
+  const planItems = Array.isArray(req.body?.items) ? req.body.items : [];
+  const amplifierIndex = Number(req.body?.amplifierIndex);
+
+  let effectiveSpeakerInput = speakerInput;
+  if ((!speakerInput?.model && !speakerInput?.name) && planItems.length > 0 && Number.isInteger(amplifierIndex)) {
+    const paired = findPairedSpeakerForAmplifier(planItems, amplifierIndex);
+    if (paired?.item) {
+      effectiveSpeakerInput = {
+        model: paired.item.model,
+        name: paired.item.name,
+        quantity: paired.item.quantity
+      };
+    }
+  }
+
+  try {
+    const speaker = await resolveSpeakerForAmpMatch(effectiveSpeakerInput);
+    if (!speaker.ratedPower || !speaker.ratedImpedance) {
+      return res.status(400).json({
+        error: "SPEAKER_SPEC_MISSING",
+        message: "无法解析音箱额定功率/阻抗，请先完善音箱型号对应参数。"
+      });
+    }
+
+    const powerMultiplier = getScenarioPowerMultiplier(scenario);
+    const targetPower = Number((speaker.ratedPower * powerMultiplier).toFixed(3));
+    const targetImpedance = speaker.ratedImpedance;
+
+    if (!(await tableExists("定阻功放"))) {
+      return res.json({
+        ok: true,
+        speaker,
+        powerMultiplier,
+        targetPower,
+        targetImpedance,
+        current: null,
+        recommended: [],
+        recommendation: null,
+        needsConfirmation: false
+      });
+    }
+
+    const [ampRows] = await pool.query(`SELECT * FROM \`${resolvePhysicalTableName("定阻功放")}\``);
+    const amps = Array.isArray(ampRows) ? ampRows : [];
+
+    const recommended = amps
+      .map((row) => {
+        const versions = buildAmplifierVersions(row);
+        const matchedVersion = findAmpMatchVersion({
+          versions,
+          targetPower,
+          targetImpedance
+        });
+        if (!matchedVersion) return null;
+        return serializeAmpMatchResult(row, matchedVersion, speaker.quantity);
+      })
+      .filter(Boolean)
+      .sort((a, b) => {
+        const modeRank = (mode) => (mode === "normal" ? 0 : 1);
+        const rankDiff = modeRank(a.mode) - modeRank(b.mode);
+        if (rankDiff !== 0) return rankDiff;
+        return Number(a.unitPrice || 0) - Number(b.unitPrice || 0);
+      });
+
+    const dedupRecommended = [];
+    const seenModel = new Set();
+    for (const item of recommended) {
+      const model = String(item?.model || "");
+      if (!model || seenModel.has(model)) continue;
+      seenModel.add(model);
+      dedupRecommended.push(item);
+    }
+
+    let current = null;
+    if (currentAmplifierInput && (currentAmplifierInput.model || currentAmplifierInput.name)) {
+      const model = String(currentAmplifierInput.model || "").trim();
+      const name = String(currentAmplifierInput.name || "").trim();
+      const matchedRow = amps.find((row) => {
+        const rowModel = String(row?.型号 || "").trim();
+        const rowName = String(row?.产品名称 || "").trim();
+        if (model && rowModel === model) return true;
+        if (name && rowName === name) return true;
+        return false;
+      });
+
+      if (matchedRow) {
+        const versions = buildAmplifierVersions(matchedRow);
+        const matchedVersion = findAmpMatchVersion({
+          versions,
+          targetPower,
+          targetImpedance
+        });
+        if (matchedVersion) {
+          current = {
+            matched: true,
+            reason: "",
+            ...serializeAmpMatchResult(matchedRow, matchedVersion, speaker.quantity)
+          };
+        } else {
+          current = {
+            matched: false,
+            reason: "当前功放与音箱阻抗/功率不匹配",
+            id: Number(matchedRow?.id || 0),
+            name: String(matchedRow?.产品名称 || "").trim(),
+            model: String(matchedRow?.型号 || "").trim(),
+            brand: String(matchedRow?.品牌 || "").trim(),
+            unitPrice: Number(matchedRow?.市场价 || 0),
+            requiredQuantity: null,
+            mode: null
+          };
+        }
+      } else {
+        current = {
+          matched: false,
+          reason: "未找到当前功放型号对应库存记录",
+          id: 0,
+          name: String(name || ""),
+          model: String(model || ""),
+          brand: "",
+          unitPrice: 0,
+          requiredQuantity: null,
+          mode: null
+        };
+      }
+    }
+
+    const recommendation = dedupRecommended[0] || null;
+    const needsConfirmation = Boolean(current && current.matched === false && recommendation);
+
+    res.json({
+      ok: true,
+      speaker,
+      powerMultiplier,
+      targetPower,
+      targetImpedance,
+      current,
+      recommended: dedupRecommended,
+      recommendation,
+      needsConfirmation
+    });
+  } catch (error) {
+    console.error("❌ Amplifier match analysis failed:", error.message);
+    res.status(500).json({
+      error: "AMPLIFIER_MATCH_ANALYSIS_FAILED",
+      message: error.message
+    });
+  }
+});
+
+const extractJsonPayloadFromText = (text) => {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+
+  const cleaned = raw
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+
+  const firstArrayStart = cleaned.indexOf("[");
+  const lastArrayEnd = cleaned.lastIndexOf("]");
+  if (firstArrayStart >= 0 && lastArrayEnd > firstArrayStart) {
+    const arrayText = cleaned.slice(firstArrayStart, lastArrayEnd + 1);
+    try {
+      return JSON.parse(arrayText);
+    } catch (error) {
+      // Ignore and try object payload
+    }
+  }
+
+  const firstObjStart = cleaned.indexOf("{");
+  const lastObjEnd = cleaned.lastIndexOf("}");
+  if (firstObjStart >= 0 && lastObjEnd > firstObjStart) {
+    const objText = cleaned.slice(firstObjStart, lastObjEnd + 1);
+    try {
+      return JSON.parse(objText);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  return null;
+};
+
+const normalizeBatchItems = (payload) => {
+  if (!payload) return [];
+  if (Array.isArray(payload)) return payload.filter((item) => item && typeof item === "object");
+  if (Array.isArray(payload.items)) return payload.items.filter((item) => item && typeof item === "object");
+  if (payload && typeof payload === "object") return [payload];
+  return [];
+};
+
+const buildInventoryParsePrompt = ({ table, inputType, text }) => {
+  const baseRules = [
+    "你是设备信息结构化抽取助手。",
+    `目标数据表：${table}。`,
+    "请从输入内容中提取一个或多个设备，输出严格 JSON。",
+    "输出格式必须是 JSON 数组，每个元素是一个设备对象。",
+    "禁止输出任何解释性文字、markdown或代码块。",
+    "字段名称必须使用中文数据库字段名。",
+    "若无法识别字段，用空字符串。"
+  ];
+
+  if (table === "音箱") {
+    baseRules.push(
+      "音箱字段至少包含：产品类型、品牌、产品名称、型号、市场价、额定阻抗、额定功率、灵敏度、最大声压级、水平覆盖角、垂直覆盖角、面高、功能。",
+      "若产品类型是线阵列音箱，额外返回 lineArraySupport 字段，包含 subwoofer 与 hanger 两个对象。",
+      "subwoofer 字段至少包含：类型、产品名称、型号、市场价、额定阻抗、额定功率、灵敏度、最大声压级、水平覆盖角、垂直覆盖角、面高、品牌。",
+      "hanger 字段至少包含：产品名称、型号、市场价。"
+    );
+  }
+
+  if (inputType === "image") {
+    baseRules.push("请直接基于图片内容识别设备参数并结构化输出。");
+  }
+
+  if (inputType === "chat") {
+    baseRules.push("用户可能同时提供了文字描述和图片，请综合识别后结构化输出。");
+  }
+
+  baseRules.push("输入内容如下：");
+  baseRules.push(String(text || "").trim() || "（仅图片，无文本补充）");
+
+  return baseRules.join("\n");
+};
+
+const parseInventoryBatchByArk = async ({ table, inputType, text, imageData }) => {
+  const apiKey = process.env.ARK_API_KEY || "";
+  if (!apiKey) {
+    throw new Error("Missing ARK_API_KEY env variable");
+  }
+
+  const prompt = buildInventoryParsePrompt({ table, inputType, text });
+  const content = [{ type: "input_text", text: prompt }];
+
+  if (String(imageData || "").trim()) {
+    content.unshift({
+      type: "input_image",
+      image_url: String(imageData || "").trim()
+    });
+  }
+
+  const requestBody = {
+    model: ARK_MODEL,
+    input: [
+      {
+        role: "user",
+        content
+      }
+    ]
+  };
+
+  const response = await axios.post(ARK_API_URL, requestBody, {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
+    },
+    timeout: 120000
+  });
+
+  const raw = extractArkMarkdown(response.data);
+  const parsed = extractJsonPayloadFromText(raw);
+  const items = normalizeBatchItems(parsed);
+  if (items.length === 0) {
+    throw new Error("LLM did not return valid JSON items");
+  }
+  return items;
+};
+
+app.post("/api/inventory/parse-batch", async (req, res) => {
+  const table = getSafeTableName(req.body?.table);
+  if (!table) {
+    return res.status(400).json({ error: "Invalid table name" });
+  }
+
+  const inputType = String(req.body?.inputType || "chat").trim().toLowerCase();
+  const text = String(req.body?.text || "").trim();
+  const imageData = String(req.body?.imageData || "").trim();
+  const clientItems = normalizeBatchItems(req.body?.items);
+
+  try {
+    let rawItems = clientItems;
+
+    if (rawItems.length === 0 && text) {
+      rawItems = normalizeBatchItems(extractJsonPayloadFromText(text));
+    }
+
+    if (rawItems.length === 0) {
+      rawItems = await parseInventoryBatchByArk({ table, inputType, text, imageData });
+    }
+
+    const items = rawItems.map((item, index) => {
+      const mapped = mapInventoryPayloadToTable(table, item || {});
+      const errors = validateInventoryPayloadByTable(table, mapped);
+      return {
+        id: index + 1,
+        payload: normalizeInventoryRowForResponse(table, mapped, index),
+        errors,
+        complete: errors.length === 0
+      };
+    });
+
+    res.json({ items });
+  } catch (error) {
+    console.error("❌ Parse inventory batch failed:", error.message);
+    res.status(422).json({
+      error: "Failed to parse batch inventory",
+      details: error.message,
+      items: []
+    });
+  }
+});
+
+app.get("/api/inventory/speaker-metadata", async (req, res) => {
+  try {
+    const metadata = await getSpeakerMetadataOptions();
+    res.json(metadata);
+  } catch (error) {
+    console.error("❌ Load speaker metadata failed:", error.message);
+    res.status(500).json({
+      error: "Failed to load speaker metadata",
+      productTypeOptions: ["全频音箱", "线阵列音箱", "台唇音箱", "拉声像音箱", "返听音箱", "超低音箱"],
+      functionOptions: ["主扩声", "返听", "辅助扩声", "次低频补偿", "吊装", "壁挂", "吸顶", "舞台监听"]
     });
   }
 });
@@ -1800,7 +2778,11 @@ app.post("/api/inventory/:table", async (req, res) => {
   if (!table) return res.status(400).json({ error: "Invalid table name" });
   const physicalTable = resolvePhysicalTableName(table);
 
-  const payload = mapInventoryPayloadToTable(table, req.body || {});
+  const rawBody = req.body || {};
+  const payload = mapInventoryPayloadToTable(table, rawBody);
+  const rawLineArraySupport = rawBody?.lineArraySupport || payload?.lineArraySupport || null;
+  delete payload.lineArraySupport;
+
   try {
     if (isLocalStaticResourceTable(table)) {
       if (!payload.block_key) {
@@ -1823,21 +2805,112 @@ app.post("/api/inventory/:table", async (req, res) => {
       }
     }
 
+    const validationErrors = validateInventoryPayloadByTable(table, payload);
+    if (validationErrors.length > 0) {
+      return res.status(400).json({
+        error: "Inventory payload validation failed",
+        details: validationErrors
+      });
+    }
+
+    const isLineArraySpeaker =
+      table === "音箱" &&
+      String(payload["类型"] || payload["产品类型"] || "").trim() === "线阵列音箱";
+
+    let normalizedLineArraySupport = null;
+    if (isLineArraySpeaker) {
+      const supportPayload = rawLineArraySupport || {};
+      const subwooferForValidation = mapInventoryPayloadToTable(LINE_ARRAY_SUPPORT_TABLE, {
+        ...(supportPayload.subwoofer || {}),
+        用途: "次低音箱"
+      });
+      const hangerForValidation = mapInventoryPayloadToTable(LINE_ARRAY_SUPPORT_TABLE, {
+        ...(supportPayload.hanger || {}),
+        类型: "线阵列音箱吊挂架",
+        品牌: String((supportPayload.hanger || {}).品牌 || payload["品牌"] || "").trim(),
+        用途: "挂架"
+      });
+
+      normalizedLineArraySupport = {
+        subwoofer: subwooferForValidation,
+        hanger: hangerForValidation
+      };
+
+      const supportErrors = validateLineArraySupportPayload(normalizedLineArraySupport);
+      if (supportErrors.length > 0) {
+        return res.status(400).json({
+          error: "Line array support payload validation failed",
+          details: supportErrors
+        });
+      }
+    }
+
+    const payloadForInsert = await ensureManualIdForInsert(table, payload);
+
     const columns = await getTableColumns(table);
-    const keys = Object.keys(payload).filter((key) => columns.includes(key));
+    const keys = Object.keys(payloadForInsert).filter((key) => columns.includes(key));
     if (keys.length === 0) {
       return res.status(400).json({ error: "No valid columns in payload" });
     }
 
-    const placeholders = keys.map(() => "?").join(", ");
-    const fields = keys.map((key) => `\`${key}\``).join(", ");
-    const values = keys.map((key) => payload[key]);
-    const [result] = await pool.query(
-      `INSERT INTO \`${physicalTable}\` (${fields}) VALUES (${placeholders})`,
-      values
-    );
+    const buildInsertSql = (targetTable, fieldKeys) => {
+      const placeholders = fieldKeys.map(() => "?").join(", ");
+      const fields = fieldKeys.map((key) => `\`${key}\``).join(", ");
+      return `INSERT INTO \`${targetTable}\` (${fields}) VALUES (${placeholders})`;
+    };
 
-    res.json({ id: result.insertId });
+    if (!isLineArraySpeaker) {
+      const values = keys.map((key) => payloadForInsert[key]);
+      const [result] = await pool.query(buildInsertSql(physicalTable, keys), values);
+      const createdId = Number(payloadForInsert.id || result.insertId || 0);
+      return res.json({ id: createdId });
+    }
+
+    if (!(await tableExists(LINE_ARRAY_SUPPORT_TABLE))) {
+      return res.status(400).json({ error: `Missing table: ${LINE_ARRAY_SUPPORT_TABLE}` });
+    }
+
+    const supportColumns = await getTableColumns(LINE_ARRAY_SUPPORT_TABLE);
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+
+      const values = keys.map((key) => payloadForInsert[key]);
+      const [mainResult] = await connection.query(buildInsertSql(physicalTable, keys), values);
+      const mainId = Number(payloadForInsert.id || mainResult?.insertId || 0);
+
+      const subwooferPayload = {
+        ...((normalizedLineArraySupport && normalizedLineArraySupport.subwoofer) || {}),
+        main_id: mainId
+      };
+
+      const hangerPayload = {
+        ...((normalizedLineArraySupport && normalizedLineArraySupport.hanger) || {}),
+        main_id: mainId
+      };
+
+      let insertedSupports = 0;
+      const supportRows = [subwooferPayload, hangerPayload];
+      for (const supportRow of supportRows) {
+        const supportPayloadWithId = await ensureManualIdForInsert(LINE_ARRAY_SUPPORT_TABLE, supportRow, connection);
+        const supportKeys = Object.keys(supportPayloadWithId).filter((key) => supportColumns.includes(key));
+        if (supportKeys.length === 0) continue;
+        const supportValues = supportKeys.map((key) => supportPayloadWithId[key]);
+        await connection.query(buildInsertSql(LINE_ARRAY_SUPPORT_TABLE, supportKeys), supportValues);
+        insertedSupports += 1;
+      }
+
+      await connection.commit();
+      return res.json({
+        id: mainId,
+        lineArraySupportInserted: insertedSupports
+      });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
   } catch (error) {
     console.error("❌ Create inventory failed:", error.message);
     res.status(500).json({ error: "Failed to create inventory" });
@@ -1850,9 +2923,18 @@ app.put("/api/inventory/:table/:id", async (req, res) => {
   const physicalTable = resolvePhysicalTableName(table);
 
   const payload = mapInventoryPayloadToTable(table, req.body || {});
+  delete payload.lineArraySupport;
   const recordId = req.params.id;
 
   try {
+    const validationErrors = validateInventoryPayloadByTable(table, payload);
+    if (validationErrors.length > 0) {
+      return res.status(400).json({
+        error: "Inventory payload validation failed",
+        details: validationErrors
+      });
+    }
+
     const [columns, primaryKey] = await Promise.all([
       getTableColumns(table),
       getPrimaryKey(table)
@@ -1889,11 +2971,46 @@ app.delete("/api/inventory/:table/:id", async (req, res) => {
   const recordId = req.params.id;
   try {
     const primaryKey = await getPrimaryKey(table);
-    const [result] = await pool.query(
-      `DELETE FROM \`${physicalTable}\` WHERE \`${primaryKey}\` = ?`,
-      [recordId]
-    );
-    res.json({ affectedRows: result.affectedRows });
+      if (table !== "音箱") {
+        const [result] = await pool.query(
+          `DELETE FROM \`${physicalTable}\` WHERE \`${primaryKey}\` = ?`,
+          [recordId]
+        );
+        return res.json({ affectedRows: result.affectedRows });
+      }
+
+      const connection = await pool.getConnection();
+      try {
+        await connection.beginTransaction();
+
+        let supportDeleted = 0;
+        if (await tableExists(LINE_ARRAY_SUPPORT_TABLE)) {
+          const supportColumns = await getTableColumns(LINE_ARRAY_SUPPORT_TABLE);
+          if (supportColumns.includes("main_id")) {
+            const [supportDeleteResult] = await connection.query(
+              `DELETE FROM \`${LINE_ARRAY_SUPPORT_TABLE}\` WHERE \`main_id\` = ?`,
+              [recordId]
+            );
+            supportDeleted = Number(supportDeleteResult?.affectedRows || 0);
+          }
+        }
+
+        const [mainDeleteResult] = await connection.query(
+          `DELETE FROM \`${physicalTable}\` WHERE \`${primaryKey}\` = ?`,
+          [recordId]
+        );
+
+        await connection.commit();
+        return res.json({
+          affectedRows: Number(mainDeleteResult?.affectedRows || 0),
+          lineArraySupportDeleted: supportDeleted
+        });
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
   } catch (error) {
     console.error("❌ Delete inventory failed:", error.message);
     res.status(500).json({ error: "Failed to delete inventory" });
@@ -1920,16 +3037,53 @@ app.post("/api/inventory/:table/batch-delete", async (req, res) => {
 
   try {
     const primaryKey = await getPrimaryKey(table);
-    const placeholders = ids.map(() => "?").join(", ");
-    const [result] = await pool.query(
-      `DELETE FROM \`${physicalTable}\` WHERE \`${primaryKey}\` IN (${placeholders})`,
-      ids
-    );
+      const placeholders = ids.map(() => "?").join(", ");
 
-    res.json({
-      affectedRows: Number(result?.affectedRows || 0),
-      requestedRows: ids.length
-    });
+      if (table !== "音箱") {
+        const [result] = await pool.query(
+          `DELETE FROM \`${physicalTable}\` WHERE \`${primaryKey}\` IN (${placeholders})`,
+          ids
+        );
+
+        return res.json({
+          affectedRows: Number(result?.affectedRows || 0),
+          requestedRows: ids.length
+        });
+      }
+
+      const connection = await pool.getConnection();
+      try {
+        await connection.beginTransaction();
+
+        let supportDeleted = 0;
+        if (await tableExists(LINE_ARRAY_SUPPORT_TABLE)) {
+          const supportColumns = await getTableColumns(LINE_ARRAY_SUPPORT_TABLE);
+          if (supportColumns.includes("main_id")) {
+            const [supportDeleteResult] = await connection.query(
+              `DELETE FROM \`${LINE_ARRAY_SUPPORT_TABLE}\` WHERE \`main_id\` IN (${placeholders})`,
+              ids
+            );
+            supportDeleted = Number(supportDeleteResult?.affectedRows || 0);
+          }
+        }
+
+        const [result] = await connection.query(
+          `DELETE FROM \`${physicalTable}\` WHERE \`${primaryKey}\` IN (${placeholders})`,
+          ids
+        );
+
+        await connection.commit();
+        return res.json({
+          affectedRows: Number(result?.affectedRows || 0),
+          requestedRows: ids.length,
+          lineArraySupportDeleted: supportDeleted
+        });
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
   } catch (error) {
     console.error("❌ Batch delete inventory failed:", error.message);
     res.status(500).json({ error: "Failed to batch delete inventory" });

@@ -593,6 +593,7 @@ const App: React.FC = () => {
   const [batchSheetFile, setBatchSheetFile] = useState<File | null>(null);
   const [batchParsing, setBatchParsing] = useState(false);
   const [parsedBatchItems, setParsedBatchItems] = useState<ParsedBatchItem[]>([]);
+  const [removedImageFieldKeys, setRemovedImageFieldKeys] = useState<Set<string>>(new Set());
   const [isColumnConfigOpen, setIsColumnConfigOpen] = useState(false);
   const [columnPreferences, setColumnPreferences] = useState<Record<string, TableColumnPreference>>(() => {
     try {
@@ -675,6 +676,20 @@ const App: React.FC = () => {
     if (normalized === '文字（表格）') return fallback;
     return fallback;
   };
+  const sanitizeMarkdownForDisplay = (value: string) => {
+    return String(value || '')
+      .replace(/^\s*\n+/, '')
+      .trimEnd();
+  };
+
+  const buildReplacementOptionLabel = (option: DbInventoryItem) => {
+    const parts = [option?.品牌, option?.产品名称, option?.型号]
+      .map((part) => String(part || '').trim())
+      .filter(Boolean);
+    if (parts.length > 0) return parts.join(' / ');
+    return `ID ${option?.id ?? '-'}`;
+  };
+
   const getItemUnitPrice = (item: EquipmentItem) => {
     const raw = item.unitPrice ?? getItemDetail(item)?.市场价;
     return raw ? Number(raw) : 0;
@@ -685,7 +700,7 @@ const App: React.FC = () => {
   }, 0) || 0;
 
   const reportUpToDate = !!(activeResult?.lastReportSignature && activeResult.lastReportSignature === logic.buildItemsSignature(activeResult.items));
-  const reportMarkdown = activeResult?.markdownProcessed || activeResult?.markdownRaw || '';
+  const reportMarkdown = sanitizeMarkdownForDisplay(activeResult?.markdownProcessed || activeResult?.markdownRaw || '');
   const reportGenerationStatus = activeResult?.reportGenerationStatus || 'idle';
   const isReportGenerating = reportGenerationStatus === 'generating';
   const canPreviewReport = !!reportMarkdown || isReportGenerating || (activeResult?.chapters?.length || 0) > 0;
@@ -785,10 +800,11 @@ const App: React.FC = () => {
       return (
         <div className="space-y-5">
           {chapters.map((chapter) => {
-            if (chapter.status === 'done' && chapter.markdown?.trim()) {
+            const chapterMarkdown = sanitizeMarkdownForDisplay(chapter.markdown || '');
+            if (chapter.status === 'done' && chapterMarkdown.trim()) {
               return (
                 <article key={`chapter-${result.id}-${chapter.key}`} className="markdown-report max-w-none text-[13px] leading-7">
-                  <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={markdownComponents}>{chapter.markdown}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={markdownComponents}>{chapterMarkdown}</ReactMarkdown>
                 </article>
               );
             }
@@ -1059,6 +1075,11 @@ const App: React.FC = () => {
     for (const field of fields) {
       const element = document.getElementById(`${prefix}-${field.key}`) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null;
       if (!element && field.type !== 'multiselect') continue;
+
+      if (prefix === 'edit' && field.type === 'file' && removedImageFieldKeys.has(field.key)) {
+        payload[field.key] = '';
+        continue;
+      }
 
       let value: any = null;
 
@@ -1550,6 +1571,10 @@ const App: React.FC = () => {
   useEffect(() => {
     setParsedBatchItems([]);
   }, [tempType]);
+
+  useEffect(() => {
+    setRemovedImageFieldKeys(new Set());
+  }, [editingEq, logic.activeTable]);
 
   useEffect(() => {
     if (!editingEq || logic.activeTable !== TableType.LOCAL_STATIC_RESOURCE) return;
@@ -3876,13 +3901,35 @@ const App: React.FC = () => {
                           className={`w-full bg-slate-50 border rounded-xl px-3 py-2 text-[12px] outline-none file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:font-bold ${managementTheme.fileBtn}`}
                         />
                         {String((editingEq as any)[field.key] || '').trim() && (
-                          <button
-                            type="button"
-                            onClick={() => setPreviewImage({ src: String((editingEq as any)[field.key] || ''), title: `${editingEq.产品名称 || editingEq.图片名称 || '图片'} - ${field.label}` })}
-                            className={`h-8 px-3 rounded-lg border text-[12px] font-bold transition-colors ${managementTheme.softBtn}`}
-                          >
-                            查看当前图片
-                          </button>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <button
+                              type="button"
+                              onClick={() => setPreviewImage({ src: String((editingEq as any)[field.key] || ''), title: `${editingEq.产品名称 || editingEq.图片名称 || '图片'} - ${field.label}` })}
+                              className={`h-8 px-3 rounded-lg border text-[12px] font-bold transition-colors ${managementTheme.softBtn}`}
+                            >
+                              查看当前图片
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setRemovedImageFieldKeys((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(field.key)) {
+                                    next.delete(field.key);
+                                  } else {
+                                    next.add(field.key);
+                                  }
+                                  return next;
+                                });
+                              }}
+                              className={`h-8 px-3 rounded-lg border text-[12px] font-bold transition-colors ${removedImageFieldKeys.has(field.key) ? 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100' : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'}`}
+                            >
+                              {removedImageFieldKeys.has(field.key) ? '撤销删除图片' : '删除当前图片'}
+                            </button>
+                            {removedImageFieldKeys.has(field.key) && (
+                              <span className="text-[12px] font-bold text-amber-700">已标记删除，保存后生效</span>
+                            )}
+                          </div>
                         )}
                       </div>
                     ) : (
@@ -4574,7 +4621,7 @@ const App: React.FC = () => {
                       >
                         <option value="">请选择替换设备</option>
                         {detailReplacementOptions.map(opt => (
-                          <option key={opt.id} value={opt.id}>{opt.品牌} / {opt.产品名称} / {opt.型号}</option>
+                          <option key={opt.id} value={opt.id}>{buildReplacementOptionLabel(opt)}</option>
                         ))}
                       </select>
                       <button

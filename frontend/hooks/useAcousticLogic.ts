@@ -746,6 +746,14 @@ const TABLE_HEADER_TOKENS = new Set([
   '类型', '产品类型', '设备类型', '产品名称', '名称', '型号', '规格', '数量', 'qty', 'quantity'
 ]);
 
+const DETAIL_SEARCH_TABLE_ORDER: TableType[] = [
+  TableType.SPEAKER,
+  TableType.LINE_ARRAY_SUPPORT,
+  TableType.AMPLIFIER,
+  TableType.PERIPHERAL,
+  TableType.SUBSYSTEM
+];
+
 const normalizeColumnToken = (value: string) =>
   String(value || '')
     .replace(/[*`~]/g, '')
@@ -753,11 +761,32 @@ const normalizeColumnToken = (value: string) =>
     .trim()
     .toLowerCase();
 
+const normalizeLookupToken = (value: any) =>
+  String(value || '')
+    .replace(/[\s\-_/\\|·()（）\[\]【】]/g, '')
+    .trim()
+    .toLowerCase();
+
+const normalizeEquipmentCell = (value: string) =>
+  String(value || '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/^[\s\-–—•*\/|]+/, '')
+    .replace(/[\s\-–—•*\/|]+$/, '')
+    .trim();
+
 const trimPipeColumns = (rawColumns: string[]) => {
   const cols = [...rawColumns];
-  while (cols.length > 0 && !String(cols[0] || '').trim()) cols.shift();
-  while (cols.length > 0 && !String(cols[cols.length - 1] || '').trim()) cols.pop();
+  if (cols.length > 0 && !String(cols[0] || '').trim()) cols.shift();
+  if (cols.length > 0 && !String(cols[cols.length - 1] || '').trim()) cols.pop();
   return cols;
+};
+
+const isDividerRowColumns = (cols: string[]) => {
+  if (!Array.isArray(cols) || cols.length === 0) return false;
+  return cols.every((col) => {
+    const token = String(col || '').replace(/\s+/g, '');
+    return token.length > 0 && /^[\-:]+$/.test(token) && token.includes('-');
+  });
 };
 
 const inferTypeByNameOrModel = (name: string, model: string) => {
@@ -771,6 +800,7 @@ const inferTypeByNameOrModel = (name: string, model: string) => {
   if (text.includes('吊挂架') || text.includes('吊架')) return '线阵列音箱吊挂架';
   if (text.includes('次低')) return '次低音箱';
   if (text.includes('线阵列')) return '线阵列音箱';
+  if (text.includes('扬声器') || text.includes('吸顶') || text.includes('吊顶') || text.includes('同轴')) return '音箱';
   if (text.includes('音箱')) return '音箱';
   return '';
 };
@@ -778,6 +808,28 @@ const inferTypeByNameOrModel = (name: string, model: string) => {
 const parseTableLines = (tableText: string): EquipmentItem[] => {
   const items: EquipmentItem[] = [];
   const lines = String(tableText || '').split('\n');
+
+  const resolveHeaderMap = (cols: string[]) => {
+    const normalized = cols.map((col) => normalizeColumnToken(col));
+    const pick = (tokens: string[]) => {
+      const normalizedTokens = tokens.map((token) => normalizeColumnToken(token));
+      for (const token of normalizedTokens) {
+        const idx = normalized.findIndex((value) => value === token);
+        if (idx >= 0) return idx;
+      }
+      return -1;
+    };
+
+    const typeIndex = pick(['类型', '产品类型', '设备类型']);
+    const nameIndex = pick(['产品名称', '名称']);
+    const modelIndex = pick(['型号', '规格']);
+    const quantityIndex = pick(['数量', 'qty', 'quantity']);
+
+    if (nameIndex < 0 || modelIndex < 0) return null;
+    return { typeIndex, nameIndex, modelIndex, quantityIndex };
+  };
+
+  let headerMap: { typeIndex: number; nameIndex: number; modelIndex: number; quantityIndex: number } | null = null;
 
   lines.forEach((rawLine) => {
     const line = String(rawLine || '').trim();
@@ -787,34 +839,48 @@ const parseTableLines = (tableText: string): EquipmentItem[] => {
     const cols = trimPipeColumns(rawCols);
     if (cols.length < 3) return;
 
-    const dividerLike = cols.every((col) => /^:?-{2,}:?$/.test(col));
+    const dividerLike = isDividerRowColumns(cols);
     if (dividerLike) return;
+
+    const maybeHeaderMap = resolveHeaderMap(cols);
+    const normalizedCols = cols.map((col) => normalizeColumnToken(col));
+    const headerHitCount = normalizedCols.filter((token) => TABLE_HEADER_TOKENS.has(token)).length;
+    if (!headerMap && maybeHeaderMap && headerHitCount >= 2) {
+      headerMap = maybeHeaderMap;
+      return;
+    }
 
     let type = '';
     let name = '';
     let model = '';
     let qtyStr = '';
 
-    if (cols.length >= 4) {
-      [type, name, model, qtyStr] = cols;
+    if (headerMap) {
+      type = headerMap.typeIndex >= 0 ? cols[headerMap.typeIndex] || '' : '';
+      name = cols[headerMap.nameIndex] || '';
+      model = cols[headerMap.modelIndex] || '';
+      qtyStr = headerMap.quantityIndex >= 0 ? cols[headerMap.quantityIndex] || '' : '';
     } else {
-      [name, model, qtyStr] = cols;
+      const firstCol = String(cols[0] || '').trim();
+      const firstIsSerial = /^\d+$/.test(firstCol) || normalizeColumnToken(firstCol) === '序号';
+      if (firstIsSerial && cols.length >= 5) {
+        [, type, name, model, qtyStr] = cols;
+      } else if (cols.length >= 4) {
+        [type, name, model, qtyStr] = cols;
+      } else {
+        [name, model, qtyStr] = cols;
+      }
     }
 
-    const headerHitCount = [type, name, model, qtyStr]
-      .map((col) => normalizeColumnToken(col))
-      .filter((token) => TABLE_HEADER_TOKENS.has(token))
-      .length;
-    if (headerHitCount >= 3) return;
+    type = normalizeEquipmentCell(type);
+    name = normalizeEquipmentCell(name);
+    model = normalizeEquipmentCell(model);
 
-    name = String(name || '').trim();
-    model = String(model || '').trim();
-    type = String(type || '').trim();
+    if (!name || !model) return;
+
     if (!type) {
       type = inferTypeByNameOrModel(name, model);
     }
-
-    if (!name || !model) return;
 
     const qtyMatch = String(qtyStr || '').match(/\d+/);
     const quantity = qtyMatch ? Math.max(1, Number(qtyMatch[0])) : 1;
@@ -843,7 +909,7 @@ const parseLayoutTableLines = (tableText: string): SolutionLayoutItem[] => {
     const cols = trimPipeColumns(rawCols);
     if (cols.length < 8) return;
 
-    const dividerLike = cols.every((col) => /^:?-{2,}:?$/.test(col));
+    const dividerLike = isDividerRowColumns(cols);
     if (dividerLike) return;
 
     const [fn, name, model, xText, yText, zText, pitchText, yawText] = cols;
@@ -1193,6 +1259,7 @@ export const useAcousticLogic = () => {
   const [inventory, setInventory] = useState<DbInventoryItem[]>([]);
   const [equipmentDetailCache, setEquipmentDetailCache] = useState<Record<string, DbInventoryItem>>({});
   const [inventoryOptionsByTable, setInventoryOptionsByTable] = useState<Record<string, DbInventoryItem[]>>({});
+  const inventoryOptionsLoadingRef = useRef<Record<string, Promise<DbInventoryItem[]>>>({});
   const [speakerProductTypeOptions, setSpeakerProductTypeOptions] = useState<string[]>([]);
   const [speakerFunctionOptions, setSpeakerFunctionOptions] = useState<string[]>([]);
   const [history, setHistory] = useState<HistoryRecord[]>([]);
@@ -1377,30 +1444,62 @@ export const useAcousticLogic = () => {
     }
   };
 
-  const resolveDetailTableCandidates = (type: string): TableType[] => {
-    if (!type) return [TableType.PERIPHERAL];
-    if (type === TableType.SPEAKER) return [TableType.SPEAKER, TableType.LINE_ARRAY_SUPPORT];
-    if (type === TableType.LINE_ARRAY_SUPPORT) return [TableType.LINE_ARRAY_SUPPORT, TableType.SPEAKER];
-    if (type === TableType.AMPLIFIER || type === '功放') return [TableType.AMPLIFIER];
-    if (type === TableType.PERIPHERAL) return [TableType.PERIPHERAL];
-    if (type === TableType.SUBSYSTEM) return [TableType.SUBSYSTEM];
+  const resolveDetailTableCandidates = (item: EquipmentItem): TableType[] => {
+    const type = String(item?.type || '').trim();
+    const modelKey = normalizeLookupToken(item?.model);
+    const nameKey = normalizeLookupToken(item?.name);
+    const candidates: TableType[] = [];
+
+    const pushCandidate = (table: TableType) => {
+      if (!candidates.includes(table)) {
+        candidates.push(table);
+      }
+    };
+
+    if (type === TableType.SPEAKER) {
+      pushCandidate(TableType.SPEAKER);
+      pushCandidate(TableType.LINE_ARRAY_SUPPORT);
+    }
+    if (type === TableType.LINE_ARRAY_SUPPORT) {
+      pushCandidate(TableType.LINE_ARRAY_SUPPORT);
+      pushCandidate(TableType.SPEAKER);
+    }
+    if (type === TableType.AMPLIFIER || type === '功放') pushCandidate(TableType.AMPLIFIER);
+    if (type === TableType.PERIPHERAL) pushCandidate(TableType.PERIPHERAL);
+    if (type === TableType.SUBSYSTEM) pushCandidate(TableType.SUBSYSTEM);
     if (SUBSYSTEM_DEVICE_TYPES.has(type)) {
-      return [TableType.SUBSYSTEM];
+      pushCandidate(TableType.SUBSYSTEM);
     }
     if (type.includes('定阻功放') || type.includes('功放')) {
-      return [TableType.AMPLIFIER];
+      pushCandidate(TableType.AMPLIFIER);
     }
-    if (type.includes('音箱') || type.includes('线阵列')) {
-      return [TableType.SPEAKER, TableType.LINE_ARRAY_SUPPORT];
+    if (type.includes('音箱') || type.includes('线阵列') || type.includes('扬声器') || type.includes('吸顶') || type.includes('同轴')) {
+      pushCandidate(TableType.SPEAKER);
+      pushCandidate(TableType.LINE_ARRAY_SUPPORT);
     }
     if (['中控系统', '矩阵', '视频会议系统', '录播系统', '子系统'].some((keyword) => type.includes(keyword))) {
-      return [TableType.SUBSYSTEM];
+      pushCandidate(TableType.SUBSYSTEM);
     }
-    return [TableType.PERIPHERAL];
+
+    DETAIL_SEARCH_TABLE_ORDER.forEach((table) => {
+      const rows = inventoryOptionsByTable[table] || [];
+      const hasMatched = rows.some((row) => {
+        const rowModel = normalizeLookupToken(row?.型号);
+        const rowName = normalizeLookupToken(row?.产品名称);
+        const modelMatched = !!modelKey && !!rowModel && (rowModel === modelKey || rowModel.includes(modelKey) || modelKey.includes(rowModel));
+        const nameMatched = !!nameKey && !!rowName && (rowName === nameKey || rowName.includes(nameKey) || nameKey.includes(rowName));
+        return modelMatched || nameMatched;
+      });
+      if (hasMatched) pushCandidate(table);
+    });
+
+    DETAIL_SEARCH_TABLE_ORDER.forEach(pushCandidate);
+
+    return candidates.length > 0 ? candidates : [TableType.PERIPHERAL];
   };
 
   const getCachedEquipmentDetail = (item: EquipmentItem) => {
-    const tables = resolveDetailTableCandidates(item.type);
+    const tables = resolveDetailTableCandidates(item);
     for (const table of tables) {
       const key = buildEquipmentKey(table, item.model, item.name);
       if (equipmentDetailCache[key]) return equipmentDetailCache[key];
@@ -1408,18 +1507,47 @@ export const useAcousticLogic = () => {
     return null;
   };
 
+  const findInventoryOptionMatch = (rows: DbInventoryItem[], item: EquipmentItem) => {
+    const modelKey = normalizeLookupToken(item?.model);
+    const nameKey = normalizeLookupToken(item?.name);
+    if ((!modelKey && !nameKey) || !Array.isArray(rows) || rows.length === 0) return null;
+
+    const isMatch = (row: DbInventoryItem) => {
+      const rowModel = normalizeLookupToken(row?.型号);
+      const rowName = normalizeLookupToken(row?.产品名称);
+
+      const modelMatched = !!modelKey && !!rowModel && (rowModel === modelKey || rowModel.includes(modelKey) || modelKey.includes(rowModel));
+      const nameMatched = !!nameKey && !!rowName && (rowName === nameKey || rowName.includes(nameKey) || nameKey.includes(rowName));
+
+      if (modelKey && nameKey) return modelMatched || nameMatched;
+      if (modelKey) return modelMatched;
+      return nameMatched;
+    };
+
+    return rows.find(isMatch) || null;
+  };
+
   const fetchEquipmentDetail = async (item: EquipmentItem) => {
-    const tables = resolveDetailTableCandidates(item.type);
+    const tables = resolveDetailTableCandidates(item);
     for (const table of tables) {
       const key = buildEquipmentKey(table, item.model, item.name);
       if (equipmentDetailCache[key]) return equipmentDetailCache[key];
 
+      const localOptions = await ensureInventoryOptions(table);
+      const localMatched = findInventoryOptionMatch(localOptions, item);
+      if (localMatched) {
+        setEquipmentDetailCache(prev => ({ ...prev, [key]: localMatched }));
+        return localMatched;
+      }
+
       const params = new URLSearchParams();
       if (item.model) {
         params.set('model', item.model);
-      } else if (item.name) {
+      }
+      if (item.name) {
         params.set('name', item.name);
-      } else {
+      }
+      if (!params.toString()) {
         continue;
       }
 
@@ -1521,15 +1649,36 @@ export const useAcousticLogic = () => {
   }, [micTypeOptions]);
 
   const ensureInventoryOptions = async (table: TableType) => {
-    if (inventoryOptionsByTable[table]?.length) return;
+    if (Object.prototype.hasOwnProperty.call(inventoryOptionsByTable, table)) {
+      return inventoryOptionsByTable[table] || [];
+    }
+
+    const pending = inventoryOptionsLoadingRef.current[table];
+    if (pending) {
+      return pending;
+    }
+
+    const loadingPromise = (async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/inventory/${encodeURIComponent(table)}`);
+        if (!response.ok) throw new Error(`Fetch inventory options failed: ${response.status}`);
+        const data = await response.json();
+        const normalized = Array.isArray(data) ? data : [];
+        setInventoryOptionsByTable(prev => ({ ...prev, [table]: normalized }));
+        return normalized;
+      } catch (error) {
+        console.error('❌ Failed to fetch inventory options:', error);
+        setInventoryOptionsByTable(prev => ({ ...prev, [table]: [] }));
+        return [];
+      }
+    })();
+
+    inventoryOptionsLoadingRef.current[table] = loadingPromise;
+
     try {
-      const response = await fetch(`${API_BASE}/api/inventory/${encodeURIComponent(table)}`);
-      if (!response.ok) throw new Error(`Fetch inventory options failed: ${response.status}`);
-      const data = await response.json();
-      setInventoryOptionsByTable(prev => ({ ...prev, [table]: Array.isArray(data) ? data : [] }));
-    } catch (error) {
-      console.error('❌ Failed to fetch inventory options:', error);
-      setInventoryOptionsByTable(prev => ({ ...prev, [table]: [] }));
+      return await loadingPromise;
+    } finally {
+      delete inventoryOptionsLoadingRef.current[table];
     }
   };
 

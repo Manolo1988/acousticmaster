@@ -2314,9 +2314,17 @@ app.post("/api/chat-assistant", async (req, res) => {
   - 如果场景是**“报告厅”**：必须询问舞台相关参数（舞台宽 stageWidth、舞台深 stageDepth、舞台到最近观众距离 stageToNearAudience、舞台到最远观众距离 stageToFarAudience）。
 
 **阶段 4：话筒配置确认 (micsConfirmed)**
-- 当进入此阶段时，**首先**向用户展示数据库中可选的话筒类型：${micTypeHint}。
+- 当进入此阶段时，**首先**向用户展示数据库中可选的话筒类型：${micTypeHint}。每种类型输出后换行以清晰展示
 - **然后**仅基于数据库话筒类型给出默认建议并询问用户是否采用或修改：${micDefaultSuggestion}
 - 严禁编造数据库中不存在的话筒类型、型号或名称；若数据库为空，必须明确告知“暂无可选话筒”。
+- **话筒更新模式（必须区分）**：
+   - 默认是**完全替换**：即删除原来的话筒列表，输出 micsAction=replace，并在 mics 中给出替换后的完整列表；
+   - 用户明确说“新增/再加”时：输出 micsAction=add，mics 只放新增项；
+   - 用户明确说“减少/删除/去掉”时：输出 micsAction=remove，mics 只放要减少/删除的项；
+   - 话筒示例：
+     [UPDATE_PARAM: {"key":"micsAction","value":"add"}]
+     [UPDATE_PARAM: {"key":"mics","value":[{"type":"一拖二无线手持话筒","count":2}]}]
+   - 话筒类型必须严格来自数据库可选项，严禁编造。
 
 **阶段 5：子系统确认 (subsystemsConfirmed)**
 - 询问用户对控制、矩阵、视讯、录播等子系统的需求。
@@ -2335,7 +2343,7 @@ app.post("/api/chat-assistant", async (req, res) => {
 1. **输出标记**：在对话收集参数的阶段，只要用户提供了有效参数，就**需要**在回复中输出 [UPDATE_PARAM: {"key": "键名", "value": 值}] 标记更新对应数据及对应的 xxxConfirmed: true 状态。
 2. **键名参考**：scenario, length, width, height, stageWidth, stageDepth, stageToNearAudience, stageToFarAudience, mics, micsAction, hasCentralControl, hasMatrix, hasVideoConf, hasRecording, extraRequirements, scenarioConfirmed, roomConfirmed, stageConfirmed, micsConfirmed, subsystemsConfirmed, extraRequirementsConfirmed。
 3. **话筒更新模式（必须区分）**：
-   - 默认是**完全替换**：输出 micsAction=replace，并在 mics 中给出替换后的完整列表；
+   - 默认是**完全替换**：删除原来的话筒列表，输出 micsAction=replace，并在 mics 中给出替换后的完整列表；
    - 用户明确说“新增/再加”时：输出 micsAction=add，mics 只放新增项；
    - 用户明确说“减少/删除/去掉”时：输出 micsAction=remove，mics 只放要减少/删除的项；
    - 话筒示例：

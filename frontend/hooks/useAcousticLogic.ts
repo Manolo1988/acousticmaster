@@ -456,8 +456,10 @@ const normalizeMicListValue = (value: any): MicConfig[] => {
           ? item.name
           : typeof item?.label === 'string'
             ? item.label
+            : typeof item?.产品名称 === 'string'
+              ? item.产品名称
             : '';
-      const countRaw = item?.count ?? item?.qty ?? item?.quantity ?? 1;
+      const countRaw = item?.count ?? item?.qty ?? item?.quantity ?? item?.数量 ?? item?.个数 ?? item?.num ?? item?.number ?? 1;
       const countNum = typeof countRaw === 'number' ? countRaw : parseInt(String(countRaw), 10);
       return {
         id: typeof item?.id === 'string' ? item.id : `${Date.now()}-${index}`,
@@ -714,6 +716,50 @@ const tryParseAssistantPayload = (rawContent: string) => {
 
   if (!cleaned) return null;
 
+  const findMatchingBraceEnd = (text: string, startIndex: number) => {
+    let depth = 0;
+    let inString = false;
+    let quoteChar = '';
+    let escaped = false;
+    for (let i = startIndex; i < text.length; i += 1) {
+      const ch = text[i];
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (ch === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (ch === quoteChar) {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (ch === '"' || ch === '\'') {
+        inString = true;
+        quoteChar = ch;
+        continue;
+      }
+
+      if (ch === '{') {
+        depth += 1;
+        continue;
+      }
+
+      if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          return i;
+        }
+      }
+    }
+    return -1;
+  };
+
   try {
     return JSON.parse(cleaned);
   } catch {
@@ -728,6 +774,39 @@ const tryParseAssistantPayload = (rawContent: string) => {
     try {
       return JSON.parse(cleaned.replace(/'/g, '"'));
     } catch (error) {
+      // 兼容模型偶发输出：{"key":"scenario","value":"REPORT_HALL"}, "roomConfirmed": false
+      try {
+        const firstBrace = cleaned.indexOf('{');
+        if (firstBrace >= 0) {
+          const firstObjEnd = findMatchingBraceEnd(cleaned, firstBrace);
+          if (firstObjEnd > firstBrace) {
+            const firstObjText = cleaned.slice(firstBrace, firstObjEnd + 1).trim();
+            const parsedPrimary = JSON.parse(firstObjText);
+            const entries: Record<string, any>[] = [];
+            if (parsedPrimary && typeof parsedPrimary === 'object') {
+              entries.push(parsedPrimary as Record<string, any>);
+            }
+
+            const rest = cleaned.slice(firstObjEnd + 1).trim().replace(/^,\s*/, '').trim();
+            if (rest) {
+              const restAsObj = rest.startsWith('{') ? rest : `{${rest}}`;
+              const parsedRest = JSON.parse(restAsObj);
+              if (parsedRest && typeof parsedRest === 'object' && !Array.isArray(parsedRest)) {
+                Object.entries(parsedRest).forEach(([key, value]) => {
+                  entries.push({ key, value });
+                });
+              }
+            }
+
+            if (entries.length > 0) {
+              return entries;
+            }
+          }
+        }
+      } catch {
+        // ignore malformed fallback parse error
+      }
+
       console.warn('Failed to parse [UPDATE_PARAM] block:', cleaned, error);
       return null;
     }
@@ -810,7 +889,16 @@ const extractAssistantParamPayloads = (text: string): { payloads: Record<string,
     }
 
     if (markerEnd < 0) {
-      // 未闭合时不展示剩余标记，避免流式过程污染气泡
+      // 未闭合时尽量保留后续正文，避免“阶段2引导文案”被吞掉。
+      const nextLineBreak = source.indexOf('\n', markerStart);
+      if (nextLineBreak >= 0 && nextLineBreak + 1 < source.length) {
+        cleanedParts += source.slice(nextLineBreak + 1);
+      } else {
+        cleanedParts += source
+          .slice(markerStart)
+          .replace(/\[\s*UPDATE_PARAM\s*[：:]\s*/ig, '')
+          .trim();
+      }
       break;
     }
 
@@ -919,7 +1007,12 @@ const detectScenarioFromAssistant = (
     return null;
   }
 
-  if (!/您选择了|已选择|确定为|确认为|切换到|改为|改成|场景为|采用|当前场景|MEETING_ROOM|LECTURE_HALL/i.test(normalized)) {
+  const hasScenarioWord = /(会议室|报告厅|MEETING_ROOM|LECTURE_HALL|REPORT_HALL|REPORT)/i.test(normalized);
+  if (!hasScenarioWord) {
+    return null;
+  }
+
+  if (!/您选择了|选择的是|已选择|确定为|确认为|切换到|切换为|改为|改成|更改为|调整为|变更为|场景为|采用|当前场景|MEETING_ROOM|LECTURE_HALL|REPORT_HALL/i.test(normalized)) {
     return null;
   }
 
@@ -1000,6 +1093,70 @@ const detectMicUpdateModeFromPayloads = (
   return 'replace';
 };
 
+const hasExplicitMicModeFromPayloads = (payloads: Record<string, any>[]) => {
+  return payloads.some((payload) => {
+    const key = String((payload as any)?.key || '').trim().toLowerCase();
+    if (key === 'micsaction' || key === 'micsupdatemode' || key === '话筒操作') return true;
+    return Boolean(
+      (payload as any)?.micsAction ||
+      (payload as any)?.micsUpdateMode ||
+      (payload as any)?.micsUpdate?.mode ||
+      (payload as any)?.话筒操作
+    );
+  });
+};
+
+const inferMicUpdateModeFromUserText = (text: string): MicUpdateMode | null => {
+  const normalized = String(text || '').trim();
+  if (!normalized) return null;
+
+  const hasReplace = /改成|改为|换成|替换|调整为|改用|更新为|变更为/.test(normalized);
+  const hasAdd = /新增|再加|增加|添加|加上/.test(normalized);
+  const hasRemove = /删除|去掉|减少|取消|移除/.test(normalized);
+
+  if (hasReplace) return 'replace';
+  if (hasRemove && !hasAdd) return 'remove';
+  if (hasAdd && !hasRemove) return 'add';
+  return null;
+};
+
+const hasScenarioResetSignalFromPayloads = (payloads: Record<string, any>[]) => {
+  const resetKeys = new Set([
+    'scenarioconfirmed',
+    'roomconfirmed',
+    'stageconfirmed',
+    'micsconfirmed',
+    'subsystemsconfirmed',
+    'extrarequirementsconfirmed'
+  ]);
+
+  return payloads.some((payload) => {
+    const key = String((payload as any)?.key || '').trim().toLowerCase();
+    if (resetKeys.has(key)) {
+      return parseBooleanLike((payload as any)?.value) === false;
+    }
+
+    return Array.from(resetKeys).some((k) => {
+      const candidates: Record<string, string> = {
+        roomconfirmed: 'roomConfirmed',
+        stageconfirmed: 'stageConfirmed',
+        micsconfirmed: 'micsConfirmed',
+        subsystemsconfirmed: 'subsystemsConfirmed',
+        extrarequirementsconfirmed: 'extraRequirementsConfirmed'
+      };
+      const candidateKey = candidates[k];
+      if (!candidateKey || !Object.prototype.hasOwnProperty.call(payload, candidateKey)) return false;
+      return parseBooleanLike((payload as any)[candidateKey]) === false;
+    });
+  });
+};
+
+const hasScenarioResetSignalFromText = (text: string) => {
+  const normalized = stripThinkTags(text);
+  if (!normalized) return false;
+  return /(重置|从阶段\s*2\s*开始|重新引导|重新确认|从头确认|回到阶段\s*2)/.test(normalized);
+};
+
 const applyMicUpdateByMode = (
   currentMics: MicConfig[],
   incomingMics: MicConfig[],
@@ -1039,7 +1196,7 @@ const useAcousticAssistant = (
   params: AcousticParams, 
   setParams: React.Dispatch<React.SetStateAction<AcousticParams>>,
   setChatHistory: React.Dispatch<React.SetStateAction<ChatMessage[]>>,
-  onScenarioConfirmed: (scenario: Scenario) => void,
+  onScenarioConfirmed: (scenario: Scenario, forceReset?: boolean) => void,
   assistantScenario: Scenario | null
 ) => {
   const [isAssistantLoading, setIsAssistantLoading] = useState(false);
@@ -1121,8 +1278,10 @@ const useAcousticAssistant = (
       // 3. 处理参数提取 [UPDATE_PARAM: {...}]
       const { payloads: extractedPayloads, cleanedText } = extractAssistantParamPayloads(fullAiText);
       const scenarioByAssistant = detectScenarioFromAssistant(fullAiText, extractedPayloads);
+      const hasScenarioResetSignal =
+        hasScenarioResetSignalFromPayloads(extractedPayloads) || hasScenarioResetSignalFromText(fullAiText);
       if (scenarioByAssistant) {
-        onScenarioConfirmed(scenarioByAssistant);
+        onScenarioConfirmed(scenarioByAssistant, hasScenarioResetSignal);
       }
       if (extractedPayloads.length > 0) {
         const combinedNormalized = extractedPayloads.reduce((acc, payload) => {
@@ -1131,6 +1290,8 @@ const useAcousticAssistant = (
         }, {} as Partial<AcousticParams>);
 
         const micUpdateMode = detectMicUpdateModeFromPayloads(extractedPayloads, combinedNormalized);
+        const hasExplicitMicMode = hasExplicitMicModeFromPayloads(extractedPayloads);
+        const inferredMicUpdateMode = inferMicUpdateModeFromUserText(text);
         delete (combinedNormalized as any).__micsAction;
 
         const subsystemSnapshot: Partial<Pick<AcousticParams, 'hasCentralControl' | 'hasMatrix' | 'hasVideoConf' | 'hasRecording'>> = {};
@@ -1152,7 +1313,13 @@ const useAcousticAssistant = (
             if (hasMicUpdate) {
               const micOptions = assistantContext?.micTypeOptions || [];
               const incomingMics = normalizeMicListValue((combinedNormalized as any).mics);
-              const nextMics = applyMicUpdateByMode(prev.mics || [], incomingMics, micUpdateMode, micOptions);
+              let resolvedMicMode: MicUpdateMode = micUpdateMode;
+              if (inferredMicUpdateMode === 'replace') {
+                resolvedMicMode = 'replace';
+              } else if (!hasExplicitMicMode && inferredMicUpdateMode) {
+                resolvedMicMode = inferredMicUpdateMode;
+              }
+              const nextMics = applyMicUpdateByMode(prev.mics || [], incomingMics, resolvedMicMode, micOptions);
               next.mics = nextMics;
               Object.assign(next, buildMicCounts(nextMics));
             }
@@ -1767,10 +1934,11 @@ export const useAcousticLogic = () => {
         chatHistory: typeof updater === 'function' ? updater(prev.chatHistory) : updater
       }));
     },
-    (scenario: Scenario) => {
+    (scenario: Scenario, forceReset = false) => {
       setAssistantScenario(scenario);
       setDesignState(prev => {
-        if (prev.scenario === scenario) {
+        const shouldReset = forceReset || prev.scenario !== scenario;
+        if (!shouldReset) {
           return { ...prev, scenario };
         }
         return {

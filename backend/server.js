@@ -2261,12 +2261,24 @@ app.post("/api/chat-assistant", async (req, res) => {
   const micTypeHint = Array.isArray(dbMicTypeOptions) && dbMicTypeOptions.length > 0
     ? dbMicTypeOptions.join('、')
     : '暂无可选话筒（数据库中未查询到话筒数据）';
-  const micDefaultSuggestion = dbMicTypeOptions.length > 0
-    ? dbMicTypeOptions
-      .slice(0, 2)
-      .map((type) => `${type} 2个`)
-      .join('；')
-    : '当前数据库暂无话筒类型，不能给出默认建议，请先在“周边设备”中补充“类型=话筒”的数据。';
+
+  const normalizedMicOptions = Array.from(new Set(
+    (Array.isArray(dbMicTypeOptions) ? dbMicTypeOptions : [])
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+  ));
+  const scenarioForSuggestion = currentParams.scenario === 'LECTURE_HALL' ? 'LECTURE_HALL' : 'MEETING_ROOM';
+  const preferredMicTypes = scenarioForSuggestion === 'LECTURE_HALL'
+    ? ['一拖二无线手持话筒', '一拖二无线鹅颈麦克风']
+    : ['一拖二无线手持话筒'];
+
+  const defaultMicLines = preferredMicTypes
+    .filter((name) => normalizedMicOptions.includes(name))
+    .map((name) => `${name} 2个`);
+
+  const micDefaultSuggestion = defaultMicLines.length > 0
+    ? defaultMicLines.join('；')
+    : '当前场景的默认话筒在数据库中不存在，请直接从可选话筒数据库中选择并填写数量。';
 
   const promptParams = {
     ...currentParams,
@@ -2282,6 +2294,8 @@ app.post("/api/chat-assistant", async (req, res) => {
 
 【核心对话原则】
 每次回复**只允许针对一个参数部分（即一个未确认的阶段）进行提问**，**绝不要**一次性抛出多个环节的问题，以免给用户造成压迫感。你需要根据当前的确认状态按顺序推进。
+每轮最多只提出一个待确认点；未完成当前阶段前，禁止跨阶段追问。
+当某些参数已通过 [UPDATE_PARAM] 更新到左侧参数面板后，不要在后续回复中反复粘贴完整参数清单；只简短说明“已更新到左侧面板，请确认/继续下一项”。
 回答需保持简洁、专业。不要输出 eterminate标签。
 
 【分步引导流程】（严格按顺序检查，停留在第一个为 false 的阶段）
@@ -2315,15 +2329,26 @@ app.post("/api/chat-assistant", async (req, res) => {
   - **首先**：在输出的最开头，一次性输出所有最终确认的参数标记（见下方标记规则）。
   - **然后**：给出一份详细、清晰、结构化的参数总结清单。
   - **约束**：参数总结只能输出一次，禁止重复输出“参数总结如下/确认后的参数”等第二份总结。
-  - **最后**：引导用户：“若信息未更新请输入‘更新全部参数’；若信息确认无误，请点击页面下方的‘启动方案设计’按钮。”
+  - **最后**：引导用户：“请优先查看左侧参数面板确认；若信息确认无误，请点击页面下方的‘启动方案设计’按钮。”
 
 【参数更新与标记规则（非常重要）】
 1. **输出标记**：在对话收集参数的阶段，只要用户提供了有效参数，就**需要**在回复中输出 [UPDATE_PARAM: {"key": "键名", "value": 值}] 标记更新对应数据及对应的 xxxConfirmed: true 状态。
-2. **键名参考**：length, width, height, micHandheld, micGooseneck, micOmni, micLavalier, micCeiling, stageWidth, stageDepth, stageToNearAudience, stageToFarAudience, hasCentralControl, hasMatrix, hasVideoConf, hasRecording, scenarioConfirmed, roomConfirmed, stageConfirmed, micsConfirmed, subsystemsConfirmed, extraRequirementsConfirmed。
-3. **话筒覆盖逻辑**：针对用户填写或修改的话筒配置，默认**完全替换**原来的配置。AI需具备理解“新增某类”、“删除某类”、“修改数量”的能力并输出最新的全量话筒状态。
+2. **键名参考**：scenario, length, width, height, stageWidth, stageDepth, stageToNearAudience, stageToFarAudience, mics, micsAction, hasCentralControl, hasMatrix, hasVideoConf, hasRecording, extraRequirements, scenarioConfirmed, roomConfirmed, stageConfirmed, micsConfirmed, subsystemsConfirmed, extraRequirementsConfirmed。
+3. **话筒更新模式（必须区分）**：
+   - 默认是**完全替换**：输出 micsAction=replace，并在 mics 中给出替换后的完整列表；
+   - 用户明确说“新增/再加”时：输出 micsAction=add，mics 只放新增项；
+   - 用户明确说“减少/删除/去掉”时：输出 micsAction=remove，mics 只放要减少/删除的项；
+   - 话筒示例：
+     [UPDATE_PARAM: {"key":"micsAction","value":"add"}]
+     [UPDATE_PARAM: {"key":"mics","value":[{"type":"一拖二无线手持话筒","count":2}]}]
+   - 话筒类型必须严格来自数据库可选项，严禁编造。
 4. **子系统快照逻辑**：针对用户填写的子系统要求，默认完全替换。每次输出子系统更新时，**必须一次性**给出 4 个布尔键（hasCentralControl, hasMatrix, hasVideoConf, hasRecording）的完整快照，不遗漏任何一个。
 5. **参数修改与回退**：如果用户在后续对话中修改了已确认过的某组参数，你需要将该组对应的确认状态（xxxConfirmed）改回 false（如果还需要追问），或者更新参数后重新设为 true。
-6. **场景切换重置**：如果用户**切换了场景**（如从会议室换成报告厅），必须将除 scenario 之外的**所有**参数确认状态全部重置为 false，并重新从阶段 2 开始引导。`;
+6. **场景切换重置**：如果用户**切换了场景**（如从会议室换成报告厅），必须将除 scenario 之外的**所有**参数确认状态全部重置为 false，并重新从阶段 2 开始引导。
+7. **其他需求入面板**：当用户提出“其他需求/特殊要求”时，必须输出：
+  - [UPDATE_PARAM: {"key":"extraRequirements","value":"用户原话或整理后的需求"}]
+  - [UPDATE_PARAM: {"key":"extraRequirementsConfirmed","value":true}]
+  并在文字中提示“已写入左侧参数面板的其他需求”。`;
 
   try {
     // 设置 Server-Sent Events (SSE) 头部供流式输出

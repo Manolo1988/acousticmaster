@@ -48,6 +48,12 @@ export interface AcousticParams {
   micOmni: number;
   micLavalier: number;
   micCeiling: number;
+  scenarioConfirmed: boolean;
+  roomConfirmed: boolean;
+  stageConfirmed: boolean;
+  micsConfirmed: boolean;
+  subsystemsConfirmed: boolean;
+  extraRequirementsConfirmed: boolean;
   extraRequirements: string;
 }
 

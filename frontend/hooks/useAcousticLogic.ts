@@ -5,7 +5,7 @@ import {
   EquipmentItem, SolutionResult, User, AuthUser, HistoryRecord, MicConfig,
   TableType, DbInventoryItem, ChatMessage, SolutionLayoutItem
 } from '../types';
-import { DEFAULT_PARAMS, MIC_TYPES } from '../constants';
+import { DEFAULT_PARAMS } from '../constants';
 import { v4 as uuidv4 } from 'uuid';
 import * as XLSX from 'xlsx';
 
@@ -21,7 +21,7 @@ declare global {
 }
 
 const rawApiBase = import.meta.env.VITE_API_BASE ?? "";
-const fallbackApiBase = import.meta.env.DEV ? "http://115.231.236.153:3002" : "";
+const fallbackApiBase = "";
 const API_BASE = (rawApiBase || fallbackApiBase).replace(/\/+$/, "");
 const resolveBackendLink = (link: string) => {
   if (!link) return '';
@@ -220,6 +220,12 @@ const buildItemsSignature = (items: EquipmentItem[]) => {
 };
 
 const SUBSYSTEM_DEVICE_TYPES = new Set(['中控系统', '矩阵', '视频会议系统', '录播系统']);
+const SUBSYSTEM_PARAM_KEYS: Array<keyof AcousticParams> = [
+  'hasCentralControl',
+  'hasMatrix',
+  'hasVideoConf',
+  'hasRecording'
+];
 
 const PARAM_KEY_ALIASES: Record<string, keyof AcousticParams> = {
   length: 'length',
@@ -276,7 +282,19 @@ const PARAM_KEY_ALIASES: Record<string, keyof AcousticParams> = {
   中控: 'hasCentralControl',
   矩阵: 'hasMatrix',
   视讯: 'hasVideoConf',
-  录播: 'hasRecording'
+  录播: 'hasRecording',
+  scenarioConfirmed: 'scenarioConfirmed',
+  场景已确认: 'scenarioConfirmed',
+  roomConfirmed: 'roomConfirmed',
+  物理参数已确认: 'roomConfirmed',
+  stageConfirmed: 'stageConfirmed',
+  舞台参数已确认: 'stageConfirmed',
+  micsConfirmed: 'micsConfirmed',
+  话筒已确认: 'micsConfirmed',
+  subsystemsConfirmed: 'subsystemsConfirmed',
+  子系统已确认: 'subsystemsConfirmed',
+  extraRequirementsConfirmed: 'extraRequirementsConfirmed',
+  其他需求已确认: 'extraRequirementsConfirmed'
 };
 
 const MIC_TYPE_ALIASES: Record<string, string> = {
@@ -313,14 +331,19 @@ const MIC_PARAM_TO_TYPE: Record<string, string> = {
   micCeiling: '吊装话筒'
 };
 
+const buildScenarioDefaultMics = (_scenario: Scenario, _options: string[]): MicConfig[] => {
+  return [];
+};
+
 const normalizeMicTypeForCount = (raw: string) => {
-  const trimmed = raw.trim();
-  if (!trimmed) return MIC_TYPES[0];
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return '';
   const alias = MIC_TYPE_ALIASES[trimmed];
   if (alias) return alias;
-  const exact = MIC_TYPES.find(t => t === trimmed);
+  const knownTypes = Object.keys(MIC_TYPE_TO_PARAM_KEY);
+  const exact = knownTypes.find((type) => type === trimmed);
   if (exact) return exact;
-  const fuzzy = MIC_TYPES.find(t => t.includes(trimmed) || trimmed.includes(t));
+  const fuzzy = knownTypes.find((type) => type.includes(trimmed) || trimmed.includes(type));
   return fuzzy || trimmed;
 };
 
@@ -343,46 +366,128 @@ const resolveMicParamKey = (micType: string): keyof AcousticParams | null => {
 };
 
 const normalizeMicListValue = (value: any): MicConfig[] => {
-  if (!Array.isArray(value)) return [];
-  return value.map((item, index) => {
-    const typeRaw = typeof item?.type === 'string'
-      ? item.type
-      : typeof item?.name === 'string'
-        ? item.name
-        : typeof item?.label === 'string'
-          ? item.label
-          : '';
-    const countRaw = item?.count ?? item?.qty ?? item?.quantity ?? 1;
-    const countNum = typeof countRaw === 'number' ? countRaw : parseInt(String(countRaw), 10);
-    return {
-      id: typeof item?.id === 'string' ? item.id : `${Date.now()}-${index}`,
-      type: normalizeMicDisplayType(String(typeRaw)),
-      count: Number.isFinite(countNum) ? Math.max(0, countNum) : 1
-    };
-  });
+  if (Array.isArray(value)) {
+    return value.map((item, index) => {
+      const typeRaw = typeof item?.type === 'string'
+        ? item.type
+        : typeof item?.name === 'string'
+          ? item.name
+          : typeof item?.label === 'string'
+            ? item.label
+            : '';
+      const countRaw = item?.count ?? item?.qty ?? item?.quantity ?? 1;
+      const countNum = typeof countRaw === 'number' ? countRaw : parseInt(String(countRaw), 10);
+      return {
+        id: typeof item?.id === 'string' ? item.id : `${Date.now()}-${index}`,
+        type: normalizeMicDisplayType(String(typeRaw)),
+        count: Number.isFinite(countNum) ? Math.max(0, countNum) : 1
+      };
+    });
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.entries(value)
+      .map(([typeKey, countValue], index) => {
+        const countNum = typeof countValue === 'number'
+          ? countValue
+          : parseInt(String(countValue ?? '').replace(/[^\d-]/g, ''), 10);
+        return {
+          id: `${Date.now()}-obj-${index}`,
+          type: normalizeMicDisplayType(String(typeKey || '')),
+          count: Number.isFinite(countNum) ? Math.max(0, countNum) : 0
+        };
+      })
+      .filter((item) => !!item.type && item.count >= 0);
+  }
+
+  if (typeof value === 'string') {
+    const text = String(value || '');
+    const parsed = MIC_KEYWORD_TO_PARAM_KEY
+      .map(({ keywords, key }, index) => {
+        const matchedKeyword = keywords.find((keyword) => text.toLowerCase().includes(keyword.toLowerCase()));
+        if (!matchedKeyword) return null;
+        const pattern = new RegExp(`${matchedKeyword}[^\\d]*(\\d+)`, 'i');
+        const found = text.match(pattern);
+        const count = found ? Number(found[1]) : 0;
+        if (!Number.isFinite(count) || count <= 0) return null;
+        return {
+          id: `${Date.now()}-txt-${index}`,
+          type: MIC_PARAM_TO_TYPE[key],
+          count
+        };
+      })
+      .filter((item): item is MicConfig => !!item);
+    return parsed;
+  }
+
+  return [];
 };
 
 const normalizeMicsToDbOptions = (mics: MicConfig[], options: string[]): MicConfig[] => {
   const normalizedOptions = Array.from(new Set((options || []).map((item) => String(item || '').trim()).filter(Boolean)));
-  if (normalizedOptions.length === 0) {
-    return (mics || []).map((mic) => ({ ...mic, type: '' }));
-  }
+  if (normalizedOptions.length === 0) return [];
 
-  const optionSet = new Set(normalizedOptions);
-  const fallback = normalizedOptions[0];
-  return (mics || []).map((mic) => {
+  const resolved = (mics || []).reduce<MicConfig[]>((acc, mic) => {
     const type = String(mic?.type || '').trim();
-    if (optionSet.has(type)) {
-      return {
-        ...mic,
-        type
-      };
+    const count = Number.isFinite(mic?.count) ? Math.max(0, Number(mic.count)) : 0;
+    if (!type || count <= 0) return acc;
+
+    let normalizedType = '';
+    if (normalizedOptions.includes(type)) {
+      normalizedType = type;
+    } else {
+      const key = resolveMicParamKey(type);
+      if (key) {
+        const matched = normalizedOptions.find((option) => resolveMicParamKey(option) === key);
+        if (matched) normalizedType = matched;
+      }
     }
-    return {
-      ...mic,
-      type: fallback
-    };
-  });
+
+    if (!normalizedType) return acc;
+
+    const existed = acc.find((item) => item.type === normalizedType);
+    if (existed) {
+      existed.count += count;
+      return acc;
+    }
+
+    acc.push({
+      id: String(mic?.id || uuidv4()),
+      type: normalizedType,
+      count
+    });
+    return acc;
+  }, []);
+
+  return resolved;
+};
+
+const parseBooleanLike = (value: any): boolean | null => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value > 0;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 'yes', 'on', '是', '启用'].includes(normalized)) return true;
+    if (['false', '0', 'no', 'off', '否', '禁用'].includes(normalized)) return false;
+  }
+  return null;
+};
+
+const parseMicCountLike = (value: any): number | null => {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim();
+    if (!normalized) return null;
+    const direct = Number(normalized);
+    if (Number.isFinite(direct)) return direct;
+    const matched = normalized.match(/-?\d+(?:\.\d+)?/);
+    if (!matched) return null;
+    const n = Number(matched[0]);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 };
 
 const buildMicCounts = (mics: MicConfig[]) => {
@@ -431,7 +536,30 @@ const normalizeAssistantParams = (raw: Record<string, any> | Record<string, any>
     }
 
     pairs.forEach(([key, value]) => {
-      const mappedKey = PARAM_KEY_ALIASES[key] || (key as keyof AcousticParams);
+      if (key === 'subsystems' || key === '子系统') {
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          const subsystemNormalized = normalizeAssistantParams(value as Record<string, any>);
+          SUBSYSTEM_PARAM_KEYS.forEach((subKey) => {
+            if (!Object.prototype.hasOwnProperty.call(subsystemNormalized, subKey)) return;
+            const parsed = parseBooleanLike((subsystemNormalized as any)[subKey]);
+            if (parsed === null) return;
+            (normalized as any)[subKey] = parsed;
+          });
+        }
+        return;
+      }
+
+      const aliasedKey = PARAM_KEY_ALIASES[key];
+      const micParamByLabel = resolveMicParamKey(String(key || ''));
+      if (!aliasedKey && micParamByLabel) {
+        const count = parseMicCountLike(value);
+        if (count !== null) {
+          (normalized as any)[micParamByLabel] = Math.max(0, count);
+        }
+        return;
+      }
+
+      const mappedKey = aliasedKey || (key as keyof AcousticParams);
       if (!mappedKey) return;
 
       if (mappedKey === 'mics') {
@@ -486,44 +614,129 @@ const normalizeAssistantParams = (raw: Record<string, any> | Record<string, any>
   return normalized;
 };
 
-const extractAssistantParamPayloads = (text: string): (Record<string, any> | Record<string, any>[])[] => {
-  // 更加宽容的正则，不强制要求外层有方括号/花括号，只要被 [UPDATE_PARAM: ...] 包裹
-  const markerRegex = /\[UPDATE_PARAM:\s*([\s\S]*?)\]/g;
-  const matches = [...text.matchAll(markerRegex)];
-  
-  return matches.map(match => {
-    let rawContent = match[1]?.trim();
-    if (!rawContent) return null;
+const tryParseAssistantPayload = (rawContent: string) => {
+  const cleaned = String(rawContent || '')
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```$/i, '')
+    .trim();
 
-    // 1. 尝试清理 Markdown 代码块
-    let cleaned = rawContent
-      .replace(/^```json\s*/i, '')
-      .replace(/^```\s*/i, '')
-      .replace(/```$/i, '')
-      .trim();
+  if (!cleaned) return null;
 
-    // 2. 尝试直接解析
-    try {
-      return JSON.parse(cleaned);
-    } catch {
-      // 3. 兜底处理：如果 AI 输出了 {"key": "length", "value": 7}, {"key": "width", "value": 4} 这种非标准数组
-      // 将其包裹成数组再尝试
-      if (cleaned.includes('},{') || (cleaned.includes('"value":') && !cleaned.startsWith('[') && !cleaned.startsWith('{'))) {
-        try {
-          return JSON.parse(`[${cleaned}]`);
-        } catch { /* ignore */ }
-      }
-
-      // 4. 再次兜底：处理单引号
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    if (cleaned.includes('},{') || (cleaned.includes('"value":') && !cleaned.startsWith('[') && !cleaned.startsWith('{'))) {
       try {
-        const singleQuoted = cleaned.replace(/'/g, '"');
-        return JSON.parse(singleQuoted);
-      } catch (e) {
-        console.warn("Failed to parse [UPDATE_PARAM] block:", cleaned, e);
-        return null;
+        return JSON.parse(`[${cleaned}]`);
+      } catch {
+        // ignore and fallback
       }
     }
-  }).flat().filter((p): p is any => p !== null && typeof p === 'object');
+
+    try {
+      return JSON.parse(cleaned.replace(/'/g, '"'));
+    } catch (error) {
+      console.warn('Failed to parse [UPDATE_PARAM] block:', cleaned, error);
+      return null;
+    }
+  }
+};
+
+const extractAssistantParamPayloads = (text: string): { payloads: Record<string, any>[]; cleanedText: string } => {
+  const markerRegex = /\[\s*UPDATE_PARAM\s*[：:]\s*/ig;
+  const source = String(text || '');
+  const payloads: Record<string, any>[] = [];
+  let cleanedParts = '';
+  let cursor = 0;
+
+  while (cursor < source.length) {
+    markerRegex.lastIndex = cursor;
+    const markerMatch = markerRegex.exec(source);
+    if (!markerMatch) {
+      cleanedParts += source.slice(cursor);
+      break;
+    }
+
+    const markerStart = markerMatch.index;
+    const markerContentStart = markerRegex.lastIndex;
+
+    cleanedParts += source.slice(cursor, markerStart);
+
+    let i = markerContentStart;
+    while (i < source.length && /\s/.test(source[i])) i += 1;
+
+    let braceDepth = 0;
+    let bracketDepth = 0;
+    let inString = false;
+    let quoteChar = '';
+    let escaped = false;
+    let markerEnd = -1;
+
+    for (; i < source.length; i += 1) {
+      const ch = source[i];
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (ch === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (ch === quoteChar) {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (ch === '"' || ch === '\'') {
+        inString = true;
+        quoteChar = ch;
+        continue;
+      }
+
+      if (ch === '{') {
+        braceDepth += 1;
+        continue;
+      }
+      if (ch === '}') {
+        braceDepth = Math.max(0, braceDepth - 1);
+        continue;
+      }
+      if (ch === '[') {
+        bracketDepth += 1;
+        continue;
+      }
+      if (ch === ']') {
+        if (braceDepth === 0 && bracketDepth === 0) {
+          markerEnd = i;
+          break;
+        }
+        bracketDepth = Math.max(0, bracketDepth - 1);
+      }
+    }
+
+    if (markerEnd < 0) {
+      // 未闭合时不展示剩余标记，避免流式过程污染气泡
+      break;
+    }
+
+    const payloadText = source.slice(markerContentStart, markerEnd).trim();
+    const parsed = tryParseAssistantPayload(payloadText);
+    const normalized = Array.isArray(parsed) ? parsed : [parsed];
+    normalized
+      .filter((item) => item && typeof item === 'object' && !Array.isArray(item))
+      .forEach((item) => payloads.push(item as Record<string, any>));
+
+    cursor = markerEnd + 1;
+  }
+
+  return {
+    payloads,
+    cleanedText: cleanedParts
+  };
 };
 
 
@@ -565,7 +778,19 @@ const formatDifyResult = (result: any): string => {
 
 const stripThinkTags = (text: string) => {
   if (!text) return '';
-  return text
+  let normalized = text;
+  const openThinkIdx = normalized.toLowerCase().lastIndexOf('<think>');
+  const closeThinkIdx = normalized.toLowerCase().lastIndexOf('</think>');
+  if (openThinkIdx > closeThinkIdx) {
+    normalized = normalized.slice(0, openThinkIdx);
+  }
+  const openThinkingIdx = normalized.toLowerCase().lastIndexOf('<thinking>');
+  const closeThinkingIdx = normalized.toLowerCase().lastIndexOf('</thinking>');
+  if (openThinkingIdx > closeThinkingIdx) {
+    normalized = normalized.slice(0, openThinkingIdx);
+  }
+
+  return normalized
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
     .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
     .replace(/<\/?think>/gi, '')
@@ -574,22 +799,25 @@ const stripThinkTags = (text: string) => {
     .trim();
 };
 
+const stripAssistantDisplayArtifacts = (text: string) => {
+  const withoutThink = stripThinkTags(text);
+  const { cleanedText } = extractAssistantParamPayloads(withoutThink);
+  return cleanedText.trim();
+};
+
 const detectScenarioFromAssistant = (
   text: string,
-  payloads: (Record<string, any> | Record<string, any>[])[]
+  payloads: Record<string, any>[]
 ) => {
-  for (const payload of payloads) {
-    const list = Array.isArray(payload) ? payload : [payload];
-    for (const entry of list) {
-      const key = String((entry as any).key || '').toLowerCase();
-      const value = String((entry as any).value || (entry as any).scenario || '').toUpperCase();
-      if (key === 'scenario' || Object.prototype.hasOwnProperty.call(entry, 'scenario')) {
-        if (value.includes('LECTURE_HALL') || value.includes('REPORT') || value.includes('报告厅')) {
-          return Scenario.LECTURE_HALL;
-        }
-        if (value.includes('MEETING_ROOM') || value.includes('MEETING') || value.includes('会议室')) {
-          return Scenario.MEETING_ROOM;
-        }
+  for (const entry of payloads) {
+    const key = String((entry as any).key || '').toLowerCase();
+    const value = String((entry as any).value || (entry as any).scenario || '').toUpperCase();
+    if (key === 'scenario' || Object.prototype.hasOwnProperty.call(entry, 'scenario')) {
+      if (value.includes('LECTURE_HALL') || value.includes('REPORT') || value.includes('报告厅')) {
+        return Scenario.LECTURE_HALL;
+      }
+      if (value.includes('MEETING_ROOM') || value.includes('MEETING') || value.includes('会议室')) {
+        return Scenario.MEETING_ROOM;
       }
     }
   }
@@ -635,7 +863,6 @@ const useAcousticAssistant = (
     setChatHistory(prev => [...prev, userMsg]);
 
     // 2. 创建占位 AI 消息（后续流式更新）
-    const aiId = Date.now().toString();
     setChatHistory(prev => [...prev, { role: 'ai', text: "", timestamp: new Date() }]);
 
     let fullAiText = "";
@@ -648,7 +875,7 @@ const useAcousticAssistant = (
           history: history.map(h => ({ role: h.role === 'ai' ? 'assistant' : 'user', content: h.text })),
           currentParams: {
             ...params,
-            scenario: assistantScenario || undefined,
+            scenario: assistantContext?.scenario || assistantScenario || undefined,
             micTypeOptions: assistantContext?.micTypeOptions || []
           }
         })
@@ -677,7 +904,7 @@ const useAcousticAssistant = (
             const data = JSON.parse(line.replace('data: ', ''));
             if (data.content) {
               fullAiText += data.content;
-              const safeText = stripThinkTags(fullAiText);
+              const safeText = stripAssistantDisplayArtifacts(fullAiText);
               // 流式更新最后一条消息
               setChatHistory(prev => {
                 const updated = [...prev];
@@ -692,26 +919,59 @@ const useAcousticAssistant = (
       }
 
       // 3. 处理参数提取 [UPDATE_PARAM: {...}]
-      const extractedPayloads = extractAssistantParamPayloads(fullAiText);
-      const scenarioByAssistant = detectScenarioFromAssistant(fullAiText, extractedPayloads as any);
+      const { payloads: extractedPayloads, cleanedText } = extractAssistantParamPayloads(fullAiText);
+      const scenarioByAssistant = detectScenarioFromAssistant(fullAiText, extractedPayloads);
       if (scenarioByAssistant) {
         onScenarioConfirmed(scenarioByAssistant);
       }
       if (extractedPayloads.length > 0) {
-        // 合并所有提取到的参数
         const combinedNormalized = extractedPayloads.reduce((acc, payload) => {
           const normalized = normalizeAssistantParams(payload);
           return { ...acc, ...normalized };
-        }, {});
+        }, {} as Partial<AcousticParams>);
+
+        const subsystemSnapshot: Partial<Pick<AcousticParams, 'hasCentralControl' | 'hasMatrix' | 'hasVideoConf' | 'hasRecording'>> = {};
+        let hasSubsystemUpdate = false;
+        SUBSYSTEM_PARAM_KEYS.forEach((key) => {
+          if (!Object.prototype.hasOwnProperty.call(combinedNormalized, key)) return;
+          const parsed = parseBooleanLike((combinedNormalized as any)[key]);
+          if (parsed === null) return;
+          hasSubsystemUpdate = true;
+          (subsystemSnapshot as any)[key] = parsed;
+        });
+
+        const hasMicUpdate = Object.prototype.hasOwnProperty.call(combinedNormalized, 'mics');
 
         if (Object.keys(combinedNormalized).length > 0) {
-          setParams(prev => ({ ...prev, ...combinedNormalized }));
+          setParams(prev => {
+            const next: AcousticParams = { ...prev, ...(combinedNormalized as AcousticParams) };
+
+            if (hasMicUpdate) {
+              const normalizedMics = normalizeMicsToDbOptions(
+                normalizeMicListValue((combinedNormalized as any).mics),
+                assistantContext?.micTypeOptions || []
+              );
+              next.mics = normalizedMics;
+              Object.assign(next, buildMicCounts(normalizedMics));
+            }
+
+            if (hasSubsystemUpdate) {
+              next.hasCentralControl = false;
+              next.hasMatrix = false;
+              next.hasVideoConf = false;
+              next.hasRecording = false;
+              SUBSYSTEM_PARAM_KEYS.forEach((key) => {
+                if (Object.prototype.hasOwnProperty.call(subsystemSnapshot, key)) {
+                  (next as any)[key] = Boolean((subsystemSnapshot as any)[key]);
+                }
+              });
+            }
+
+            return next;
+          });
         }
 
-        // 静默移除标记，保持 UI 干净
-        const cleanText = stripThinkTags(
-          fullAiText.replace(/\[UPDATE_PARAM:[\s\S]*?\]/g, "")
-        );
+        const cleanText = stripAssistantDisplayArtifacts(cleanedText);
         setChatHistory(prev => {
           const updated = [...prev];
           updated[updated.length - 1] = { ...updated[updated.length - 1], text: cleanText };
@@ -1307,13 +1567,28 @@ export const useAcousticLogic = () => {
     },
     (scenario: Scenario) => {
       setAssistantScenario(scenario);
-      setDesignState(prev => ({ ...prev, scenario }));
+      setDesignState(prev => {
+        if (prev.scenario === scenario) {
+          return { ...prev, scenario };
+        }
+        const nextMics = buildScenarioDefaultMics(scenario, micTypeOptions);
+        return {
+          ...prev,
+          scenario,
+          params: clearConfirmFlagsByParamChange({
+            ...prev.params,
+            mics: nextMics,
+            ...buildMicCounts(nextMics)
+          }, 'scenario')
+        };
+      });
     },
     assistantScenario
   );
 
   const wrappedSendMessageToAssistant = (text: string) => {
     return sendMessageToAssistant(text, designState.chatHistory, isAiBackendRunning, {
+      scenario: designState.scenario,
       micTypeOptions
     });
   };
@@ -1581,24 +1856,64 @@ export const useAcousticLogic = () => {
   };
 
   const fetchMicTypeOptions = async () => {
-    try {
-      const response = await fetch(`${API_BASE}/api/inventory/${encodeURIComponent(TableType.PERIPHERAL)}`);
-      if (!response.ok) throw new Error(`Fetch mic types failed: ${response.status}`);
-      const data = await response.json();
-      const rows: DbInventoryItem[] = Array.isArray(data) ? data : [];
-      const options = Array.from(new Set(
-        rows
-          .filter((row) => row.类型 === '话筒' || String(row.产品名称 || '').includes('话筒'))
-          .map((row) => String(row.产品名称 || '').trim())
+    const normalizeOptionList = (values: any[]): string[] => {
+      return Array.from(new Set(
+        (Array.isArray(values) ? values : [])
+          .map((value) => String(value || '').trim())
           .filter(Boolean)
       ));
-      if (options.length > 0) {
-        setMicTypeOptions(options);
+    };
+
+    const extractMicOptionsFromPeripheralRows = (rows: any[]): string[] => {
+      if (!Array.isArray(rows)) return [];
+
+      const options = rows
+        .map((row) => {
+          if (!row || typeof row !== 'object') return '';
+
+          const entries = Object.entries(row as Record<string, any>);
+          const typeEntry = entries.find(([rawKey]) => String(rawKey || '').trim() === '类型');
+          const nameEntry = entries.find(([rawKey]) => String(rawKey || '').trim() === '产品名称');
+
+          const typeValue = String(typeEntry?.[1] ?? '').trim();
+          if (typeValue !== '话筒') return '';
+
+          return String(nameEntry?.[1] ?? '').trim();
+        })
+        .filter(Boolean);
+
+      return normalizeOptionList(options);
+    };
+
+    try {
+      const response = await fetch(`${API_BASE}/api/inventory/microphone-types`);
+      if (response.ok) {
+        const data = await response.json().catch(() => ({}));
+        const options = normalizeOptionList(Array.isArray(data?.options) ? data.options : []);
+        if (options.length > 0) {
+          setMicTypeOptions(options);
+          return;
+        }
       } else {
-        setMicTypeOptions([]);
+        console.warn('⚠️ /api/inventory/microphone-types unavailable, fallback to peripheral table. status=', response.status);
       }
     } catch (error) {
-      console.error('❌ Failed to fetch mic types:', error);
+      console.warn('⚠️ Fetch mic types failed, fallback to peripheral table:', error);
+    }
+
+    try {
+      const fallbackResponse = await fetch(`${API_BASE}/api/inventory/${encodeURIComponent(TableType.PERIPHERAL)}`);
+      if (!fallbackResponse.ok) throw new Error(`Fallback mic types failed: ${fallbackResponse.status}`);
+
+      const fallbackData = await fallbackResponse.json().catch(() => []);
+      const rows = Array.isArray(fallbackData)
+        ? fallbackData
+        : Array.isArray((fallbackData as any)?.items)
+          ? (fallbackData as any).items
+          : [];
+      setMicTypeOptions(extractMicOptionsFromPeripheralRows(rows));
+    } catch (fallbackError) {
+      console.error('❌ Failed to fetch mic types from fallback endpoint:', fallbackError);
       setMicTypeOptions([]);
     }
   };
@@ -1762,39 +2077,94 @@ export const useAcousticLogic = () => {
     }
   }, [currentUser]);
 
+  const clearConfirmFlagsByParamChange = (
+    params: AcousticParams,
+    changedKey: keyof AcousticParams | 'scenario'
+  ): AcousticParams => {
+    const next = { ...params };
+
+    if (changedKey === 'scenario') {
+      next.scenarioConfirmed = false;
+      next.roomConfirmed = false;
+      next.stageConfirmed = false;
+      next.micsConfirmed = false;
+      next.subsystemsConfirmed = false;
+      next.extraRequirementsConfirmed = false;
+      return next;
+    }
+
+    if (['length', 'width', 'height'].includes(String(changedKey))) {
+      next.roomConfirmed = false;
+    }
+
+    if (['stageToNearAudience', 'stageToFarAudience', 'stageWidth', 'stageDepth'].includes(String(changedKey))) {
+      next.stageConfirmed = false;
+    }
+
+    if (
+      ['mics', 'micHandheld', 'micGooseneck', 'micOmni', 'micLavalier', 'micCeiling'].includes(String(changedKey))
+    ) {
+      next.micsConfirmed = false;
+    }
+
+    if (SUBSYSTEM_PARAM_KEYS.includes(changedKey as keyof AcousticParams)) {
+      next.subsystemsConfirmed = false;
+    }
+
+    if (changedKey === 'extraRequirements') {
+      next.extraRequirementsConfirmed = false;
+    }
+
+    return next;
+  };
+
   // --- 方案参数处理 ---
   const handleParamChange = (key: keyof AcousticParams | 'scenario', value: any) => {
     if (key === 'scenario') {
-      setDesignState(prev => ({ ...prev, scenario: value }));
+      const scenarioValue = value as Scenario;
+      const nextMics = buildScenarioDefaultMics(scenarioValue, micTypeOptions);
+      setDesignState(prev => ({
+        ...prev,
+        scenario: scenarioValue,
+        params: clearConfirmFlagsByParamChange({
+          ...prev.params,
+          mics: nextMics,
+          ...buildMicCounts(nextMics)
+        }, 'scenario')
+      }));
+      setAssistantScenario(scenarioValue);
       return;
     }
     if (key === 'mics') {
       const list = normalizeMicsToDbOptions(normalizeMicListValue(value), micTypeOptions);
       setDesignState(prev => ({
         ...prev,
-        params: {
+        params: clearConfirmFlagsByParamChange({
           ...prev.params,
           mics: list,
           ...buildMicCounts(list)
-        }
+        }, 'mics')
       }));
       return;
     }
-    setDesignState(prev => ({ ...prev, params: { ...prev.params, [key]: value } }));
+    setDesignState(prev => ({
+      ...prev,
+      params: clearConfirmFlagsByParamChange({ ...prev.params, [key]: value } as AcousticParams, key)
+    }));
   };
 
   const addMic = () => {
     setDesignState(prev => {
-      const defaultMicType = micTypeOptions[0] || '';
+      const defaultMicType = String(micTypeOptions[0] || '').trim();
       if (!defaultMicType) return prev;
       const nextMics = [...(prev.params.mics || []), { id: uuidv4(), type: defaultMicType, count: 1 }];
       return {
         ...prev,
-        params: {
+        params: clearConfirmFlagsByParamChange({
           ...prev.params,
           mics: nextMics,
           ...buildMicCounts(nextMics)
-        }
+        }, 'mics')
       };
     });
   };
@@ -1804,11 +2174,11 @@ export const useAcousticLogic = () => {
       const nextMics = (prev.params.mics || []).filter(mic => mic.id !== id);
       return {
         ...prev,
-        params: {
+        params: clearConfirmFlagsByParamChange({
           ...prev.params,
           mics: nextMics,
           ...buildMicCounts(nextMics)
-        }
+        }, 'mics')
       };
     });
   };
@@ -1821,11 +2191,11 @@ export const useAcousticLogic = () => {
       );
       return {
         ...prev,
-        params: {
+        params: clearConfirmFlagsByParamChange({
           ...prev.params,
           mics: nextMics,
           ...buildMicCounts(nextMics)
-        }
+        }, 'mics')
       };
     });
   };
@@ -1840,6 +2210,7 @@ export const useAcousticLogic = () => {
     const msg = chatInputValue;
     setChatInputValue("");
     await sendMessageToAssistant(msg, designState.chatHistory, isAiBackendRunning, {
+      scenario: designState.scenario,
       micTypeOptions
     });
   };

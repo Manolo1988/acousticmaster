@@ -575,6 +575,15 @@ const App: React.FC = () => {
   const [solutionSidebarWidth, setSolutionSidebarWidth] = useState(360);
   const [isResizingSolutionLayout, setIsResizingSolutionLayout] = useState(false);
   const solutionResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const [chatPanelSize, setChatPanelSize] = useState({ width: 380, height: 520 });
+  const [isResizingChatPanel, setIsResizingChatPanel] = useState(false);
+  const chatResizeRef = useRef<{
+    startX: number;
+    startY: number;
+    startWidth: number;
+    startHeight: number;
+    direction: 'horizontal' | 'vertical' | 'both';
+  } | null>(null);
   const [selectedInventoryIds, setSelectedInventoryIds] = useState<Set<number>>(new Set());
   const selectAllInventoryRef = useRef<HTMLInputElement | null>(null);
   const [selectedHistoryIds, setSelectedHistoryIds] = useState<Set<number>>(new Set());
@@ -620,6 +629,12 @@ const App: React.FC = () => {
       : rowValues;
     return Array.from(new Set(baseValues));
   }, [logic.inventory, logic.activeTable, speakerTypeOptions]);
+  const micPanelTypeOptions = useMemo(() => {
+    const fromDb = (logic.micTypeOptions || [])
+      .map((item) => String(item || '').trim())
+      .filter(Boolean);
+    return Array.from(new Set(fromDb));
+  }, [logic.micTypeOptions]);
 
   const theme = logic.currentSolutionTab === SolutionTab.VERIFICATION
     ? VERIFY_THEME
@@ -772,6 +787,14 @@ const App: React.FC = () => {
 
   const glassButtonClass = 'glass-btn inline-flex items-center justify-center rounded-xl transition-all hover:-translate-y-0.5 active:translate-y-0';
   const glassPrimaryButtonClass = 'glass-btn glass-btn-primary inline-flex items-center justify-center rounded-xl transition-all hover:-translate-y-0.5 active:translate-y-0';
+  const renderConfirmedBadge = (confirmed: boolean) => {
+    if (!confirmed) return null;
+    return (
+      <span className="text-[10px] font-black px-2 py-0.5 rounded-full border text-emerald-700 bg-emerald-50 border-emerald-200">
+        已确认
+      </span>
+    );
+  };
 
   const flattenNodeText = (node: ReactNode): string => {
     if (typeof node === 'string' || typeof node === 'number') return String(node);
@@ -1709,12 +1732,69 @@ const App: React.FC = () => {
     };
   }, [isResizingSolutionLayout]);
 
+  useEffect(() => {
+    if (!isResizingChatPanel) return;
+
+    const handleMouseMove = (event: MouseEvent) => {
+      if (!chatResizeRef.current) return;
+      const deltaX = chatResizeRef.current.startX - event.clientX;
+      const deltaY = chatResizeRef.current.startY - event.clientY;
+      const minWidth = 320;
+      const maxWidth = Math.max(320, Math.min(760, window.innerWidth - 32));
+      const minHeight = 360;
+      const maxHeight = Math.max(360, Math.min(window.innerHeight - 72, 820));
+
+      setChatPanelSize((prev) => {
+        let width = prev.width;
+        let height = prev.height;
+
+        if (chatResizeRef.current?.direction === 'horizontal' || chatResizeRef.current?.direction === 'both') {
+          width = Math.max(minWidth, Math.min(maxWidth, chatResizeRef.current.startWidth + deltaX));
+        }
+        if (chatResizeRef.current?.direction === 'vertical' || chatResizeRef.current?.direction === 'both') {
+          height = Math.max(minHeight, Math.min(maxHeight, chatResizeRef.current.startHeight + deltaY));
+        }
+
+        return { width, height };
+      });
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingChatPanel(false);
+      chatResizeRef.current = null;
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizingChatPanel]);
+
   const startSolutionResize = (event: React.MouseEvent<HTMLDivElement>) => {
     solutionResizeRef.current = {
       startX: event.clientX,
       startWidth: solutionSidebarWidth
     };
     setIsResizingSolutionLayout(true);
+  };
+
+  const startChatResize = (
+    event: React.MouseEvent<HTMLDivElement>,
+    direction: 'horizontal' | 'vertical' | 'both'
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    chatResizeRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      startWidth: chatPanelSize.width,
+      startHeight: chatPanelSize.height,
+      direction
+    };
+    setIsResizingChatPanel(true);
   };
 
   const renderTopNav = () => (
@@ -1853,6 +1933,10 @@ const App: React.FC = () => {
         </div>
 
         <div className={isBlueprintLocked ? 'pointer-events-none opacity-60' : ''}>
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] font-black text-slate-400 uppercase tracking-widest">场景确认状态</span>
+            {renderConfirmedBadge(logic.designState.params.scenarioConfirmed)}
+          </div>
           <div className="bg-slate-200/40 p-0.5 rounded-lg flex border border-slate-200 shadow-inner">
             <button
               onClick={() => logic.handleParamChange('scenario', Scenario.MEETING_ROOM)}
@@ -1868,7 +1952,10 @@ const App: React.FC = () => {
             </button>
           </div>
           <div className="bg-white p-2.5 rounded-lg shadow-sm border border-slate-100 space-y-1.5 mt-2.5">
-            <h3 className="text-[13px] font-black text-slate-400 uppercase tracking-widest border-b pb-1">物理参数 (M)</h3>
+            <div className="flex items-center justify-between border-b pb-1">
+              <h3 className="text-[13px] font-black text-slate-400 uppercase tracking-widest">物理参数 (M)</h3>
+              {renderConfirmedBadge(logic.designState.params.roomConfirmed)}
+            </div>
             <div className="grid grid-cols-2 gap-1.5">
               <div>
                 <label className="text-[13px] text-slate-400 font-bold mb-0.5 block">房间长</label>
@@ -1885,6 +1972,9 @@ const App: React.FC = () => {
 
               {logic.designState.scenario === Scenario.LECTURE_HALL && (
                 <div className="col-span-2 grid grid-cols-2 gap-1.5 pt-1 border-t border-slate-50">
+                  <div className="col-span-2 flex items-center justify-end">
+                    {renderConfirmedBadge(logic.designState.params.stageConfirmed)}
+                  </div>
                   <div>
                     <label className="text-[13px] text-slate-400 font-bold mb-0.5 block leading-tight">台口至最近</label>
                     <input type="number" value={logic.designState.params.stageToNearAudience} onChange={e => logic.handleParamChange('stageToNearAudience', parseFloat(e.target.value))} className={`w-full bg-slate-50 border border-slate-100 rounded px-2 py-1 text-[13px] font-bold outline-none ${themeText}`} />
@@ -1908,10 +1998,13 @@ const App: React.FC = () => {
 
           <div className="bg-white p-2.5 rounded-lg shadow-sm border border-slate-100 space-y-1.5 mt-2.5">
             <div className="flex items-center justify-between border-b pb-1">
-              <h3 className={`text-[13px] font-black ${themeText} uppercase tracking-widest`}>话筒配置</h3>
+              <div className="flex items-center gap-2">
+                <h3 className={`text-[13px] font-black ${themeText} uppercase tracking-widest`}>话筒配置</h3>
+                {renderConfirmedBadge(logic.designState.params.micsConfirmed)}
+              </div>
               <button
                 onClick={logic.addMic}
-                disabled={logic.micTypeOptions.length === 0}
+                disabled={micPanelTypeOptions.length === 0}
                 className={`text-[13px] font-black px-1.5 py-0.5 rounded border ${themeText} ${themeBorder} bg-slate-50 hover:bg-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed`}
               >
                 + 添加
@@ -1921,14 +2014,14 @@ const App: React.FC = () => {
               {(logic.designState.params.mics || []).map(m => (
                 <div key={m.id} className="flex items-center space-x-1.5 group">
                   <select
-                    value={logic.micTypeOptions.includes(m.type) ? m.type : ''}
+                    value={m.type}
                     onChange={e => logic.handleParamChange('mics', (logic.designState.params.mics || []).map(mic => mic.id === m.id ? { ...mic, type: e.target.value } : mic))}
                     className="flex-1 bg-slate-50 border border-slate-100 rounded px-1.5 py-1 text-[12px] font-bold outline-none"
                   >
-                    {logic.micTypeOptions.length === 0 && (
+                    {micPanelTypeOptions.length === 0 && (
                       <option value="" disabled>数据库暂无话筒产品</option>
                     )}
-                    {logic.micTypeOptions.map((t) => (
+                    {micPanelTypeOptions.map((t) => (
                       <option key={t} value={t}>{t}</option>
                     ))}
                   </select>
@@ -1940,7 +2033,10 @@ const App: React.FC = () => {
           </div>
 
           <div className="bg-white p-2.5 rounded-lg shadow-sm border border-slate-100 space-y-1.5 mt-2.5">
-            <h3 className="text-[13px] font-black text-slate-400 border-b pb-1 uppercase tracking-widest">配套子系统</h3>
+            <div className="flex items-center justify-between border-b pb-1">
+              <h3 className="text-[13px] font-black text-slate-400 uppercase tracking-widest">配套子系统</h3>
+              {renderConfirmedBadge(logic.designState.params.subsystemsConfirmed)}
+            </div>
             <div className="grid grid-cols-2 gap-1.5">
               {[
                 { id: 'hasCentralControl', l: '中控' }, { id: 'hasMatrix', l: '矩阵' }, { id: 'hasVideoConf', l: '视频' }, { id: 'hasRecording', l: '录播' }
@@ -1954,7 +2050,10 @@ const App: React.FC = () => {
           </div>
 
           <div className="bg-white p-2.5 rounded-lg shadow-sm border border-slate-100 space-y-1.5 flex-1 mt-2.5">
-            <h3 className="text-[13px] font-black text-slate-400 border-b pb-1 uppercase tracking-widest">其他需求</h3>
+            <div className="flex items-center justify-between border-b pb-1">
+              <h3 className="text-[13px] font-black text-slate-400 uppercase tracking-widest">其他需求</h3>
+              {renderConfirmedBadge(logic.designState.params.extraRequirementsConfirmed)}
+            </div>
             <textarea
               value={logic.designState.params.extraRequirements}
               onChange={e => logic.handleParamChange('extraRequirements', e.target.value)}
@@ -3036,6 +3135,12 @@ const App: React.FC = () => {
       micOmni: 0,
       micLavalier: 0,
       micCeiling: 0,
+      scenarioConfirmed: false,
+      roomConfirmed: false,
+      stageConfirmed: false,
+      micsConfirmed: false,
+      subsystemsConfirmed: false,
+      extraRequirementsConfirmed: false,
       extraRequirements: ''
     };
     const historyResults = Array.isArray(item.results) ? item.results : [];
@@ -3402,7 +3507,7 @@ const App: React.FC = () => {
       <style>{markdownReportStyles}</style>
       <div className="flex flex-col h-full min-h-0">
       {renderTopNav()}
-      <main className={`flex-1 flex overflow-hidden min-h-0 ${isResizingSolutionLayout ? 'select-none' : ''}`}>
+      <main className={`flex-1 flex overflow-hidden min-h-0 ${(isResizingSolutionLayout || isResizingChatPanel) ? 'select-none' : ''}`}>
         {logic.currentPage === Page.SOLUTION && (
           <>
             {renderSolutionSidebar()}
@@ -4130,7 +4235,25 @@ const App: React.FC = () => {
             <svg className="w-6 h-6 group-hover:rotate-12 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path></svg>
           </button>
         ) : (
-          <div className="w-[380px] h-[520px] bg-white rounded-3xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden animate-in slide-in-from-bottom-10 fade-in duration-300">
+          <div
+            style={{ width: `${chatPanelSize.width}px`, height: `${chatPanelSize.height}px` }}
+            className="relative bg-white rounded-3xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden animate-in slide-in-from-bottom-10 fade-in duration-300"
+          >
+            <div
+              onMouseDown={(event) => startChatResize(event, 'horizontal')}
+              className="absolute top-3 bottom-3 left-0 w-1 cursor-col-resize"
+              title="拖动横向拉伸"
+            />
+            <div
+              onMouseDown={(event) => startChatResize(event, 'vertical')}
+              className="absolute left-3 right-3 top-0 h-1 cursor-row-resize"
+              title="拖动纵向拉伸"
+            />
+            <div
+              onMouseDown={(event) => startChatResize(event, 'both')}
+              className="absolute left-0 top-0 w-3 h-3 cursor-nwse-resize"
+              title="拖动横向和纵向拉伸"
+            />
             <div className={`p-4 ${themeBg} text-white flex items-center justify-between`}>
               <h4 className="text-xs font-black uppercase tracking-widest">声学助理 AI</h4>
               <button onClick={() => logic.setIsChatOpen(false)} className="text-white/60 hover:text-white transition-colors">✕</button>

@@ -12,7 +12,7 @@ export default defineConfig(({ mode }) => {
   
   return {
     server: {
-      // 读取环境变量中的端口，默认3000（防止环境变量未配置）
+      // 读取环境变量中的端口，默认8101（防止环境变量未配置）
       port: devPort,
       host: '0.0.0.0', // 允许外部访问
       strictPort: true, // 端口被占用时直接报错，不自动换端口（便于排查）

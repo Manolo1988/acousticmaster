@@ -21,8 +21,6 @@ dotenv.config({ path: fileURLToPath(new URL("./.env", import.meta.url)) });
 const app = express();
 const defaultCorsOrigins = [
   "http://115.231.236.153:8100",
-  "http://115.231.236.153:8101",
-  "http://115.231.236.153:3000",
   "http://localhost:3000",
   "http://127.0.0.1:3000"
 ];
@@ -568,6 +566,33 @@ const getSpeakerMetadataOptions = async () => {
     productTypeOptions: normalizedProductTypeOptions,
     functionOptions: normalizedFunctionOptions
   };
+};
+
+const getMicrophoneTypeOptions = async () => {
+  if (!(await tableExists("周边设备"))) return [];
+
+  const columns = await getTableColumns("周边设备");
+  const physicalTable = resolvePhysicalTableName("周边设备");
+  const hasTypeColumn = columns.includes("类型");
+  const hasNameColumn = columns.includes("产品名称");
+  if (!hasTypeColumn || !hasNameColumn) return [];
+
+  const [nameRows] = await pool.query(
+    `SELECT DISTINCT \`产品名称\` AS value
+     FROM \`${physicalTable}\`
+     WHERE TRIM(COALESCE(\`类型\`, '')) = '话筒'
+       AND \`产品名称\` IS NOT NULL
+       AND TRIM(\`产品名称\`) <> ''
+     ORDER BY value ASC`
+  );
+
+  return Array.from(
+    new Set(
+      (Array.isArray(nameRows) ? nameRows : [])
+        .map((row) => String(row?.value || "").trim())
+        .filter(Boolean)
+    )
+  );
 };
 
 const getPrimaryKey = async (table) => {
@@ -1431,7 +1456,7 @@ const buildChapterTaskPrompt = (chapterKey, sceneLabel, selectedSystemsText) => 
         "【后端自动插入：500Hz总声压级3D图】",
         "3.2.4.3 视频会议系统。",
         "3.2.4.4 录播系统。",
-        "无设备的系统整节删除。",
+        "无设备的系统整节删除，不出现文字。",
         "只返回本章内容。"
       ].join("\n");
     case "equipment_intro":
@@ -2226,30 +2251,79 @@ app.post("/api/system/ai-toggle", (req, res) => {
 
 app.post("/api/chat-assistant", async (req, res) => {
   const { message, history = [], currentParams = {} } = req.body;
-  const micTypeHint = Array.isArray(currentParams.micTypeOptions) && currentParams.micTypeOptions.length > 0
-    ? currentParams.micTypeOptions.join('、')
-    : '手持无线话筒、鹅颈会议话筒、全向阵列话筒、领夹话筒、吊装话筒';
+  let dbMicTypeOptions = [];
+  try {
+    dbMicTypeOptions = await getMicrophoneTypeOptions();
+  } catch (error) {
+    console.warn("⚠️ Load microphone types for assistant failed:", error.message);
+  }
 
-  const systemPrompt = `你是一位专业的声学专家，负责引导用户补齐声学方案所需的参数。
+  const micTypeHint = Array.isArray(dbMicTypeOptions) && dbMicTypeOptions.length > 0
+    ? dbMicTypeOptions.join('、')
+    : '暂无可选话筒（数据库中未查询到话筒数据）';
+  const micDefaultSuggestion = dbMicTypeOptions.length > 0
+    ? dbMicTypeOptions
+      .slice(0, 2)
+      .map((type) => `${type} 2个`)
+      .join('；')
+    : '当前数据库暂无话筒类型，不能给出默认建议，请先在“周边设备”中补充“类型=话筒”的数据。';
+
+  const promptParams = {
+    ...currentParams,
+    micTypeOptions: dbMicTypeOptions
+  };
+
+  const systemPrompt = `你是一位专业的声学专家，负责引导用户补齐声学方案设计所需的各项参数。
+
+【当前系统状态】
 当前场景：${currentParams.scenario === 'MEETING_ROOM' ? '会议室' : (currentParams.scenario === 'LECTURE_HALL' ? '报告厅' : '未定')}
-当前参数完整状态：${JSON.stringify(currentParams)}
+当前参数完整状态：${JSON.stringify(promptParams)}
+可选话筒数据库：${micTypeHint}
 
-指令：
-1. **第一步（场景确认）**：如果场景未定，请先确认用户是“会议室”还是“报告厅”。
-2. **第二步（差异化询问）**：
-   - **如果是会议室**：忽略所有舞台相关参数（stageWidth, stageDepth 等），只询问长、宽、高、话筒配置及子系统。
-   - **如果是报告厅**：除了基本长宽高和话筒外，还需要引导用户提供舞台参数（stageWidth, stageDepth, stageToNearAudience, stageToFarAudience）。
-3. **对话阶段**：简洁专业。在此阶段**不需要**输出 [UPDATE_PARAM] 标记。
-4. **总结与更新时机**：只有当所有针对该场景的关键参数都已确认，且确认无其他需求时，才执行：
-   - **最开头**一次性输出所有参数标记：[UPDATE_PARAM: {"key": "length", "value": 10}][UPDATE_PARAM: {"key": "scenario", "value": "MEETING_ROOM"}]...
-   - **然后**给出详细清晰的参数总结清单。
-   - **最后**指引用户说若信息未更新请输入更新全部参数，若信息没问题则点击页面下方的“启动方案设计”按钮。
-5. 键名参考：length, width, height, micHandheld, micGooseneck, micOmni, micLavalier, micCeiling, hasCentralControl, hasMatrix, hasVideoConf, hasRecording。
-6. 不要输出 <think> 标签。
-7. 当你引导用户填写话筒配置时，必须先提示默认建议：
-  - 报告厅默认：手领（型号 KU102）2个，鹅颈话筒（型号 KU204）2个。
-  - 会议室默认：手领（型号 KU102）2个。
-8. 话筒类型优先使用以下数据库可选项：${micTypeHint}。`;
+【核心对话原则】
+每次回复**只允许针对一个参数部分（即一个未确认的阶段）进行提问**，**绝不要**一次性抛出多个环节的问题，以免给用户造成压迫感。你需要根据当前的确认状态按顺序推进。
+回答需保持简洁、专业。不要输出 eterminate标签。
+
+【分步引导流程】（严格按顺序检查，停留在第一个为 false 的阶段）
+
+**阶段 1：场景确认 (scenarioConfirmed)**
+- 检查当前场景。如果场景未定，请先确认用户需要设计的是“会议室”还是“报告厅”。
+- 确认后记录场景，并进入下一阶段。
+
+**阶段 2：场地尺寸确认 (roomConfirmed)**
+- 询问场地的长、宽、高。
+- 收集齐全后确认本阶段，并进入下一阶段。
+
+**阶段 3：舞台参数确认 (stageConfirmed)**
+- **差异化处理**：
+  - 如果场景是**“会议室”**：忽略所有舞台参数，直接将 stageConfirmed 设为 true，并跳至阶段 4。
+  - 如果场景是**“报告厅”**：必须询问舞台相关参数（舞台宽 stageWidth、舞台深 stageDepth、舞台到最近观众距离 stageToNearAudience、舞台到最远观众距离 stageToFarAudience）。
+
+**阶段 4：话筒配置确认 (micsConfirmed)**
+- 当进入此阶段时，**首先**向用户展示数据库中可选的话筒类型：${micTypeHint}。
+- **然后**仅基于数据库话筒类型给出默认建议并询问用户是否采用或修改：${micDefaultSuggestion}
+- 严禁编造数据库中不存在的话筒类型、型号或名称；若数据库为空，必须明确告知“暂无可选话筒”。
+
+**阶段 5：子系统确认 (subsystemsConfirmed)**
+- 询问用户对控制、矩阵、视讯、录播等子系统的需求。
+
+**阶段 6：其他需求确认 (extraRequirementsConfirmed)**
+- 询问是否还有其他特殊声学或设备要求。
+
+**阶段 7：总结与方案启动**
+- 只有当上述所有阶段的关键参数和需求都已确认完毕时，才执行此阶段：
+  - **首先**：在输出的最开头，一次性输出所有最终确认的参数标记（见下方标记规则）。
+  - **然后**：给出一份详细、清晰、结构化的参数总结清单。
+  - **约束**：参数总结只能输出一次，禁止重复输出“参数总结如下/确认后的参数”等第二份总结。
+  - **最后**：引导用户：“若信息未更新请输入‘更新全部参数’；若信息确认无误，请点击页面下方的‘启动方案设计’按钮。”
+
+【参数更新与标记规则（非常重要）】
+1. **输出标记**：在对话收集参数的阶段，只要用户提供了有效参数，就**需要**在回复中输出 [UPDATE_PARAM: {"key": "键名", "value": 值}] 标记更新对应数据及对应的 xxxConfirmed: true 状态。
+2. **键名参考**：length, width, height, micHandheld, micGooseneck, micOmni, micLavalier, micCeiling, stageWidth, stageDepth, stageToNearAudience, stageToFarAudience, hasCentralControl, hasMatrix, hasVideoConf, hasRecording, scenarioConfirmed, roomConfirmed, stageConfirmed, micsConfirmed, subsystemsConfirmed, extraRequirementsConfirmed。
+3. **话筒覆盖逻辑**：针对用户填写或修改的话筒配置，默认**完全替换**原来的配置。AI需具备理解“新增某类”、“删除某类”、“修改数量”的能力并输出最新的全量话筒状态。
+4. **子系统快照逻辑**：针对用户填写的子系统要求，默认完全替换。每次输出子系统更新时，**必须一次性**给出 4 个布尔键（hasCentralControl, hasMatrix, hasVideoConf, hasRecording）的完整快照，不遗漏任何一个。
+5. **参数修改与回退**：如果用户在后续对话中修改了已确认过的某组参数，你需要将该组对应的确认状态（xxxConfirmed）改回 false（如果还需要追问），或者更新参数后重新设为 true。
+6. **场景切换重置**：如果用户**切换了场景**（如从会议室换成报告厅），必须将除 scenario 之外的**所有**参数确认状态全部重置为 false，并重新从阶段 2 开始引导。`;
 
   try {
     // 设置 Server-Sent Events (SSE) 头部供流式输出
@@ -2268,7 +2342,7 @@ app.post("/api/chat-assistant", async (req, res) => {
       stream: true, 
       options: {
         num_ctx: 2048,
-        stop: ["<think>", "</think>", "|im_end|"], 
+        stop: ["ändig", "ground", "|im_end|"], 
         num_predict: 100
       }
     }, { 
@@ -2327,7 +2401,7 @@ app.post("/api/run-dify-chatflow", async (req, res) => {
   const DIFY_API_KEY = "app-f3xzV8aGpe4crb7ezMFiSnwi"; // ← 已替换为最新 key
   // const DIFY_API_KEY = "app-rmJ6pmkpBuf4KGAChHYrcZBP";
   const DIFY_CHAT_API_URL = process.env.DIFY_CHAT_API_URL || "http://115.231.236.153:20000/v1/chat-messages";
-  const queryText = isProduction ? "请执行声学方案设计流程。" : "请执行声学方案设计流程（测试）。";
+  const queryText = "请执行声学方案设计流程。";
   const maskKey = (key) => key ? `${key.slice(0, 4)}...${key.slice(-4)}` : "(empty)";
   console.log(`🔐 Dify config: url=${DIFY_CHAT_API_URL}, key=${maskKey(DIFY_API_KEY)}`);
   console.log(`🎯 Running Dify Chatflow in ${isProduction ? 'production' : 'development'} mode with query: "${queryText}"`);
@@ -2703,6 +2777,19 @@ app.get("/api/inventory/speaker-metadata", async (req, res) => {
       error: "Failed to load speaker metadata",
       productTypeOptions: ["全频音箱", "线阵列音箱", "台唇音箱", "拉声像音箱", "返听音箱", "超低音箱"],
       functionOptions: ["主扩声", "返听", "辅助扩声", "次低频补偿", "吊装", "壁挂", "吸顶", "舞台监听"]
+    });
+  }
+});
+
+app.get("/api/inventory/microphone-types", async (req, res) => {
+  try {
+    const options = await getMicrophoneTypeOptions();
+    res.json({ options });
+  } catch (error) {
+    console.error("❌ Load microphone types failed:", error.message);
+    res.status(500).json({
+      error: "Failed to load microphone types",
+      options: []
     });
   }
 });

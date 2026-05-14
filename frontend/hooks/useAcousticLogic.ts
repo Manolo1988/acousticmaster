@@ -1062,6 +1062,65 @@ const buildAssistantCurrentParamsSnapshot = (
   return snapshot;
 };
 
+const resetAssistantParamGroups = (
+  target: AcousticParams,
+  nextPayload: Partial<AcousticParams>
+) => {
+  const hasRoomUpdate = ['length', 'width', 'height'].some((key) =>
+    Object.prototype.hasOwnProperty.call(nextPayload, key)
+  );
+  const hasStageUpdate = ['stageToNearAudience', 'stageToFarAudience', 'stageWidth', 'stageDepth'].some((key) =>
+    Object.prototype.hasOwnProperty.call(nextPayload, key)
+  );
+  const hasMicUpdate = ['mics', 'micHandheld', 'micGooseneck', 'micOmni', 'micLavalier', 'micCeiling'].some((key) =>
+    Object.prototype.hasOwnProperty.call(nextPayload, key)
+  );
+  const hasSubsystemUpdate = SUBSYSTEM_PARAM_KEYS.some((key) =>
+    Object.prototype.hasOwnProperty.call(nextPayload, key)
+  );
+  const hasExtraRequirementUpdate = Object.prototype.hasOwnProperty.call(nextPayload, 'extraRequirements');
+
+  if (hasRoomUpdate) {
+    target.length = 0;
+    target.width = 0;
+    target.height = 0;
+    target.roomConfirmed = false;
+  }
+
+  if (hasStageUpdate) {
+    target.stageToNearAudience = 0;
+    target.stageToFarAudience = 0;
+    target.stageWidth = 0;
+    target.stageDepth = 0;
+    target.stageConfirmed = false;
+  }
+
+  if (hasMicUpdate) {
+    target.mics = [];
+    target.micHandheld = 0;
+    target.micGooseneck = 0;
+    target.micOmni = 0;
+    target.micLavalier = 0;
+    target.micCeiling = 0;
+    target.micsConfirmed = false;
+  }
+
+  if (hasSubsystemUpdate) {
+    target.hasCentralControl = false;
+    target.hasMatrix = false;
+    target.hasVideoConf = false;
+    target.hasRecording = false;
+    target.subsystemsConfirmed = false;
+  }
+
+  if (hasExtraRequirementUpdate) {
+    target.extraRequirements = '';
+    target.extraRequirementsConfirmed = false;
+  }
+
+  return target;
+};
+
 const detectMicUpdateModeFromPayloads = (
   payloads: Record<string, any>[],
   normalizedParams: Partial<AcousticParams>
@@ -1302,7 +1361,12 @@ const useAcousticAssistant = (
 
         if (Object.keys(combinedNormalized).length > 0) {
           setParams(prev => {
-            const next: AcousticParams = { ...prev, ...(combinedNormalized as AcousticParams) };
+            const next: AcousticParams = resetAssistantParamGroups(
+              { ...prev },
+              combinedNormalized
+            );
+
+            Object.assign(next, combinedNormalized as AcousticParams);
 
             if (hasMicUpdate) {
               const micOptions = assistantContext?.micTypeOptions || [];
@@ -1313,7 +1377,7 @@ const useAcousticAssistant = (
               } else if (!hasExplicitMicMode && inferredMicUpdateMode) {
                 resolvedMicMode = inferredMicUpdateMode;
               }
-              const nextMics = applyMicUpdateByMode(prev.mics || [], incomingMics, resolvedMicMode, micOptions);
+              const nextMics = applyMicUpdateByMode([], incomingMics, resolvedMicMode, micOptions);
               next.mics = nextMics;
               Object.assign(next, buildMicCounts(nextMics));
             }

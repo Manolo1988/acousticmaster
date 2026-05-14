@@ -1012,14 +1012,8 @@ const detectScenarioFromAssistant = (
     return null;
   }
 
-  if (!/您选择了|选择的是|已选择|确定为|确认为|切换到|切换为|改为|改成|更改为|调整为|变更为|场景为|采用|当前场景|MEETING_ROOM|LECTURE_HALL|REPORT_HALL/i.test(normalized)) {
-    return null;
-  }
-
-  if (/切换|改为|改成|场景|确定|确认为|判断为|建议采用/.test(normalized)) {
-    const parsed = parseScenarioValue(normalized);
-    if (parsed) return parsed;
-  }
+  const parsed = parseScenarioValue(normalized);
+  if (parsed) return parsed;
   return null;
 };
 

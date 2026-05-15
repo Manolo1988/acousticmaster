@@ -129,6 +129,7 @@ export interface ChatMessage {
   role: 'user' | 'ai';
   text: string;
   timestamp: Date;
+  hidden?: boolean;
 }
 
 export interface DesignState {

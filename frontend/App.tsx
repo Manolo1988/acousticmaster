@@ -4259,7 +4259,7 @@ const App: React.FC = () => {
               <button onClick={() => logic.setIsChatOpen(false)} className="text-white/60 hover:text-white transition-colors">✕</button>
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50 scrollbar-hide">
-              {logic.designState.chatHistory.map((chat, idx) => (
+              {logic.designState.chatHistory.filter(chat => !chat.hidden).map((chat, idx) => (
                 <div key={idx} className={`flex ${chat.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   <div className={`max-w-[90%] p-3.5 rounded-2xl text-[12px] leading-relaxed shadow-sm ${chat.role === 'user'
                     ? `${themeBg} text-white rounded-tr-none`
@@ -4322,7 +4322,7 @@ const App: React.FC = () => {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
                 </svg>
               </button>
-              <button onClick={logic.handleSendMessage} className={`w-8 h-8 rounded-full flex items-center justify-center ${themeBg} text-white`}>
+              <button onClick={() => logic.handleSendMessage()} className={`w-8 h-8 rounded-full flex items-center justify-center ${themeBg} text-white`}>
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 12h14M12 5l7 7-7 7"></path></svg>
               </button>
             </div>

@@ -1255,7 +1255,8 @@ const useAcousticAssistant = (
   setParams: React.Dispatch<React.SetStateAction<AcousticParams>>,
   setChatHistory: React.Dispatch<React.SetStateAction<ChatMessage[]>>,
   onScenarioConfirmed: (scenario: Scenario, forceReset?: boolean) => void,
-  assistantScenario: Scenario | null
+  assistantScenario: Scenario | null,
+  onInstructionCompleted?: () => void
 ) => {
   const [isAssistantLoading, setIsAssistantLoading] = useState(false);
 
@@ -1275,12 +1276,22 @@ const useAcousticAssistant = (
     }
     setIsAssistantLoading(true);
     
-    // 1. 立即显示用户消息
-    const userMsg: ChatMessage = { role: 'user', text, timestamp: new Date() };
+    // 1. 立即显示用户消息（除非是隐藏消息）
+    const userMsg: ChatMessage = { 
+      role: 'user', 
+      text, 
+      timestamp: new Date(),
+      hidden: (assistantContext as any)?.hidden
+    };
     setChatHistory(prev => [...prev, userMsg]);
 
     // 2. 创建占位 AI 消息（后续流式更新）
-    setChatHistory(prev => [...prev, { role: 'ai', text: "", timestamp: new Date() }]);
+    setChatHistory(prev => [...prev, { 
+      role: 'ai', 
+      text: "", 
+      timestamp: new Date(),
+      hidden: (assistantContext as any)?.hidden
+    }]);
 
     let fullAiText = "";
     try {
@@ -1409,6 +1420,19 @@ const useAcousticAssistant = (
           updated[updated.length - 1] = { ...updated[updated.length - 1], text: cleanText };
           return updated;
         });
+      }
+
+      // --- 新增：自动检测特定结束语并触发静默校准 ---
+      // 只要 AI 提到“启动方案设计”，我们就触发一次静默参数同步，确保 UI 与 AI 状态一致
+      const calibrationTriggerPhrase = "启动方案设计";
+      const rawAiText = fullAiText || "";
+      if (!((assistantContext as any)?.hidden) && rawAiText.indexOf(calibrationTriggerPhrase) !== -1) {
+        if (onInstructionCompleted) {
+          // 响应用户需求：用户告知用户等待5s，我们在5s内（当前设定为2s触发）完成校准
+          setTimeout(() => {
+            onInstructionCompleted();
+          }, 2000); 
+        }
       }
 
     } catch (err) {
@@ -2011,7 +2035,12 @@ export const useAcousticLogic = () => {
         };
       });
     },
-    assistantScenario
+    assistantScenario,
+    () => {
+      // 这里的逻辑延迟绑定到 handleForceUpdateParams
+      // 由于 useAcousticLogic 内部函数定义的顺序，我们需要确保能调用到
+      handleForceUpdateParams();
+    }
   );
 
   const wrappedSendMessageToAssistant = (text: string) => {
@@ -2666,9 +2695,9 @@ export const useAcousticLogic = () => {
   };
 
   // --- 交互与设计逻辑 ---
-  const handleSendMessage = async (customMessage?: string) => {
-    const msg = customMessage || chatInputValue;
-    if (!msg.trim() || isAssistantLoading) return;
+  const handleSendMessage = async (customMessage?: string, isHidden = false) => {
+    const msg = (customMessage || chatInputValue).trim();
+    if (!msg || isAssistantLoading) return;
     
     if (!customMessage) {
       setChatInputValue("");
@@ -2676,8 +2705,9 @@ export const useAcousticLogic = () => {
     
     await sendMessageToAssistant(msg, designState.chatHistory, isAiBackendRunning, {
       scenario: designState.scenario,
-      micTypeOptions
-    });
+      micTypeOptions,
+      hidden: isHidden
+    } as any);
   };
 
 
@@ -3650,8 +3680,8 @@ const deleteHistoryRecordsBatch = async (ids: number[]) => {
 };
 
 const handleForceUpdateParams = () => {
-  console.log('🔄 Requesting AI to calibrate parameters...');
-  handleSendMessage("请根据我们目前的对话，更新并输出一次当前所有的参数。请确保包含完整的 [UPDATE_PARAM: {...}] 块。");
+  console.log('🔄 Requesting AI to calibrate parameters (hidden)...');
+  handleSendMessage("请根据我们目前的对话，更新并输出一次当前所有的参数。请确保包含完整的 [UPDATE_PARAM: {...}] 块。", true);
 };
 
 const filteredInventory = useMemo(() => displayInventory, [displayInventory]);

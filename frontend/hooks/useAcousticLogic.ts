@@ -2666,10 +2666,14 @@ export const useAcousticLogic = () => {
   };
 
   // --- 交互与设计逻辑 ---
-  const handleSendMessage = async () => {
-    if (!chatInputValue.trim() || isAssistantLoading) return;
-    const msg = chatInputValue;
-    setChatInputValue("");
+  const handleSendMessage = async (customMessage?: string) => {
+    const msg = customMessage || chatInputValue;
+    if (!msg.trim() || isAssistantLoading) return;
+    
+    if (!customMessage) {
+      setChatInputValue("");
+    }
+    
     await sendMessageToAssistant(msg, designState.chatHistory, isAiBackendRunning, {
       scenario: designState.scenario,
       micTypeOptions
@@ -3645,6 +3649,11 @@ const deleteHistoryRecordsBatch = async (ids: number[]) => {
   }
 };
 
+const handleForceUpdateParams = () => {
+  console.log('🔄 Requesting AI to calibrate parameters...');
+  handleSendMessage("请根据我们目前的对话，更新并输出一次当前所有的参数。请确保包含完整的 [UPDATE_PARAM: {...}] 块。");
+};
+
 const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
   return {
     searchFilters, setSearchFilters,
@@ -3690,6 +3699,7 @@ const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
     handleMicChange,
     handleParamChange,
     handleUpdateProjectName, handleSendMessage, startDesign, saveEdit, handleLogout,
+    handleForceUpdateParams,
     fetchEquipmentDetail,
     analyzeAmplifierMatch,
     getCachedEquipmentDetail,

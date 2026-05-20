@@ -1060,10 +1060,6 @@ const buildAssistantCurrentParamsSnapshot = (
     delete snapshot.hasRecording;
   }
 
-  if (!params.extraRequirementsConfirmed) {
-    delete snapshot.extraRequirements;
-  }
-
   return snapshot;
 };
 
@@ -1256,7 +1252,7 @@ const useAcousticAssistant = (
   setChatHistory: React.Dispatch<React.SetStateAction<ChatMessage[]>>,
   onScenarioConfirmed: (scenario: Scenario, forceReset?: boolean) => void,
   assistantScenario: Scenario | null,
-  onInstructionCompleted?: () => void
+  onInstructionCompleted?: () => void | Promise<void>
 ) => {
   const [isAssistantLoading, setIsAssistantLoading] = useState(false);
 
@@ -1377,12 +1373,21 @@ const useAcousticAssistant = (
 
         if (Object.keys(combinedNormalized).length > 0) {
           setParams(prev => {
+            const hasExtraRequirementsField = Object.prototype.hasOwnProperty.call(combinedNormalized, 'extraRequirements');
+            const incomingExtraRequirements = hasExtraRequirementsField
+              ? String((combinedNormalized as any).extraRequirements ?? '').trim()
+              : '';
             const next: AcousticParams = resetAssistantParamGroups(
               { ...prev },
               combinedNormalized
             );
 
             Object.assign(next, combinedNormalized as AcousticParams);
+
+            if (hasExtraRequirementsField && !incomingExtraRequirements) {
+              next.extraRequirements = prev.extraRequirements;
+              next.extraRequirementsConfirmed = prev.extraRequirementsConfirmed;
+            }
 
             if (hasMicUpdate) {
               const micOptions = assistantContext?.micTypeOptions || [];
@@ -1430,7 +1435,9 @@ const useAcousticAssistant = (
         if (onInstructionCompleted) {
           // 响应用户需求：用户告知用户等待5s，我们在5s内（当前设定为2s触发）完成校准
           setTimeout(() => {
-            onInstructionCompleted();
+            Promise.resolve(onInstructionCompleted()).catch((error) => {
+              console.error('Auto calibration callback failed:', error);
+            });
           }, 2000); 
         }
       }
@@ -2006,6 +2013,12 @@ export const useAcousticLogic = () => {
     activeResultIndex: 0
   });
 
+  // 参数校准状态（用于 UI 提示）
+  const [isCalibrating, setIsCalibrating] = useState(false);
+  const [calibrationProgress, setCalibrationProgress] = useState(0); // 0-100
+  // 是否将本应隐藏的校准消息显性展示（用于调试），默认 false（已隐藏）
+  const [revealCalibrationMessages, setRevealCalibrationMessages] = useState(false);
+
   // --- 注入本地 LLM 助理逻辑 ---
   const { sendMessageToAssistant, isAssistantLoading } = useAcousticAssistant(
     designState.params,
@@ -2036,10 +2049,9 @@ export const useAcousticLogic = () => {
       });
     },
     assistantScenario,
-    () => {
-      // 这里的逻辑延迟绑定到 handleForceUpdateParams
-      // 由于 useAcousticLogic 内部函数定义的顺序，我们需要确保能调用到
-      handleForceUpdateParams();
+    async () => {
+      // 对话结束后执行一次静默校准：仅全量参数
+      await handleForceUpdateParams('full');
     }
   );
 
@@ -3679,9 +3691,40 @@ const deleteHistoryRecordsBatch = async (ids: number[]) => {
   }
 };
 
-const handleForceUpdateParams = () => {
+const handleForceUpdateParams = async (mode: 'full' | 'extraRequirements' = 'full', reveal = false) => {
+  if (isCalibrating) return;
   console.log('🔄 Requesting AI to calibrate parameters (hidden)...');
-  handleSendMessage("请根据我们目前的对话，更新并输出一次当前所有的参数。请确保包含完整的 [UPDATE_PARAM: {...}] 块。", true);
+  setIsCalibrating(true);
+  setCalibrationProgress(5);
+
+  // 进度动画：每 300ms 增加一点，直至 90%，等待实际请求结束再置为 100%
+  let progress = 5;
+  const iv = setInterval(() => {
+    progress = Math.min(90, progress + Math.floor(Math.random() * 8) + 2);
+    setCalibrationProgress(progress);
+  }, 300);
+
+    try {
+    const calibrationPrompt = mode === 'extraRequirements'
+      ? "更新其他需求"
+      : "请根据我们目前的对话，更新并输出一次当前所有的参数。请确保包含完整的 [UPDATE_PARAM: {...}] 块。";
+
+    // 决定此次发送是否为隐藏消息：优先使用 reveal 参数，其次参考全局切换状态
+    const isHidden = !(reveal || revealCalibrationMessages);
+
+    console.log('🔁 calibration send:', { prompt: calibrationPrompt, hidden: isHidden });
+    await handleSendMessage(calibrationPrompt, isHidden);
+    // 等待助手响应完成
+    setCalibrationProgress(100);
+  } catch (err) {
+    console.error('Force update params failed:', err);
+  } finally {
+    clearInterval(iv);
+    // 给用户一点时间看到 100% 的反馈
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    setIsCalibrating(false);
+    setCalibrationProgress(0);
+  }
 };
 
 const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
@@ -3695,6 +3738,7 @@ const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
     isChatOpen, setIsChatOpen,
     chatInputValue, setChatInputValue,
     designState, setDesignState,
+    isCalibrating, calibrationProgress,
     isProcessingAi, isGeneratingDocs,
     editingItem, setEditingItem,
     previewHistoryItem, setPreviewHistoryItem,
@@ -3730,6 +3774,8 @@ const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
     handleParamChange,
     handleUpdateProjectName, handleSendMessage, startDesign, saveEdit, handleLogout,
     handleForceUpdateParams,
+    // 调试用：是否显性展示原本应隐藏的校准消息（state + setter）
+    revealCalibrationMessages, setRevealCalibrationMessages,
     fetchEquipmentDetail,
     analyzeAmplifierMatch,
     getCachedEquipmentDetail,

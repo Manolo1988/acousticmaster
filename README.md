@@ -1,155 +1,282 @@
-##TodoList
-生成方案优化
+# Acoustic Master
 
-1.速度优化，多个方案同时生成的优化（可能要使用多线程）
+声学方案设计系统，包含前端设计看板、Node.js 后端接口、数据库设备清单读取，以及逆向设计方案生成/三维声场结果展示。
 
-2.现在调用的是api，后面还是用本地模型
+## 目录结构
 
- （部分完成by sun）点击右上角“生成正式报告”后，由大模型根据设备、系统、排版要求，动态生成 Markdown 格式的文本（含图片），返回 UI 界面，由 UI 渲染成文档形式
- 
-3.我设计是要能够在占位符位置插入图片或者表格（就是本地资源库内容），以及设备图片。现在数据库的表是弄好了，提示词里面也加了，但是资源我还没放，功能也还没有测试
+```text
+.
+├── backend/                 # Node.js 后端接口
+├── frontend/                # React + Vite 前端
+├── sim/                     # Python 声学逆向设计与仿真模块
+├── docker/                  # Docker/Nginx 部署相关文件
+├── package.json             # 根目录少量共享依赖
+└── README.md
+```
 
+## 环境要求
 
+- Node.js 18 或更高版本
+- npm
+- Python 3.10 或更高版本，推荐使用 conda 环境 `sound`
+- MySQL 数据库，当前系统按远程数据库连接方式运行
+- 可选：Docker 与 Docker Compose，用于生产部署
 
-数据集优化：
+推荐 Python 环境：
 
-4.这个写到readme中了，主要是数据库中的设备整理，同时把dify中的流程也一并改了（因为这两个是强绑定关系）
+```bash
+conda activate sound
+```
 
- 🔹 数据库重新整理，避免同一个设备因用途不同多次出现，可在 UI 界面直接进行数据管理
+如果没有该环境，可自行创建：
 
- 🔹 考虑系统设备的级联情况（如同一型号的线阵列音箱和挂架、某品牌的一套矩阵系统）
+```bash
+conda create -n sound python=3.11 -y
+conda activate sound
+```
 
-设备计算优化
+## 配置后端环境变量
 
-5.返回音箱悬挂的位置角度（这个会议室的我已经保存了数据但没有传出来，报告厅还没有从各个环节保存出数据）
-
-6.支持任意多边形的音箱部署（例如把整个屋子从主音箱悬挂的左边开始算（0，0），传入每一个顶点坐标，根据这个进行设计）
-
-7.现在设备筛选没加品牌过滤，这个要在dify中改
-
-
-
-
-
-
-📥 输入
- (已完成 by zdh)🔹 主页右侧的对话框，能以更人性化的方式问出所有需要的信息，然后生成方案（类似现有方式，但更灵活）
- 
-📤 输出
- （已完成by sun）🔸 Dify 先生成设备方案 list 返回 UI，UI 上用户可进行修改（如删除设备、修改数量）
-
-📐 方案
-
- 🔸 （已完成by sun）吸顶音箱由于放在头顶，排列方式不同，所以要有自己的方案
-
-🌐 用户访问
-
- （已完成 by sun）🔹 采用后端直接向 Dify 发送请求的方式，而不是维护一个 latest 的状态
-
-
-# 分支添加功能：AI 引擎增强版 (Feature/AI-Daemon) 启动指南
-
-本项目在原有架构基础上引入了 **AI 守护进程 (Daemon)** 模式，实现了 AI 引擎的一键启停控制与流式对话功能。
-
-## 1. 核心功能
-
-- **AI 系统管理**：通过 UI 按钮直接控制 AI 后端进程（运行在 3003 端口）的开启与关闭。
-- **健康监控**：Daemon 守护进程（4000 端口）实时监控 AI 状态，确保服务的高可用。
-- **流式对话**：支持 AI 助手的实时响应，界面交互更流畅。
-- **统一路由**：无论在开发环境还是 Docker 部署，均通过统一的 `/api/system` 和 `/api/chat-assistant` 接口访问。
-
----
-
-## 2. 环境准备
-
-确保您的运行环境中已具备：
-
-- **Node.js**: v18+
-- **Docker & Docker Compose** (用于生产部署)
-- **Ollama**: (可选) 如果使用本地 LLM，请确保 Ollama 服务已启动且模型（如 `qwen2.5:7b`）已拉取。
-
----
-
-## 3. 启动方法 (开发模式)
-
-推荐使用 Vite 开发服务器配合本地 Backend，以便实时调试代码。
-
-### 第一步：启动 AI 守护进程
-
-在 `backend` 目录下通过 Node 启动守护进程：
+后端会读取 `backend/.env`。第一次运行时，从示例文件复制：
 
 ```bash
 cd backend
-node daemon_v2.cjs
+cp .env.example .env
 ```
 
-> _注：守护进程将监听 **4000** 端口。它负责在您点击 UI 按钮时启动 3003 端口的 AI 后端。_
+然后编辑 `backend/.env`，至少确认以下配置：
 
-### 第二步：启动后端
+```env
+DB_HOST=数据库地址
+DB_PORT=3306
+DB_USER=数据库用户名
+DB_PASSWORD=数据库密码
+DB_NAME=数据库名
 
-在 `backend` 目录下通过 Node 启动守护进程：
+ARK_API_KEY=你的大模型 API Key
+ARK_MODEL=doubao-seed-2-0-pro-260215
+ARK_API_URL=https://ark.cn-beijing.volces.com/api/v3/responses
+```
+
+注意：
+
+- 不要把真实的 `backend/.env` 提交到 Git。
+- 如果只验证页面和逆向设计展示，数据库连接仍需要可用，否则设备清单、声学参数查询会失败。
+- 后端默认可通过 `PORT` 指定端口，本项目开发时使用 `3001`。
+
+## 安装依赖
+
+在项目根目录执行：
+
+```bash
+cd /home/zhao/Codes/proj/acousticmaster_simimulation/acousticmaster
+```
+
+安装后端依赖：
 
 ```bash
 cd backend
-node service.js
+npm ci
 ```
 
-
-### 第三步：启动前端 (Vite)
-
-在 `frontend` 目录下运行：
+安装前端依赖：
 
 ```bash
-cd frontend
-npm run dev
+cd ../frontend
+npm ci
 ```
 
-> _访问地址：[http://115.231.236.153:8101](http://115.231.236.153:8101)_
+安装 Python 仿真依赖：
 
----
+```bash
+cd ../sim
+conda activate sound
+pip install -r requirements.txt
+```
 
-## 4. 启动方法 (Docker 生产部署)
+如果运行逆向设计时提示缺少 `scipy`，请补充安装：
 
-该模式下，Nginx 会自动处理所有服务的路由转发。
+```bash
+pip install scipy
+```
 
-### 一键启动
+## 开发环境运行
 
-前端更新：
+建议开两个终端。
+
+### 1. 启动后端
+
+```bash
+cd /home/zhao/Codes/proj/acousticmaster_simimulation/acousticmaster/backend
+PORT=3001 NODE_ENV=development node server.js
+```
+
+启动成功后应看到类似：
+
+```text
+Server running on http://0.0.0.0:3001
+```
+
+### 2. 启动前端
+
+```bash
+cd /home/zhao/Codes/proj/acousticmaster_simimulation/acousticmaster/frontend
+npm run dev -- --host 0.0.0.0 --port 8101
+```
+
+访问：
+
+```text
+http://localhost:8101/
+```
+
+当前 `frontend/.env.development` 中开发代理指向：
+
+```env
+VITE_DEV_API_TARGET=http://127.0.0.1:3001
+VITE_DEV_AI_CHAT_TARGET=http://127.0.0.1:3001
+VITE_DEV_AI_SYSTEM_TARGET=http://127.0.0.1:3001
+```
+
+因此后端建议固定运行在 `3001`。
+
+## 一行命令后台运行
+
+如需像当前开发机一样后台启动：
+
+```bash
+cd /home/zhao/Codes/proj/acousticmaster_simimulation/acousticmaster
+
+setsid bash -c 'cd backend && PORT=3001 NODE_ENV=development exec node server.js >> ../server_3001.log 2>&1' < /dev/null &
+setsid bash -c 'cd frontend && exec npm run dev -- --host 0.0.0.0 --port 8101 >> ../frontend_8101.log 2>&1' < /dev/null &
+```
+
+查看端口：
+
+```bash
+ss -ltnp | grep -E ':3001|:8101'
+```
+
+停止服务：
+
+```bash
+fuser -k 3001/tcp
+fuser -k 8101/tcp
+```
+
+## 逆向设计方案生成
+
+前端“方案明细”旁边有“逆向设计方案生成”标签页。点击进入后：
+
+1. 页面会读取当前方案的房间尺寸。
+2. 从设备列表中筛选音箱类设备。
+3. 后端按型号到数据库查询声学参数；查不到时使用估算参数。
+4. Python `sim` 模块根据固定型号和数量做逆向布局优化。
+5. 返回三维声场、音箱位置、SPL 指标和国标对比。
+
+相关文件：
+
+```text
+frontend/components/AcousticSimulationDemo.tsx
+frontend/utils/simulationSpeaker.ts
+backend/server.js
+sim/run_simulation.py
+sim/webapp/server.py
+sim/opt/optimizer.py
+```
+
+约束说明：
+
+- 不做设备选型，只使用方案清单里的音箱型号和数量。
+- 同型号音箱优先对称布置。
+- 奇数数量时，多出的一只放在对称中线上。
+- 吸顶音响指向固定为竖直向下。
+- 当前逆向优化最多迭代 20 步。
+
+## 单独运行 sim 模块
+
+如果只想验证 Python 仿真模块：
+
+```bash
+cd /home/zhao/Codes/proj/acousticmaster_simimulation/acousticmaster/sim
+conda activate sound
+pip install -r requirements.txt
+python webapp/server.py
+```
+
+访问：
+
+```text
+http://127.0.0.1:8080/simulation.html
+```
+
+## 构建前端
+
 ```bash
 cd frontend
 npm run build
 ```
-然后运行 deploy_fronted.sh
 
-后端更新：
+构建产物在 `frontend/dist/`，该目录不提交到 Git。
+
+## Docker 部署参考
+
 ```bash
-cd docker
-docker-compose up -d --build
-sudo docker restart acoustic-nginx
+cd frontend
+npm ci
+npm run build
+
+cd ../docker
+docker compose up -d --build
 ```
 
-> _访问地址：[http://115.231.236.153:8100](http://115.231.236.153:8100)_
+Docker/Nginx 入口通常是 `8100`，具体以 `docker/docker-compose.yml` 和 Nginx 配置为准。
 
-### 服务说明
+## 常见问题
 
-- **8100 端口**：外部统一入口 (Nginx)。
-- **ai-daemon 服务**：容器内运行，负责管理 AI 业务生命周期。
+### 1. 前端能打开，但接口失败
 
----
+检查后端是否在 `3001`：
 
-## 5. 架构说明 (端口关系)
+```bash
+ss -ltnp | grep 3001
+```
 
-| 服务         | 端口      | 说明                              |
-| :----------- | :-------- | :-------------------------------- |
-| Frontend Dev | 8101      | Vite 开发服务器                   |
-| Nginx Prod   | 8100      | Docker 生产入口                   |
-| AI Daemon    | 4000      | 控制中心（查询状态、启停 AI）     |
-| AI Backend   | 3003      | AI 核心逻辑（被 Daemon 动态管理） |
-| Main API     | 3002/3001 | 基础业务 API                      |
+检查 `frontend/.env.development` 的代理地址是否仍指向 `http://127.0.0.1:3001`。
 
----
+### 2. 后端启动后数据库报错
 
-## 6. 常见问题
+检查 `backend/.env` 中的数据库地址、用户名、密码和库名是否正确。当前系统依赖远程数据库，不需要本地部署 MySQL，但远程数据库必须可连接。
 
-- **端口冲突**：若提示 8101 被占用，请执行 `fuser -k 8101/tcp`。
-- **AI 无法点击**：请检查 `backend/daemon_v2.cjs` 是否已启动，且 `PROJECT_ROOT` 路径配置正确。
+### 3. 逆向设计一直失败或超时
+
+检查：
+
+- Python 环境是否为 `sound`
+- 是否安装了 `numpy`、`scipy`、`plotly`
+- 后端是否能调用 `/sim/run_simulation.py`
+- 当前方案中是否有音箱设备
+- 数据库是否能查到对应型号的声学参数
+
+### 4. 端口被占用
+
+```bash
+fuser -k 3001/tcp
+fuser -k 8101/tcp
+```
+
+### 5. 不要提交的文件
+
+以下内容已在 `.gitignore` 中忽略：
+
+```text
+node_modules/
+dist/
+build/
+.next/
+*.log
+backend/.env
+dataset/*.sql
+__pycache__/
+*.pyc
+```

@@ -4219,11 +4219,10 @@ try {
 }
 
 // 启动 - 支持环境变量动态指定端口
-// 优先读取环境变量 PORT，没有则用默认值（测试3002/线上3001）
-const DEFAULT_TEST_PORT = Number(process.env.TEST_PORT || 3002);
+// 优先读取环境变量 PORT，没有则默认使用 3001，与前端 Vite 代理、docker-compose/nginx upstream 保持一致
+const DEFAULT_TEST_PORT = Number(process.env.TEST_PORT || 3001);
 const DEFAULT_PROD_PORT = Number(process.env.PROD_PORT || 3001);
 const PORT = Number(process.env.PORT || (isProduction ? DEFAULT_PROD_PORT : DEFAULT_TEST_PORT));
-// 默认使用 3001，与 docker-compose/nginx upstream 保持一致
 const DIFY_INTENT_HOST = process.env.DIFY_INTENT_HOST || "115.231.236.153";
 const difyIntentUrl = `http://${DIFY_INTENT_HOST}:${PORT}/api/acoustic-intent/latest`;
 

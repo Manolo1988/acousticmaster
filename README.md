@@ -62,7 +62,7 @@ ARK_API_URL=https://ark.cn-beijing.volces.com/api/v3/responses
 
 - 不要把真实的 `backend/.env` 提交到 Git。
 - 如果只验证页面和逆向设计展示，数据库连接仍需要可用，否则设备清单、声学参数查询会失败。
-- 后端默认可通过 `PORT` 指定端口，本项目开发时使用 `3001`。
+- 后端默认端口是 `3001`，直接运行 `node server.js` 即可；如需改端口可通过 `PORT` 指定。
 
 ## 安装依赖
 
@@ -108,7 +108,7 @@ pip install scipy
 
 ```bash
 cd /home/zhao/Codes/proj/acousticmaster_simimulation/acousticmaster/backend
-PORT=3001 NODE_ENV=development node server.js
+node server.js
 ```
 
 启动成功后应看到类似：

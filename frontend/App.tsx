@@ -7,8 +7,9 @@ import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { Scenario, Page, SolutionTab, ResultTab, User, TableType, DbInventoryItem, HistoryRecord, EquipmentItem, AcousticParams, SolutionResult } from './types';
 import { SCENARIO_THEMES, VERIFY_THEME } from './constants';
-import Visualization from './components/Visualization';
+import AcousticSimulationDemo from './components/AcousticSimulationDemo';
 import { useAcousticLogic } from './hooks/useAcousticLogic';
+import { isSimulationSpeakerItem } from './utils/simulationSpeaker';
 import * as XLSX from 'xlsx';
 
 declare global {
@@ -2238,7 +2239,7 @@ const App: React.FC = () => {
                     className={`${glassButtonClass} space-x-2 px-4 h-9 font-black text-[13px] uppercase active:scale-95 animate-in fade-in slide-in-from-right-2 duration-300`}
                   >
                     <svg className="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
-                    <span>下载仿真图 (PNG)</span>
+                    <span>下载逆向设计图 (PNG)</span>
                   </button>
                 )}
               </div>
@@ -2268,7 +2269,7 @@ const App: React.FC = () => {
               <div className="bg-slate-50 p-0.5 rounded-md border border-slate-200 flex items-center h-8">
                 {/* 切换放置在每个方案之下，体现它是针对当前方案的属性 */}
                 <button onClick={() => logic.setCurrentResultTab(ResultTab.PLAN)} className={`px-3 h-7 rounded-sm text-[13px] font-bold transition-all ${logic.currentResultTab === ResultTab.PLAN ? `bg-white ${themeText} shadow-sm` : 'text-slate-400'}`}>方案明细</button>
-                <button onClick={() => logic.setCurrentResultTab(ResultTab.SIMULATION)} className={`px-3 h-7 rounded-sm text-[13px] font-bold transition-all ${logic.currentResultTab === ResultTab.SIMULATION ? `bg-white ${themeText} shadow-sm` : 'text-slate-400'}`}>声学仿真</button>
+                <button onClick={() => logic.setCurrentResultTab(ResultTab.SIMULATION)} className={`px-3 h-7 rounded-sm text-[13px] font-bold transition-all ${logic.currentResultTab === ResultTab.SIMULATION ? `bg-white ${themeText} shadow-sm` : 'text-slate-400'}`}>逆向设计方案生成</button>
               </div>
             </div>
 
@@ -2300,16 +2301,23 @@ const App: React.FC = () => {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
-                          {activeResult?.items.map((item, idx) => (
+                          {activeResult?.items.map((item, idx) => {
+                            const selectedForSimulation = isSimulationSpeakerItem(item);
+                            return (
                             <tr
                               key={item.id}
                               className={`${item.recentlyUpdated ? 'bg-amber-100/40 hover:bg-amber-100/50' : 'hover:bg-slate-50/50'} transition-all group`}
                             >
                               <td className="px-5 py-2.5 text-slate-500 font-medium">{item.type}</td>
                               <td className="px-5 py-2.5 text-slate-600 font-bold">{getItemBrand(item) || '--'}</td>
-                              <td className="px-5 py-2.5 font-bold text-slate-900">
+                              <td className={`px-5 py-2.5 font-bold ${selectedForSimulation ? 'text-red-600' : 'text-slate-900'}`}>
                                 <div className="flex items-center gap-2">
                                   <span>{item.name}</span>
+                                  {selectedForSimulation && (
+                                    <span className="px-2 py-0.5 rounded-full text-[11px] font-black bg-red-50 text-red-600 border border-red-200">
+                                      逆向设计音箱
+                                    </span>
+                                  )}
                                   {item.inventoryMatched === false && (
                                     <span className="px-2 py-0.5 rounded-full text-[11px] font-black bg-rose-100 text-rose-700 border border-rose-200">
                                       {item.inventoryMatchNote || '未匹配到库存'}
@@ -2456,7 +2464,8 @@ const App: React.FC = () => {
                                 </button>
                               </td>
                             </tr>
-                          ))}
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -2505,13 +2514,14 @@ const App: React.FC = () => {
                 </div>
               </div>
             ) : (
-              <div className="flex-1 bg-slate-50 rounded-lg border border-slate-200 overflow-hidden relative shadow-inner min-h-[350px]">
-                {/* 每个方案传入自己的 items */}
-                <Visualization
+              <div className="flex-1 bg-white rounded-lg border border-slate-200 overflow-hidden relative shadow-inner min-h-[350px]">
+                {/* 当前展示后台逆向设计返回的三维结果 */}
+                <AcousticSimulationDemo
+                  solutionId={activeResult?.id}
                   params={logic.designState.params}
                   scenario={logic.designState.scenario}
-                  blueprint={logic.designState.blueprint}
                   items={activeResult?.items}
+                  layoutItems={activeResult?.layoutItems}
                 />
               </div>
             )}

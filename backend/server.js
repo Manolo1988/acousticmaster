@@ -5,7 +5,7 @@ import cors from "cors";
 import axios from "axios";
 import mysql from "mysql2/promise";
 import bcrypt from "bcryptjs";
-import { exec } from "child_process";
+import { exec, spawn } from "child_process";
 import { existsSync, readFileSync, mkdirSync, writeFileSync } from "fs";
 import { fileURLToPath } from "url";
 import {
@@ -2633,6 +2633,260 @@ app.post("/api/plan/amplifier-match-analysis", async (req, res) => {
     res.status(500).json({
       error: "AMPLIFIER_MATCH_ANALYSIS_FAILED",
       message: error.message
+    });
+  }
+});
+
+const parseFirstNumber = (value) => {
+  const match = String(value ?? "").match(/-?\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : null;
+};
+
+const isSimulationSpeakerItem = (item = {}) => {
+  const text = `${item.type || ""} ${item.name || ""} ${item.model || ""}`;
+  if (!/音箱|扬声器|线阵列|吸顶|同轴/i.test(text)) return false;
+  if (/功放|吊挂架|吊架|挂架|支架/i.test(text)) return false;
+  return true;
+};
+
+const inferSimulationCategory = (row = {}, item = {}) => {
+  const text = `${row["产品类型"] || row["类型"] || ""} ${row["用途"] || ""} ${row["产品名称"] || item.name || ""} ${item.type || ""}`;
+  if (/吸顶|吊顶|同轴/i.test(text)) return "ceiling";
+  if (/线性音柱|音柱/i.test(text)) return "line_column";
+  return "full_range";
+};
+
+const inferSimulationRole = (category, row = {}, item = {}) => {
+  const text = `${row["产品类型"] || row["类型"] || ""} ${row["用途"] || ""} ${row["功能"] || ""} ${item.type || ""}`;
+  if (category === "ceiling") return "ceiling_fill";
+  if (/主音箱|主扩声|主扩/i.test(text)) return "main";
+  if (/辅助|补声|侧补|拉声像|返听|台唇/i.test(text)) return "speech_fill";
+  if (/音柱|会议/i.test(text)) return "main_speech";
+  return "main";
+};
+
+const buildSimulationCatalogItem = (row = {}, item = {}) => {
+  const table = String(row?.__simulationTable || "音箱");
+  const normalized = normalizeInventoryRowForResponse(table, row, 0);
+  const model = String(normalized["型号"] || item.model || "").trim();
+  const name = String(normalized["产品名称"] || item.name || model).trim();
+  const price = Number(normalized["市场价"] || item.unitPrice || 0);
+  const ratedPower = parseFirstNumber(normalized["额定功率"]);
+  const sensitivity = parseFirstNumber(normalized["灵敏度"]);
+  const maxSpl = parseFirstNumber(normalized["最大声压级"]);
+  const coverage = parseCoverageAngles(normalized["覆盖角"]);
+  const coverageH = parseFirstNumber(normalized["水平覆盖角"]) || parseFirstNumber(coverage.horizontal) || 90;
+  const coverageV = parseFirstNumber(normalized["垂直覆盖角"]) || parseFirstNumber(coverage.vertical) || 60;
+  const category = inferSimulationCategory(normalized, item);
+  const continuousSpl = maxSpl
+    ? Math.max(80, maxSpl - 6)
+    : sensitivity && ratedPower
+      ? sensitivity + 10 * Math.log10(Math.max(1, ratedPower))
+      : 105;
+  const peakSpl = maxSpl || continuousSpl + 6;
+
+  if (!model) {
+    return { error: "缺少型号" };
+  }
+
+  return {
+    category,
+    name,
+    model,
+    price: Number.isFinite(price) && price > 0 ? price : Number(item.unitPrice || 0),
+    rated_power_w: ratedPower,
+    sensitivity_db: sensitivity,
+    continuous_spl_db: Number(continuousSpl.toFixed(3)),
+    peak_spl_db: Number(peakSpl.toFixed(3)),
+    coverage_h_deg: coverageH,
+    coverage_v_deg: coverageV,
+    size_m: [0.4, 0.26, 0.28],
+    weight_kg: null,
+    preferred_mount: category === "ceiling" ? ["ceiling_flush"] : ["front_wall", "side_wall", "ceiling_hung"],
+    role: inferSimulationRole(category, normalized, item)
+  };
+};
+
+const buildEstimatedSimulationCatalogItem = (item = {}) => {
+  const model = String(item.model || "").trim();
+  const name = String(item.name || model || "未知音箱").trim();
+  const category = inferSimulationCategory({}, item);
+  const isCeiling = category === "ceiling";
+  const isColumn = category === "line_column";
+  return {
+    category,
+    name,
+    model,
+    price: Number(item.unitPrice || 0),
+    rated_power_w: isCeiling ? 60 : isColumn ? 150 : 200,
+    sensitivity_db: isCeiling ? 87 : isColumn ? 93 : 95,
+    continuous_spl_db: isCeiling ? 105 : isColumn ? 115 : 114,
+    peak_spl_db: isCeiling ? 111 : isColumn ? 121 : 120,
+    coverage_h_deg: isCeiling ? 100 : isColumn ? 120 : 90,
+    coverage_v_deg: isCeiling ? 100 : 60,
+    size_m: isCeiling ? [0.2, 0.2, 0.2] : [0.4, 0.26, 0.28],
+    weight_kg: null,
+    preferred_mount: isCeiling ? ["ceiling_flush"] : ["front_wall", "side_wall", "ceiling_hung"],
+    role: inferSimulationRole(category, {}, item),
+    estimated: true
+  };
+};
+
+const resolveSimulationSpeakerRecord = async (item = {}) => {
+  const model = String(item.model || "").trim();
+  const name = String(item.name || "").trim();
+  for (const table of getSpeakerMatchTableCandidates()) {
+    const row = await queryInventoryRecordByModelOrName({ table, model, name });
+    if (row) return { table, row: { ...row, __simulationTable: table } };
+  }
+  return null;
+};
+
+const runPythonSimulation = (payload) =>
+  new Promise((resolve, reject) => {
+    const projectRoot = fileURLToPath(new URL("../", import.meta.url));
+    const scriptPath = fileURLToPath(new URL("../sim/run_simulation.py", import.meta.url));
+    const pythonCommand = process.env.SIM_PYTHON_COMMAND || "/home/zhao/miniconda3/envs/sound/bin/python";
+    const timeoutMs = Number(process.env.SIMULATION_TIMEOUT_MS || 90000);
+    const pythonArgs = [scriptPath];
+    const child = spawn(pythonCommand, pythonArgs, {
+      cwd: projectRoot,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMs);
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        return reject(new Error(`逆向设计求解超过 ${Math.round(timeoutMs / 1000)} 秒，请减少音箱数量或放宽约束后重试`));
+      }
+      let parsed = null;
+      try {
+        parsed = JSON.parse(stdout || "{}");
+      } catch (error) {
+        return reject(new Error(`仿真输出解析失败: ${error.message}; stderr=${stderr}`));
+      }
+      if (code !== 0 || parsed?.error) {
+        return reject(new Error(parsed?.error || stderr || `仿真进程退出码 ${code}`));
+      }
+      resolve(parsed);
+    });
+    child.stdin.end(JSON.stringify(payload));
+  });
+
+app.post("/api/simulation/run", async (req, res) => {
+  const params = req.body?.params || {};
+  const items = Array.isArray(req.body?.items) ? req.body.items : [];
+  const speakerItems = items
+    .map((item, index) => ({ ...item, __sourceRowIndex: index + 1 }))
+    .filter(isSimulationSpeakerItem);
+
+  if (speakerItems.length === 0) {
+    return res.status(400).json({ error: "当前方案中未找到可用于仿真的音箱设备" });
+  }
+
+  try {
+    const catalogByModel = new Map();
+    const missing = [];
+    const planSpeakers = [];
+    for (const item of speakerItems) {
+      const model = String(item.model || "").trim();
+      const quantity = Math.max(1, Math.floor(Number(item.quantity || 1)));
+      if (model) {
+        planSpeakers.push({
+          itemId: String(item.id || "").trim(),
+          rowIndex: item.__sourceRowIndex,
+          model,
+          name: String(item.name || model).trim(),
+          type: String(item.type || "").trim(),
+          quantity,
+          label: `${item.__sourceRowIndex}. ${item.type || "音箱"} / ${item.name || model} / ${model}`
+        });
+      }
+
+      const record = await resolveSimulationSpeakerRecord(item);
+      if (!record?.row) {
+        missing.push(`${item.name || ""} ${item.model || ""}`.trim());
+        const estimated = buildEstimatedSimulationCatalogItem(item);
+        if (estimated.model && !catalogByModel.has(estimated.model)) {
+          catalogByModel.set(estimated.model, estimated);
+        }
+        continue;
+      }
+      const catalogItem = buildSimulationCatalogItem(record.row, item);
+      if (catalogItem.error) {
+        missing.push(`${item.name || ""} ${item.model || ""}: ${catalogItem.error}`);
+        const estimated = buildEstimatedSimulationCatalogItem(item);
+        if (estimated.model && !catalogByModel.has(estimated.model)) {
+          catalogByModel.set(estimated.model, estimated);
+        }
+        continue;
+      }
+      if (!catalogByModel.has(catalogItem.model)) {
+        catalogByModel.set(catalogItem.model, catalogItem);
+      }
+    }
+
+    const catalog = Array.from(catalogByModel.values());
+    if (catalog.length === 0) {
+      return res.status(422).json({
+        error: "没有从数据库解析到可用的音箱声学参数",
+        missing
+      });
+    }
+
+    const payload = {
+      room: {
+        length: Number(params.length || 20),
+        width: Number(params.width || 10),
+        height: Number(params.height || 8)
+      },
+      listener: {
+        frontMargin: Number(req.body?.listener?.frontMargin || 1.2),
+        rearMargin: Number(req.body?.listener?.rearMargin || 0.8),
+        sideMargin: Number(req.body?.listener?.sideMargin || 0.7),
+        earHeight: Number(req.body?.listener?.earHeight || 1.2)
+      },
+      targets: {
+        minSpl: Number(req.body?.targets?.minSpl || 95),
+        maxUniformity: Number(req.body?.targets?.maxUniformity || 8),
+        minHeadroom: Number(req.body?.targets?.minHeadroom ?? 0)
+      },
+      optimizer: {
+        maxSteps: 20
+      },
+      models: catalog.map((entry) => entry.model),
+      planSpeakers,
+      catalog,
+      geometry: req.body?.geometry || null
+    };
+
+    const result = await runPythonSimulation(payload);
+    res.json({
+      ...result,
+      source: {
+        speakerItems,
+        catalog,
+        missing
+      }
+    });
+  } catch (error) {
+    console.error("❌ Simulation failed:", error.message);
+    res.status(500).json({
+      error: "Failed to run acoustic simulation",
+      details: error.message
     });
   }
 });

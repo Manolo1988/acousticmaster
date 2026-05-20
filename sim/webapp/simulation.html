@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>声学仿真结果</title>
+    <link rel="stylesheet" href="./styles.css?v=20260511a" />
+    <script src="./vendor/plotly.min.js"></script>
+  </head>
+  <body class="simulation-page">
+    <main class="simulation-shell">
+      <header class="simulation-header">
+        <div>
+          <h1>声学仿真结果</h1>
+          <p id="simSubtitle">等待方案数据，或显示默认示例结果。</p>
+        </div>
+        <button id="demoButton" class="secondary-button compact-button" type="button">加载示例</button>
+      </header>
+
+      <section class="result-strip simulation-strip">
+        <div class="metric-card primary">
+          <span>方案</span>
+          <strong id="simTitle">-</strong>
+        </div>
+        <div class="metric-card">
+          <span>总成本</span>
+          <strong id="simCost">-</strong>
+        </div>
+        <div class="metric-card">
+          <span>房间面积</span>
+          <strong id="simArea">-</strong>
+        </div>
+        <div class="metric-card">
+          <span>SPL min/avg/max</span>
+          <strong id="simSpl">-</strong>
+        </div>
+        <div class="metric-card">
+          <span>不均匀度</span>
+          <strong id="simUniformity">-</strong>
+        </div>
+      </section>
+
+      <section class="simulation-grid">
+        <section class="visual-panel">
+          <div id="plot3d" class="plot3d"></div>
+          <div id="loadingOverlay" class="loading-overlay hidden" aria-live="polite">
+            <div class="spinner"></div>
+            <strong id="loadingTitle">仿真计算中</strong>
+          </div>
+        </section>
+
+        <aside class="detail-panel">
+          <div class="status-line" id="statusLine">子页面已就绪，可以接收父页面传入的方案数据。</div>
+
+          <div class="section-title-row">
+            <h2>音箱位置与指向</h2>
+            <button id="toggleAllCoverage" class="eye-button all visible" type="button" title="隐藏全部辐射范围" aria-label="隐藏全部辐射范围"></button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>显示</th>
+                  <th>角色</th>
+                  <th>型号</th>
+                  <th>坐标 m</th>
+                  <th>瞄准点 m</th>
+                  <th>增益</th>
+                </tr>
+              </thead>
+              <tbody id="speakerTable"></tbody>
+            </table>
+          </div>
+
+          <h2>接口需要的数据</h2>
+          <div class="data-contract">
+            <p>后续从数据库至少读取：房间尺寸/图纸、听众区、验收指标、方案内音箱型号与数量、单只音箱参数、安装坐标、瞄准点、增益。</p>
+            <p>如果没有安装坐标，本页只能按内置规则重新布置，不能复现对方方案明细里的真实布点。</p>
+          </div>
+        </aside>
+      </section>
+    </main>
+
+    <script src="./simulation.js?v=20260511a"></script>
+  </body>
+</html>

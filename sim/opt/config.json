@@ -1,0 +1,28 @@
+{
+  "room": {
+    "length_m": 8.0,
+    "width_m": 5.0,
+    "height_m": 3.0
+  },
+  "listener_area": {
+    "x_min_m": 1.2,
+    "x_max_m": 7.2,
+    "y_min_m": 0.7,
+    "y_max_m": 4.3,
+    "ear_height_m": 1.2,
+    "grid_x": 9,
+    "grid_y": 7
+  },
+  "targets": {
+    "min_spl_db": 95.0,
+    "max_nonuniformity_db": 8.0,
+    "min_headroom_db": 3.0
+  },
+  "optimization": {
+    "shortlist_models": ["SK-36", "LP8", "LCH-405", "V8PRO", "V10PRO"],
+    "include_large_models": false,
+    "prefer_wall_mount": true,
+    "installation_cost_per_speaker": 500.0,
+    "dsp_cost_if_more_than_two_speakers": 3000.0
+  }
+}

@@ -2742,11 +2742,45 @@ const resolveSimulationSpeakerRecord = async (item = {}) => {
   return null;
 };
 
-const runPythonSimulation = (payload) =>
+const uniqueNonEmpty = (values) => {
+  const seen = new Set();
+  return values
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .filter((value) => {
+      if (seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    });
+};
+
+const isPathLikeCommand = (command) =>
+  command.includes("/") || command.startsWith(".");
+
+const getSimulationPythonCandidates = () => {
+  const home = process.env.HOME || "/home/zhao";
+  const condaPrefix = process.env.CONDA_PREFIX || "";
+  const candidates = uniqueNonEmpty([
+    process.env.SIM_PYTHON_COMMAND,
+    `${home}/miniconda3/envs/sound/bin/python`,
+    `${home}/anaconda3/envs/sound/bin/python`,
+    condaPrefix ? `${condaPrefix}/envs/sound/bin/python` : "",
+    condaPrefix.endsWith("/envs/sound") ? `${condaPrefix}/bin/python` : "",
+    "/opt/conda/envs/sound/bin/python",
+    "python3",
+    "python"
+  ]);
+
+  return candidates.filter((command) => {
+    if (!isPathLikeCommand(command)) return true;
+    return existsSync(command);
+  });
+};
+
+const runPythonSimulationWith = (payload, pythonCommand) =>
   new Promise((resolve, reject) => {
     const projectRoot = fileURLToPath(new URL("../", import.meta.url));
     const scriptPath = fileURLToPath(new URL("../sim/run_simulation.py", import.meta.url));
-    const pythonCommand = process.env.SIM_PYTHON_COMMAND || "/home/zhao/miniconda3/envs/sound/bin/python";
     const timeoutMs = Number(process.env.SIMULATION_TIMEOUT_MS || 90000);
     const pythonArgs = [scriptPath];
     const child = spawn(pythonCommand, pythonArgs, {
@@ -2766,7 +2800,10 @@ const runPythonSimulation = (payload) =>
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      error.message = `${error.message} (${pythonCommand})`;
+      reject(error);
+    });
     child.on("close", (code) => {
       clearTimeout(timer);
       if (timedOut) {
@@ -2785,6 +2822,28 @@ const runPythonSimulation = (payload) =>
     });
     child.stdin.end(JSON.stringify(payload));
   });
+
+const runPythonSimulation = async (payload) => {
+  const candidates = getSimulationPythonCandidates();
+  if (candidates.length === 0) {
+    throw new Error("未找到可用 Python 解释器，请安装 conda 环境 sound，或设置 SIM_PYTHON_COMMAND");
+  }
+
+  let lastError = null;
+  for (const pythonCommand of candidates) {
+    try {
+      return await runPythonSimulationWith(payload, pythonCommand);
+    } catch (error) {
+      lastError = error;
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
+      console.warn(`⚠️ Simulation python not found, trying next candidate: ${pythonCommand}`);
+    }
+  }
+
+  throw new Error(`${lastError?.message || "Python 启动失败"}; tried=${candidates.join(", ")}`);
+};
 
 app.post("/api/simulation/run", async (req, res) => {
   const params = req.body?.params || {};
@@ -4219,8 +4278,8 @@ try {
 }
 
 // 启动 - 支持环境变量动态指定端口
-// 优先读取环境变量 PORT，没有则默认使用 3001，与前端 Vite 代理、docker-compose/nginx upstream 保持一致
-const DEFAULT_TEST_PORT = Number(process.env.TEST_PORT || 3001);
+// 开发/测试默认 3002，线上默认 3001，避免本地测试服务和线上服务互相干扰。
+const DEFAULT_TEST_PORT = Number(process.env.TEST_PORT || 3002);
 const DEFAULT_PROD_PORT = Number(process.env.PROD_PORT || 3001);
 const PORT = Number(process.env.PORT || (isProduction ? DEFAULT_PROD_PORT : DEFAULT_TEST_PORT));
 const DIFY_INTENT_HOST = process.env.DIFY_INTENT_HOST || "115.231.236.153";

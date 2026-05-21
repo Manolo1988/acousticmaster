@@ -1,4 +1,4 @@
-const API_BASE = process.env.TEST_API_BASE || "http://127.0.0.1:3001";
+const API_BASE = process.env.TEST_API_BASE || "http://127.0.0.1:3002";
 const TABLES = {
   SPEAKER: "音箱",
   LINE_ARRAY_SUPPORT: "线阵列配套",

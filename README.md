@@ -62,7 +62,7 @@ ARK_API_URL=https://ark.cn-beijing.volces.com/api/v3/responses
 
 - 不要把真实的 `backend/.env` 提交到 Git。
 - 如果只验证页面和逆向设计展示，数据库连接仍需要可用，否则设备清单、声学参数查询会失败。
-- 后端默认端口是 `3001`，直接运行 `node server.js` 即可；如需改端口可通过 `PORT` 指定。
+- 本地开发/测试后端默认端口是 `3002`，直接运行 `node server.js` 即可；线上端口仍按生产配置使用 `3001`。
 
 ## 安装依赖
 
@@ -114,7 +114,7 @@ node server.js
 启动成功后应看到类似：
 
 ```text
-Server running on http://0.0.0.0:3001
+Server running on http://0.0.0.0:3002
 ```
 
 ### 2. 启动前端
@@ -133,12 +133,12 @@ http://localhost:8101/
 当前 `frontend/.env.development` 中开发代理指向：
 
 ```env
-VITE_DEV_API_TARGET=http://127.0.0.1:3001
-VITE_DEV_AI_CHAT_TARGET=http://127.0.0.1:3001
-VITE_DEV_AI_SYSTEM_TARGET=http://127.0.0.1:3001
+VITE_DEV_API_TARGET=http://127.0.0.1:3002
+VITE_DEV_AI_CHAT_TARGET=http://127.0.0.1:3002
+VITE_DEV_AI_SYSTEM_TARGET=http://127.0.0.1:3002
 ```
 
-因此后端建议固定运行在 `3001`。
+因此本地开发后端建议固定运行在 `3002`，避免与线上 `3001` 互相干扰。
 
 ## 一行命令后台运行
 
@@ -147,20 +147,20 @@ VITE_DEV_AI_SYSTEM_TARGET=http://127.0.0.1:3001
 ```bash
 cd /home/zhao/Codes/proj/acousticmaster_simimulation/acousticmaster
 
-setsid bash -c 'cd backend && PORT=3001 NODE_ENV=development exec node server.js >> ../server_3001.log 2>&1' < /dev/null &
+setsid bash -c 'cd backend && NODE_ENV=development exec node server.js >> ../server_3002.log 2>&1' < /dev/null &
 setsid bash -c 'cd frontend && exec npm run dev -- --host 0.0.0.0 --port 8101 >> ../frontend_8101.log 2>&1' < /dev/null &
 ```
 
 查看端口：
 
 ```bash
-ss -ltnp | grep -E ':3001|:8101'
+ss -ltnp | grep -E ':3002|:8101'
 ```
 
 停止服务：
 
 ```bash
-fuser -k 3001/tcp
+fuser -k 3002/tcp
 fuser -k 8101/tcp
 ```
 
@@ -236,13 +236,13 @@ Docker/Nginx 入口通常是 `8100`，具体以 `docker/docker-compose.yml` 和 
 
 ### 1. 前端能打开，但接口失败
 
-检查后端是否在 `3001`：
+检查后端是否在 `3002`：
 
 ```bash
-ss -ltnp | grep 3001
+ss -ltnp | grep 3002
 ```
 
-检查 `frontend/.env.development` 的代理地址是否仍指向 `http://127.0.0.1:3001`。
+检查 `frontend/.env.development` 的代理地址是否仍指向 `http://127.0.0.1:3002`。
 
 ### 2. 后端启动后数据库报错
 
@@ -261,7 +261,7 @@ ss -ltnp | grep 3001
 ### 4. 端口被占用
 
 ```bash
-fuser -k 3001/tcp
+fuser -k 3002/tcp
 fuser -k 8101/tcp
 ```
 

@@ -93,6 +93,84 @@ interface SimulationResult {
 const PLOTLY_SRC = '/sim/plotly.min.js';
 const rawApiBase = import.meta.env.VITE_API_BASE ?? '';
 const API_BASE = rawApiBase.replace(/\/+$/, '');
+
+const isNetworkFetchError = (error: unknown) => {
+  const message = String((error as { message?: string })?.message || '').toLowerCase();
+  return (
+    error instanceof TypeError
+    || message.includes('failed to fetch')
+    || message.includes('networkerror')
+    || message.includes('load failed')
+  );
+};
+
+const toDisplaySimulationError = (error: unknown) => {
+  const raw = String((error as { message?: string })?.message || '').trim();
+  if (!raw) return '逆向设计服务调用失败，请稍后重试。';
+  if (isNetworkFetchError(error)) {
+    return '逆向设计服务连接失败，请确认后端已启动且接口可访问。';
+  }
+  return raw;
+};
+
+const buildSimulationRunEndpoints = () => {
+  const endpoints = [`${API_BASE}/api/simulation/run`];
+  if (!API_BASE && typeof window !== 'undefined') {
+    const { protocol, hostname } = window.location;
+    // HTTPS 页面下直连 http://host:300x 会被浏览器按 mixed-content 拦截。
+    if (protocol !== 'https:') {
+      endpoints.push(`${protocol}//${hostname}:3002/api/simulation/run`);
+      endpoints.push(`${protocol}//${hostname}:3001/api/simulation/run`);
+    }
+  }
+  return Array.from(new Set(endpoints));
+};
+
+const postSimulationRun = async (
+  payload: { params: AcousticParams; items: EquipmentItem[]; layoutItems: SolutionLayoutItem[] },
+  signal: AbortSignal,
+) => {
+  const endpoints = buildSimulationRunEndpoints();
+  let lastError: Error | null = null;
+  const nonNetworkErrors: Error[] = [];
+
+  for (let index = 0; index < endpoints.length; index += 1) {
+    const endpoint = endpoints[index];
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal,
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const retryable404 = response.status === 404 && index < endpoints.length - 1;
+        if (retryable404) continue;
+        throw new Error(data.details || data.error || `逆向设计接口调用失败（${response.status}）`);
+      }
+      return data as SimulationResult;
+    } catch (error) {
+      if ((error as { name?: string })?.name === 'AbortError') throw error;
+      lastError = error instanceof Error ? error : new Error('逆向设计接口调用失败');
+      if (!isNetworkFetchError(lastError)) {
+        nonNetworkErrors.push(lastError);
+      }
+      if (index === endpoints.length - 1) throw lastError;
+    }
+  }
+
+  if (nonNetworkErrors.length > 0) {
+    throw nonNetworkErrors[nonNetworkErrors.length - 1];
+  }
+
+  if (lastError && isNetworkFetchError(lastError)) {
+    throw new Error('逆向设计服务连接失败，请确认后端已启动且接口可访问。');
+  }
+
+  throw lastError || new Error('逆向设计接口调用失败');
+};
+
 let plotlyLoadPromise: Promise<void> | null = null;
 const OPTIMIZATION_STEPS = [
   '读取当前方案清单与房间参数',
@@ -516,23 +594,14 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
     setElapsedSeconds(0);
     setSimulationData(null);
     setSimulationError('');
-    fetch(`${API_BASE}/api/simulation/run`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: controller.signal,
-      body: JSON.stringify({
+    postSimulationRun(
+      {
         params,
         items,
         layoutItems,
-      }),
-    })
-      .then(async (response) => {
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(data.details || data.error || '逆向设计接口调用失败');
-        }
-        return data as SimulationResult;
-      })
+      },
+      controller.signal,
+    )
       .then((data) => {
         if (controller.signal.aborted) return;
         resultCacheRef.current.set(requestSignature, data);
@@ -542,7 +611,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
       .catch((error) => {
         if (controller.signal.aborted) return;
         setSimulationData(null);
-        setSimulationError(error.message || '逆向设计接口调用失败');
+        setSimulationError(toDisplaySimulationError(error));
       })
       .finally(() => {
         if (!controller.signal.aborted) setIsSimulating(false);

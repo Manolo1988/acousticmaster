@@ -6,7 +6,7 @@ SERVER_PATTERN="node .*backend/server\\.js"
 
 # 配置
 PORT=3003
-MODEL="qwen2.5:7b"
+MODEL="qwen3:32b"
 URL="http://127.0.0.1:11434/v1/chat/completions"
 LOG_FILE="$PROJECT_ROOT/server_3003.log"
 

@@ -1290,6 +1290,103 @@ const useAcousticAssistant = (
     }]);
 
     let fullAiText = "";
+    const structuredPayloads: Record<string, any>[] = [];
+
+    const applyAssistantPayloads = (
+      payloads: Record<string, any>[],
+      sourceText: string,
+      cleanedTextOverride?: string
+    ) => {
+      const normalizedPayloads = Array.isArray(payloads) ? payloads.filter((item) => item && typeof item === 'object' && !Array.isArray(item)) : [];
+      if (normalizedPayloads.length === 0) {
+        return;
+      }
+
+      const scenarioByAssistant = detectScenarioFromAssistant(sourceText, normalizedPayloads);
+      const hasScenarioResetSignal =
+        hasScenarioResetSignalFromPayloads(normalizedPayloads) || hasScenarioResetSignalFromText(sourceText);
+      if (scenarioByAssistant) {
+        onScenarioConfirmed(scenarioByAssistant, hasScenarioResetSignal);
+      }
+
+      const combinedNormalized = normalizedPayloads.reduce((acc, payload) => {
+        const normalized = normalizeAssistantParams(payload);
+        return { ...acc, ...normalized };
+      }, {} as Partial<AcousticParams>);
+
+      const micUpdateMode = detectMicUpdateModeFromPayloads(normalizedPayloads, combinedNormalized);
+      const hasExplicitMicMode = hasExplicitMicModeFromPayloads(normalizedPayloads);
+      const inferredMicUpdateMode = inferMicUpdateModeFromUserText(text);
+      delete (combinedNormalized as any).__micsAction;
+
+      const subsystemSnapshot: Partial<Pick<AcousticParams, 'hasCentralControl' | 'hasMatrix' | 'hasVideoConf' | 'hasRecording'>> = {};
+      let hasSubsystemUpdate = false;
+      SUBSYSTEM_PARAM_KEYS.forEach((key) => {
+        if (!Object.prototype.hasOwnProperty.call(combinedNormalized, key)) return;
+        const parsed = parseBooleanLike((combinedNormalized as any)[key]);
+        if (parsed === null) return;
+        hasSubsystemUpdate = true;
+        (subsystemSnapshot as any)[key] = parsed;
+      });
+
+      const hasMicUpdate = Object.prototype.hasOwnProperty.call(combinedNormalized, 'mics');
+
+      if (Object.keys(combinedNormalized).length > 0) {
+        setParams(prev => {
+          const hasExtraRequirementsField = Object.prototype.hasOwnProperty.call(combinedNormalized, 'extraRequirements');
+          const incomingExtraRequirements = hasExtraRequirementsField
+            ? String((combinedNormalized as any).extraRequirements ?? '').trim()
+            : '';
+          const next: AcousticParams = resetAssistantParamGroups(
+            { ...prev },
+            combinedNormalized
+          );
+
+          Object.assign(next, combinedNormalized as AcousticParams);
+
+          if (hasExtraRequirementsField && !incomingExtraRequirements) {
+            next.extraRequirements = prev.extraRequirements;
+            next.extraRequirementsConfirmed = prev.extraRequirementsConfirmed;
+          }
+
+          if (hasMicUpdate) {
+            const micOptions = assistantContext?.micTypeOptions || [];
+            const incomingMics = normalizeMicListValue((combinedNormalized as any).mics);
+            let resolvedMicMode: MicUpdateMode = micUpdateMode;
+            if (inferredMicUpdateMode === 'replace') {
+              resolvedMicMode = 'replace';
+            } else if (!hasExplicitMicMode && inferredMicUpdateMode) {
+              resolvedMicMode = inferredMicUpdateMode;
+            }
+            const nextMics = applyMicUpdateByMode([], incomingMics, resolvedMicMode, micOptions);
+            next.mics = nextMics;
+            Object.assign(next, buildMicCounts(nextMics));
+          }
+
+          if (hasSubsystemUpdate) {
+            next.hasCentralControl = false;
+            next.hasMatrix = false;
+            next.hasVideoConf = false;
+            next.hasRecording = false;
+            SUBSYSTEM_PARAM_KEYS.forEach((key) => {
+              if (Object.prototype.hasOwnProperty.call(subsystemSnapshot, key)) {
+                (next as any)[key] = Boolean((subsystemSnapshot as any)[key]);
+              }
+            });
+          }
+
+          return next;
+        });
+      }
+
+      const cleanText = stripAssistantDisplayArtifacts(cleanedTextOverride ?? sourceText);
+      setChatHistory(prev => {
+        const updated = [...prev];
+        updated[updated.length - 1] = { ...updated[updated.length - 1], text: cleanText };
+        return updated;
+      });
+    };
+
     try {
       const assistantScenarioValue = assistantContext?.scenario || assistantScenario || undefined;
       const currentParamsSnapshot = buildAssistantCurrentParamsSnapshot(params, assistantScenarioValue);
@@ -1324,6 +1421,11 @@ const useAcousticAssistant = (
           
           try {
             const data = JSON.parse(line.replace('data: ', ''));
+            if (data?.type === 'param_update' && Array.isArray(data.payloads)) {
+              structuredPayloads.push(...data.payloads);
+              applyAssistantPayloads(structuredPayloads, fullAiText);
+              continue;
+            }
             if (data.content) {
               fullAiText += data.content;
               const safeText = stripAssistantDisplayArtifacts(fullAiText);
@@ -1340,89 +1442,17 @@ const useAcousticAssistant = (
         }
       }
 
-      // 3. 处理参数提取 [UPDATE_PARAM: {...}]
-      const { payloads: extractedPayloads, cleanedText } = extractAssistantParamPayloads(fullAiText);
-      const scenarioByAssistant = detectScenarioFromAssistant(fullAiText, extractedPayloads);
-      const hasScenarioResetSignal =
-        hasScenarioResetSignalFromPayloads(extractedPayloads) || hasScenarioResetSignalFromText(fullAiText);
-      if (scenarioByAssistant) {
-        onScenarioConfirmed(scenarioByAssistant, hasScenarioResetSignal);
-      }
+      // 3. 优先处理 schema 下发的参数更新；若没有结构化事件，再回退到旧的文本标记解析
+      const extractedPayloads = structuredPayloads.length > 0
+        ? structuredPayloads
+        : extractAssistantParamPayloads(fullAiText).payloads;
+      const cleanedText = stripAssistantDisplayArtifacts(fullAiText);
       if (extractedPayloads.length > 0) {
-        const combinedNormalized = extractedPayloads.reduce((acc, payload) => {
-          const normalized = normalizeAssistantParams(payload);
-          return { ...acc, ...normalized };
-        }, {} as Partial<AcousticParams>);
-
-        const micUpdateMode = detectMicUpdateModeFromPayloads(extractedPayloads, combinedNormalized);
-        const hasExplicitMicMode = hasExplicitMicModeFromPayloads(extractedPayloads);
-        const inferredMicUpdateMode = inferMicUpdateModeFromUserText(text);
-        delete (combinedNormalized as any).__micsAction;
-
-        const subsystemSnapshot: Partial<Pick<AcousticParams, 'hasCentralControl' | 'hasMatrix' | 'hasVideoConf' | 'hasRecording'>> = {};
-        let hasSubsystemUpdate = false;
-        SUBSYSTEM_PARAM_KEYS.forEach((key) => {
-          if (!Object.prototype.hasOwnProperty.call(combinedNormalized, key)) return;
-          const parsed = parseBooleanLike((combinedNormalized as any)[key]);
-          if (parsed === null) return;
-          hasSubsystemUpdate = true;
-          (subsystemSnapshot as any)[key] = parsed;
-        });
-
-        const hasMicUpdate = Object.prototype.hasOwnProperty.call(combinedNormalized, 'mics');
-
-        if (Object.keys(combinedNormalized).length > 0) {
-          setParams(prev => {
-            const hasExtraRequirementsField = Object.prototype.hasOwnProperty.call(combinedNormalized, 'extraRequirements');
-            const incomingExtraRequirements = hasExtraRequirementsField
-              ? String((combinedNormalized as any).extraRequirements ?? '').trim()
-              : '';
-            const next: AcousticParams = resetAssistantParamGroups(
-              { ...prev },
-              combinedNormalized
-            );
-
-            Object.assign(next, combinedNormalized as AcousticParams);
-
-            if (hasExtraRequirementsField && !incomingExtraRequirements) {
-              next.extraRequirements = prev.extraRequirements;
-              next.extraRequirementsConfirmed = prev.extraRequirementsConfirmed;
-            }
-
-            if (hasMicUpdate) {
-              const micOptions = assistantContext?.micTypeOptions || [];
-              const incomingMics = normalizeMicListValue((combinedNormalized as any).mics);
-              let resolvedMicMode: MicUpdateMode = micUpdateMode;
-              if (inferredMicUpdateMode === 'replace') {
-                resolvedMicMode = 'replace';
-              } else if (!hasExplicitMicMode && inferredMicUpdateMode) {
-                resolvedMicMode = inferredMicUpdateMode;
-              }
-              const nextMics = applyMicUpdateByMode([], incomingMics, resolvedMicMode, micOptions);
-              next.mics = nextMics;
-              Object.assign(next, buildMicCounts(nextMics));
-            }
-
-            if (hasSubsystemUpdate) {
-              next.hasCentralControl = false;
-              next.hasMatrix = false;
-              next.hasVideoConf = false;
-              next.hasRecording = false;
-              SUBSYSTEM_PARAM_KEYS.forEach((key) => {
-                if (Object.prototype.hasOwnProperty.call(subsystemSnapshot, key)) {
-                  (next as any)[key] = Boolean((subsystemSnapshot as any)[key]);
-                }
-              });
-            }
-
-            return next;
-          });
-        }
-
-        const cleanText = stripAssistantDisplayArtifacts(cleanedText);
+        applyAssistantPayloads(extractedPayloads, fullAiText, cleanedText);
+      } else {
         setChatHistory(prev => {
           const updated = [...prev];
-          updated[updated.length - 1] = { ...updated[updated.length - 1], text: cleanText };
+          updated[updated.length - 1] = { ...updated[updated.length - 1], text: cleanedText };
           return updated;
         });
       }
@@ -2008,7 +2038,7 @@ export const useAcousticLogic = () => {
     params: { ...DEFAULT_PARAMS },
     blueprint: null,
     isDesigned: false,
-    chatHistory: [{ role: 'ai', text: '您好，协助您进行声学方案设计的专家已就绪，您可以自主选择在左方进行手动填写或向我提问，我将引导你进行补充。请描述您的场景是会议室还是报告厅（左上方可以进行场景切换便于显示参数）？', timestamp: new Date() }],
+    chatHistory: [{ role: 'ai', text: '您好，协助您进行声学方案设计的专家已就绪，您可以自主选择在左方进行手动填写或向我提问，我将引导你进行补充，若左侧参数不对，请向我发送更新当前参数或点击发送按键左侧的更新按钮。请描述您的场景是会议室还是报告厅？', timestamp: new Date() }],
     results: [],
     activeResultIndex: 0
   });
@@ -2049,10 +2079,8 @@ export const useAcousticLogic = () => {
       });
     },
     assistantScenario,
-    async () => {
-      // 对话结束后执行一次静默校准：仅全量参数
-      await handleForceUpdateParams('full');
-    }
+    // 关闭“最后自动校准模式”：不再在对话结束语后自动触发静默校准。
+    undefined
   );
 
   const wrappedSendMessageToAssistant = (text: string) => {

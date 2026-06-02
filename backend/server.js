@@ -1137,6 +1137,127 @@ let latestDifyResult = null;
 // === 本地 LLM 配置 (例如 Ollama 或 LocalAI) ===
 const LOCAL_LLM_URL = process.env.LOCAL_LLM_URL || "http://127.0.0.1:11434/v1/chat/completions";
 const LOCAL_LLM_MODEL = process.env.LOCAL_LLM_MODEL || "qwen3:32b"; 
+
+const ASSISTANT_PARAM_SCHEMA_KEYS = [
+  "scenario",
+  "length",
+  "width",
+  "height",
+  "stageWidth",
+  "stageDepth",
+  "stageToNearAudience",
+  "stageToFarAudience",
+  "mics",
+  "micsAction",
+  "hasCentralControl",
+  "hasMatrix",
+  "hasVideoConf",
+  "hasRecording",
+  "extraRequirements",
+  "scenarioConfirmed",
+  "roomConfirmed",
+  "stageConfirmed",
+  "micsConfirmed",
+  "subsystemsConfirmed",
+  "extraRequirementsConfirmed"
+];
+
+const ASSISTANT_PARAM_SCHEMA_KEY_SET = new Set(ASSISTANT_PARAM_SCHEMA_KEYS);
+
+const parseJsonFromModelContent = (content) => {
+  if (content && typeof content === "object") return content;
+  const text = String(content || "").trim();
+  if (!text) return null;
+  const cleaned = text
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```$/i, "")
+    .trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
+};
+
+const normalizeSchemaParamUpdates = (raw) => {
+  const list = Array.isArray(raw) ? raw : [];
+  return list
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const key = String(item.key || "").trim();
+      if (!ASSISTANT_PARAM_SCHEMA_KEY_SET.has(key)) return null;
+      if (!Object.prototype.hasOwnProperty.call(item, "value")) return null;
+      return { key, value: item.value };
+    })
+    .filter(Boolean);
+};
+
+const extractParamUpdatesBySchema = async ({ message, assistantText, currentParams, micTypeOptions }) => {
+  const extractionPrompt = `你是参数抽取器。请从“用户输入 + 助手回复”中提取可用于更新左侧参数面板的结构化更新项。
+
+要求：
+1) 只输出明确可确认的参数，不要猜测。
+2) 只允许输出 key 在给定枚举中的项。
+3) 若没有可更新项，返回 {"updates":[]}。
+4) mics 的 value 应为数组，元素示例：{"type":"一拖二无线手持话筒","count":2}。
+5) micsAction 仅允许 replace/add/remove 之一。
+
+当前参数快照：${JSON.stringify(currentParams || {})}
+数据库话筒可选项：${JSON.stringify(Array.isArray(micTypeOptions) ? micTypeOptions : [])}
+用户输入：${String(message || "")}
+助手回复：${String(assistantText || "")}`;
+
+  try {
+    const extractionResp = await axios.post(
+      LOCAL_LLM_URL,
+      {
+        model: LOCAL_LLM_MODEL,
+        messages: [
+          { role: "system", content: "你只做结构化参数抽取，严格输出 JSON。" },
+          { role: "user", content: extractionPrompt }
+        ],
+        temperature: 0,
+        stream: false,
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "assistant_param_updates",
+            strict: true,
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                updates: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    properties: {
+                      key: { type: "string", enum: ASSISTANT_PARAM_SCHEMA_KEYS },
+                      value: { type: ["string", "number", "boolean", "object", "array", "null"] }
+                    },
+                    required: ["key", "value"]
+                  }
+                }
+              },
+              required: ["updates"]
+            }
+          }
+        }
+      },
+      { timeout: 25000 }
+    );
+
+    const rawContent = extractionResp?.data?.choices?.[0]?.message?.content;
+    const parsed = parseJsonFromModelContent(rawContent);
+    if (!parsed || typeof parsed !== "object") return [];
+    return normalizeSchemaParamUpdates(parsed.updates);
+  } catch (error) {
+    console.warn("⚠️ Schema param extraction failed:", error?.response?.data || error.message);
+    return [];
+  }
+};
 const ARK_API_URL = process.env.ARK_API_URL || "https://ark.cn-beijing.volces.com/api/v3/responses";
 const ARK_MODEL = process.env.ARK_MODEL || "doubao-seed-2-0-pro-260215";
 const PROMPT_TEMPLATE_FILE_URL = new URL("./大模型方案生成指导模板.md", import.meta.url);
@@ -2386,6 +2507,8 @@ app.post("/api/chat-assistant", async (req, res) => {
       responseType: 'stream' 
     });
 
+    let assistantFullText = "";
+
     response.data.on('data', chunk => {
       const payload = chunk.toString();
       const lines = payload.split('\n');
@@ -2396,6 +2519,7 @@ app.post("/api/chat-assistant", async (req, res) => {
             const data = JSON.parse(line.replace('data: ', ''));
             const content = data.choices[0]?.delta?.content || "";
             if (content) {
+              assistantFullText += content;
               res.write(`data: ${JSON.stringify({ content })}\n\n`);
             }
           } catch (e) {
@@ -2405,7 +2529,17 @@ app.post("/api/chat-assistant", async (req, res) => {
       }
     });
 
-    response.data.on('end', () => {
+    response.data.on('end', async () => {
+      const schemaUpdates = await extractParamUpdatesBySchema({
+        message,
+        assistantText: assistantFullText,
+        currentParams,
+        micTypeOptions: dbMicTypeOptions
+      });
+
+      if (schemaUpdates.length > 0) {
+        res.write(`data: ${JSON.stringify({ type: "param_update", payloads: schemaUpdates })}\n\n`);
+      }
       res.write('data: [DONE]\n\n');
       res.end();
     });

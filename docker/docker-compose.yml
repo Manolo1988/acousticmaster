@@ -10,9 +10,12 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3001
+      - SIM_PYTHON_COMMAND=python3
       - CORS_ORIGINS=http://115.231.236.153:8100
       - DIFY_API_KEY=app-NB3lEaGg14fyON5fYhENY1oV
       - DIFY_CHAT_API_URL=${DIFY_CHAT_API_URL:-http://115.231.236.153:20000/v1/chat-messages}
+    volumes:
+      - ../sim:/sim:ro
     ports:
       - "3001"
     networks:

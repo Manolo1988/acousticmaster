@@ -267,7 +267,12 @@ const postSimulationRun = async (
       if (!isNetworkFetchError(lastError)) {
         nonNetworkErrors.push(lastError);
       }
-      if (index === endpoints.length - 1) throw lastError;
+      if (index === endpoints.length - 1) {
+        if (nonNetworkErrors.length > 0) {
+          throw nonNetworkErrors[nonNetworkErrors.length - 1];
+        }
+        throw lastError;
+      }
     }
   }
 

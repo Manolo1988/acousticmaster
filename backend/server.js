@@ -991,6 +991,33 @@ const ensureColumnExists = async (table, columnName, sqlDefinition) => {
   return true;
 };
 
+const ensureIndexExists = async (table, indexName, columnNames = []) => {
+  const [rows] = await pool.query(
+    `SELECT COLUMN_NAME, SEQ_IN_INDEX
+       FROM INFORMATION_SCHEMA.STATISTICS
+      WHERE TABLE_SCHEMA = ?
+        AND TABLE_NAME = ?
+        AND INDEX_NAME = ?
+      ORDER BY SEQ_IN_INDEX ASC`,
+    [DB_CONFIG.database, table, indexName]
+  );
+
+  if (Array.isArray(rows) && rows.length > 0) {
+    const existing = rows.map((row) => String(row.COLUMN_NAME || "").trim());
+    const expected = columnNames.map((name) => String(name || "").trim());
+    if (existing.length === expected.length && existing.every((name, idx) => name === expected[idx])) {
+      return false;
+    }
+    return false;
+  }
+
+  const indexColumns = columnNames
+    .map((columnName) => `\`${String(columnName || "").trim()}\``)
+    .join(", ");
+  await pool.query(`CREATE INDEX \`${indexName}\` ON \`${table}\` (${indexColumns})`);
+  return true;
+};
+
 const ensureInventorySchema = async () => {
   for (const table of INVENTORY_TABLES) {
     const physicalTable = resolvePhysicalTableName(table);
@@ -1042,6 +1069,18 @@ const ensureInventorySchema = async () => {
     console.warn("⚠️ Speaker extra columns ensure failed:", error.message);
   }
 
+};
+
+const ensureHistorySchema = async () => {
+  if (!(await tableExists("design_history"))) {
+    console.warn("⚠️ design_history table not found, skipped history schema ensure");
+    return;
+  }
+
+  const physicalTable = resolvePhysicalTableName("design_history");
+  await ensureIndexExists(physicalTable, "idx_history_created_id", ["created_at", "id"]);
+  await ensureIndexExists(physicalTable, "idx_history_user_created_id", ["user_id", "created_at", "id"]);
+  await ensureIndexExists(physicalTable, "idx_history_guest_created_id", ["guest_id", "created_at", "id"]);
 };
 
 const ensureMergedStaticResourceSchemaAndMigrate = async () => {
@@ -1148,7 +1187,9 @@ const PLAN_BATCH_CONCURRENCY = Math.max(1, Number(process.env.PLAN_BATCH_CONCURR
 const PLAN_TRACE_LOG_ENABLED = String(process.env.PLAN_TRACE_LOG_ENABLED || "1") !== "0";
 const PLAN_TRACE_FULL_TEXT = String(process.env.PLAN_TRACE_FULL_TEXT || "0") === "1";
 const PLAN_TRACE_PREVIEW_MAX = Math.max(400, Number(process.env.PLAN_TRACE_PREVIEW_MAX || 2000));
-const PLAN_ARK_MAX_ATTEMPTS = Math.max(1, Number(process.env.PLAN_ARK_MAX_ATTEMPTS || 1));
+const PLAN_ARK_MAX_ATTEMPTS = Math.max(1, Number(process.env.PLAN_ARK_MAX_ATTEMPTS || 3));
+const PLAN_ARK_TIMEOUT_MS = Math.max(60000, Number(process.env.PLAN_ARK_TIMEOUT_MS || 420000));
+const PLAN_MIN_SUBSECTION_CHARS = Math.max(100, Number(process.env.PLAN_MIN_SUBSECTION_CHARS || 200));
 
 const createTraceId = (prefix = "trace") => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
@@ -1299,7 +1340,6 @@ const buildImagePromptSection = (imageContext = {}) => {
   const lines = [];
   lines.push("【本地静态资源占位符规则】");
   lines.push("A. 你只能使用后端提供的占位符，禁止编造任何新占位符。");
-  lines.push("B. 资源类型为“图片”时，只能输出占位符 {{RES_IMAGE_xxx}}；不要输出 base64、URL 或 HTML 图片标签。");
   lines.push("C. 资源类型为“文字”时，只能输出占位符 {{RES_TEXT_xxx}}，后端会替换为对应 Markdown 内容。");
   lines.push("D. 资源类型为“表格”时，只能输出占位符 {{RES_TABLE_xxx}}，后端会替换为对应 Markdown 表格并自动添加表题。");
   lines.push("E. 输出资源占位符时建议先写“资源解释”文本，再单独一行输出占位符，便于后端排版。");
@@ -1392,6 +1432,7 @@ const buildPlanPrompt = ({ projectName, scenario, params, planTitle, items, imag
     "9. 设备清单中不包含图片字段，严禁输出 base64、图片 URL 或 HTML 图片标签。",
     "10. 本地静态资源的图片类型请使用 {{RES_IMAGE_xxx}}，文字类型请使用 {{RES_TEXT_xxx}}，表格类型请使用 {{RES_TABLE_xxx}}。",
     "11. 设备图片只能使用统一格式占位符 [图片占位符：设备名称]。",
+    `12. 每个子模块（如 1.1/2.3/3.2.4）正文不少于 ${PLAN_MIN_SUBSECTION_CHARS} 字（不含表格与公式）。`,
     imagePromptSection,
     "",
     "【参考模板（节选）】",
@@ -1415,7 +1456,8 @@ const CHAPTER_SHARED_RULES = [
   "2. 只保留设备清单中存在的系统，无设备的系统整节删除，不出现文字。",
   "3. 公式必须原样写在指定位置；设备图片统一使用 [图片占位符：设备名称]。",
   "4. 语言正式工程化，符合投标/验收标准，格式规范。",
-  "5. 我会按章节依次让你生成，你只返回当前章节内容。"
+  "5. 我会按章节依次让你生成，你只返回当前章节内容。",
+  `6. 每个子模块（如 1.1/2.3/3.2.4）正文不少于 ${PLAN_MIN_SUBSECTION_CHARS} 字（不含表格与公式）。`
 ].join("\n");
 
 const buildChapterTaskPrompt = (chapterKey, sceneLabel, selectedSystemsText) => {
@@ -1511,6 +1553,252 @@ const composePlanMarkdown = ({ projectName, planTitle, chapterContents }) => {
   const topTitle = `# ${projectName}-${planTitle}系统设计方案`;
   const body = chapterContents.filter(Boolean).join("\n\n");
   return [topTitle, "", body].join("\n").trim();
+};
+
+const sanitizeSimulationDataUrl = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (!/^data:image\/(png|jpg|jpeg|webp);base64,/i.test(raw)) return "";
+  if (raw.length > 20 * 1024 * 1024) {
+    // 保护文档大小，避免将超大 base64 内联到 Markdown
+    return "";
+  }
+  return raw;
+};
+
+const toMarkdownTableCell = (value) =>
+  String(value == null ? "" : value)
+    .replace(/\|/g, "\\|")
+    .replace(/\r?\n/g, " ")
+    .trim();
+
+const toFiniteNumberOrNull = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
+const formatDbValue = (value, digits = 1, unit = "") => {
+  const n = toFiniteNumberOrNull(value);
+  if (n == null) return "--";
+  return `${n.toFixed(digits)}${unit}`;
+};
+
+const normalizeSubsectionTitle = (title = "") =>
+  String(title || "")
+    .replace(/^\d+(?:\.\d+)*\s*/, "")
+    .trim();
+
+const getMarkdownContentLength = (text = "") =>
+  String(text || "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`[^`]*`/g, " ")
+    .replace(/!\[[^\]]*\]\([^\)]+\)/g, " ")
+    .replace(/\[[^\]]+\]\([^\)]+\)/g, " ")
+    .replace(/\|/g, " ")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/^\s*\d+\.\s+/gm, "")
+    .replace(/[>#*_~\-]/g, " ")
+    .replace(/\s+/g, "")
+    .trim()
+    .length;
+
+const buildSubsectionSupplement = (title = "") => {
+  const topic = normalizeSubsectionTitle(title) || "本子模块";
+  return `${topic}在工程落地阶段需形成“现场复测-深化设计-设备安装-系统联调-试运行验收-运维交付”的完整闭环。实施前应结合建筑结构与机电条件复核设备点位、线缆路由、承重点位、供配电与接地边界，确保施工约束清晰且可执行。调试阶段应按照增益结构、延时、均衡、反馈抑制和场景预置逐项校准，并通过典型席位复测验证关键指标的达成情况。交付阶段需输出测试记录、问题闭环、风险清单和维护计划，明确巡检周期、参数备份和故障响应机制，保障系统长期稳定运行并具备后续扩展能力。`;
+};
+
+const ensureSubsectionMinimumLength = (markdown, minChars = PLAN_MIN_SUBSECTION_CHARS) => {
+  const source = String(markdown || "").trim();
+  if (!source) return source;
+
+  const lines = source.split(/\r?\n/);
+  const headings = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const matched = lines[i].match(/^(#{2,6})\s+(.+)$/);
+    if (!matched) continue;
+    headings.push({
+      index: i,
+      level: matched[1].length,
+      title: String(matched[2] || "").trim()
+    });
+  }
+
+  for (let h = headings.length - 1; h >= 0; h -= 1) {
+    const heading = headings[h];
+    if (heading.level < 3) continue;
+    if (!/^\d+(?:\.\d+)+/.test(heading.title)) continue;
+
+    let sectionEnd = lines.length;
+    for (let n = h + 1; n < headings.length; n += 1) {
+      if (headings[n].level <= heading.level) {
+        sectionEnd = headings[n].index;
+        break;
+      }
+    }
+
+    const sectionBody = lines.slice(heading.index + 1, sectionEnd).join("\n");
+    const bodyLen = getMarkdownContentLength(sectionBody);
+    if (bodyLen >= minChars) continue;
+
+    lines.splice(sectionEnd, 0, "", buildSubsectionSupplement(heading.title));
+  }
+
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+};
+
+const buildSimulationAnalysisChapter = (simulationContext = {}, scenario = "") => {
+  if (!simulationContext || typeof simulationContext !== "object") return "";
+
+  const metrics = simulationContext?.metrics && typeof simulationContext.metrics === "object"
+    ? simulationContext.metrics
+    : {};
+  const standards = Array.isArray(simulationContext?.standards) ? simulationContext.standards : [];
+  const speakers = Array.isArray(simulationContext?.speakers) ? simulationContext.speakers : [];
+  const images = simulationContext?.images && typeof simulationContext.images === "object"
+    ? simulationContext.images
+    : {};
+
+  const sideImage = sanitizeSimulationDataUrl(images?.side);
+  const topImage = sanitizeSimulationDataUrl(images?.top);
+
+  const hasMetricValue = [
+    metrics?.minSpl,
+    metrics?.avgSpl,
+    metrics?.maxSpl,
+    metrics?.nonuniformity,
+    metrics?.headroom
+  ].some((item) => toFiniteNumberOrNull(item) != null);
+
+  if (!sideImage && !topImage && standards.length === 0 && speakers.length === 0 && !hasMetricValue) {
+    return "";
+  }
+
+  const sceneLabel = normalizeSceneLabel(String(simulationContext?.scenario || scenario || ""));
+  const lines = [
+    "###### 3.2.4.1.2 仿真渲染与结果分析",
+    "",
+    `本小节基于${sceneLabel}逆向设计结果自动生成，用于补充专业扩声系统的渲染视图、关键指标与标准符合性图表。`,
+    "",
+    "（1）仿真渲染图"
+  ];
+
+  if (sideImage) {
+    lines.push("", "图3-2-4-1-a 逆向设计侧视渲染图", "", `![逆向设计侧视渲染图](${sideImage})`);
+  } else {
+    lines.push("", "- 侧视图未采集到（请先在逆向设计页面完成渲染后再生成报告）。");
+  }
+  if (topImage) {
+    lines.push("", "图3-2-4-1-b 逆向设计俯视渲染图", "", `![逆向设计俯视渲染图](${topImage})`);
+  } else {
+    lines.push("", "- 俯视图未采集到（请先在逆向设计页面完成渲染后再生成报告）。");
+  }
+
+  lines.push("", "（2）关键指标说明", "");
+
+  const feasibleText = metrics?.feasible === true ? "满足" : metrics?.feasible === false ? "未满足" : "待确认";
+  lines.push(`- 仿真结论：${feasibleText}`);
+  lines.push(`- 服务区声压级范围（最小/平均/最大）：${formatDbValue(metrics?.minSpl)} / ${formatDbValue(metrics?.avgSpl)} / ${formatDbValue(metrics?.maxSpl)} dB`);
+  lines.push(`- 目标最低声压级：${formatDbValue(metrics?.minSplTarget)} dB`);
+  lines.push(`- 稳态声场不均匀度：${formatDbValue(metrics?.nonuniformity)} dB（目标 <= ${formatDbValue(metrics?.nonuniformityTarget)} dB）`);
+  lines.push(`- 最低点声压余量：${formatDbValue(metrics?.headroom)} dB（目标 >= ${formatDbValue(metrics?.headroomTarget)} dB）`);
+
+  lines.push("", "（3）标准符合性图表", "");
+  if (standards.length > 0) {
+    lines.push("| 指标项 | 标准要求 | 仿真值 | 判定 |", "| --- | --- | --- | --- |");
+    standards.forEach((row) => {
+      const pass = row?.pass === true ? "达标" : row?.pass === false ? "不达标" : "--";
+      lines.push(`| ${toMarkdownTableCell(row?.name || "")}`
+        + ` | ${toMarkdownTableCell(row?.standard || "")}`
+        + ` | ${toMarkdownTableCell(row?.value || "")}`
+        + ` | ${pass} |`);
+    });
+  } else {
+    lines.push("- 暂无标准对比明细。", "");
+  }
+
+  lines.push("", "（4）音箱布置与参数图表", "");
+  if (speakers.length > 0) {
+    lines.push("| 序号 | 名称 | 型号 | 坐标 (x,y,z m) | 指向 (俯仰/偏航) | 增益 | 覆盖角 (H×V) |", "| --- | --- | --- | --- | --- | --- | --- |");
+    speakers.forEach((speaker, index) => {
+      const position = Array.isArray(speaker?.position) ? speaker.position : [];
+      const x = formatDbValue(position?.[0], 2);
+      const y = formatDbValue(position?.[1], 2);
+      const z = formatDbValue(position?.[2], 2);
+      const pitch = formatDbValue(speaker?.pitch, 1, "°");
+      const yaw = formatDbValue(speaker?.yaw, 1, "°");
+      const gain = formatDbValue(speaker?.gainDb, 1, " dB");
+      const covH = formatDbValue(speaker?.coverageH, 0, "°");
+      const covV = formatDbValue(speaker?.coverageV, 0, "°");
+      const label = speaker?.label || speaker?.role || `音箱 #${index + 1}`;
+      lines.push(`| ${index + 1}`
+        + ` | ${toMarkdownTableCell(label)}`
+        + ` | ${toMarkdownTableCell(speaker?.model || "")}`
+        + ` | (${x}, ${y}, ${z})`
+        + ` | ${pitch} / ${yaw}`
+        + ` | ${gain}`
+        + ` | ${covH} × ${covV} |`);
+    });
+  } else {
+    lines.push("- 暂无音箱布置参数。", "");
+  }
+
+  return lines.join("\n").trim();
+};
+
+const injectSimulationIntoProfessionalSection = (markdown, simulationMarkdown) => {
+  const source = String(markdown || "").trim();
+  const addon = String(simulationMarkdown || "").trim();
+  if (!addon) return source;
+  if (!source) return addon;
+  if (/3\.2\.4\.1\.2\s+仿真渲染与结果分析|仿真渲染与结果分析/.test(source)) {
+    return source;
+  }
+
+  const lines = source.split(/\r?\n/);
+  const headings = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const matched = lines[i].match(/^(#{1,6})\s+(.+)$/);
+    if (!matched) continue;
+    headings.push({
+      index: i,
+      level: matched[1].length,
+      title: String(matched[2] || "").trim()
+    });
+  }
+
+  const normalized = (value = "") => String(value || "").replace(/\s+/g, "");
+
+  let anchor = headings.find((item) => {
+    const t = normalized(item.title);
+    return /3\.2\.4\.1/.test(t) && t.includes("专业扩声系统");
+  });
+
+  if (!anchor) {
+    anchor = headings.find((item) => /3\.2\.4\.1/.test(normalized(item.title)));
+  }
+
+  if (!anchor) {
+    anchor = headings.find((item) => {
+      const t = normalized(item.title);
+      return /3\.2\.4/.test(t) && t.includes("系统设计");
+    });
+  }
+
+  if (!anchor) {
+    return `${source}\n\n${addon}\n`;
+  }
+
+  let sectionEnd = lines.length;
+  for (const item of headings) {
+    if (item.index <= anchor.index) continue;
+    if (item.level <= anchor.level) {
+      sectionEnd = item.index;
+      break;
+    }
+  }
+
+  lines.splice(sectionEnd, 0, "", addon, "");
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 };
 
 const buildChapterPrompt = ({ projectName, scenario, params, planTitle, items, chapter }) => {
@@ -1677,6 +1965,7 @@ const callArkMarkdown = async (prompt, traceContext = {}) => {
   tracePlanEvent("ark-request-send", traceContext, {
     arkUrl: ARK_API_URL,
     model: ARK_MODEL,
+    timeoutMs: PLAN_ARK_TIMEOUT_MS,
     prompt: clipTraceText(prompt),
     requestBody: clipTraceJson(requestBody)
   });
@@ -1691,7 +1980,7 @@ const callArkMarkdown = async (prompt, traceContext = {}) => {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json"
         },
-        timeout: 180000
+        timeout: PLAN_ARK_TIMEOUT_MS
       }
     );
   } catch (error) {
@@ -2141,7 +2430,14 @@ const slugify = (value) =>
     .slice(0, 64) || "document";
 
 const markdownToDocHtml = (markdown, title) => {
-  const escaped = escapeHtml(markdown).replace(/\n/g, "<br/>");
+  const escaped = escapeHtml(markdown).replace(/\r?\n/g, "<br/>");
+  const withRenderedImages = escaped.replace(
+    /!\[([^\]]*)\]\((data:image\/(?:png|jpg|jpeg|webp);base64,[^)]+)\)/gi,
+    (_, altText, src) => {
+      const caption = String(altText || "").trim() || "仿真渲染图";
+      return `<br/><figure class=\"sim-figure\"><img src=\"${src}\" alt=\"${escapeHtml(caption)}\" /><figcaption>${escapeHtml(caption)}</figcaption></figure><br/>`;
+    }
+  );
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -2150,12 +2446,15 @@ const markdownToDocHtml = (markdown, title) => {
 <style>
 body { font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; line-height: 1.75; color: #1f2937; font-size: 13pt; margin: 24px; }
 h1,h2,h3,h4 { color: #0f172a; }
-pre { white-space: pre-wrap; word-wrap: break-word; background: #f8fafc; border: 1px solid #e2e8f0; padding: 12px; border-radius: 6px; }
+.doc-content { white-space: pre-wrap; word-wrap: break-word; background: #f8fafc; border: 1px solid #e2e8f0; padding: 12px; border-radius: 6px; }
+.sim-figure { margin: 14px 0; }
+.sim-figure img { max-width: 100%; height: auto; border: 1px solid #cbd5e1; border-radius: 6px; }
+.sim-figure figcaption { margin-top: 6px; font-size: 11pt; color: #334155; }
 </style>
 </head>
 <body>
 <h1>${escapeHtml(title)}</h1>
-<pre>${escaped}</pre>
+<div class="doc-content">${withRenderedImages}</div>
 </body>
 </html>`;
 };
@@ -3636,25 +3935,55 @@ app.delete("/api/users/:id", async (req, res) => {
 // 历史设计 CRUD
 app.get("/api/history", async (req, res) => {
   const { userId, guestId } = req.query;
+  const defaultLimit = Math.max(20, Number(process.env.HISTORY_FETCH_LIMIT || 120));
+  const maxLimit = Math.max(defaultLimit, Number(process.env.HISTORY_FETCH_MAX_LIMIT || 500));
+  const requestLimit = Number(req.query.limit);
+  const requestOffset = Number(req.query.offset);
+  const limit = Number.isFinite(requestLimit) && requestLimit > 0
+    ? Math.min(maxLimit, Math.floor(requestLimit))
+    : defaultLimit;
+  const offset = Number.isFinite(requestOffset) && requestOffset >= 0
+    ? Math.floor(requestOffset)
+    : 0;
+
   try {
-    let rows = [];
+    let whereClause = "";
+    let whereParams = [];
     if (userId) {
-      [rows] = await pool.query(
-        "SELECT * FROM design_history WHERE user_id = ? ORDER BY created_at DESC",
-        [userId]
-      );
+      whereClause = "WHERE user_id = ?";
+      whereParams = [userId];
     } else if (guestId) {
-      [rows] = await pool.query(
-        "SELECT * FROM design_history WHERE guest_id = ? ORDER BY created_at DESC",
-        [guestId]
-      );
-    } else {
-      [rows] = await pool.query(
-        "SELECT * FROM design_history ORDER BY created_at DESC"
-      );
+      whereClause = "WHERE guest_id = ?";
+      whereParams = [guestId];
     }
 
-    const mapped = rows.map((row) => ({
+    // 先按索引排序取主键，避免对大JSON行做 filesort 触发 sort buffer 溢出。
+    const [idRows] = await pool.query(
+      `SELECT id
+         FROM design_history
+         ${whereClause}
+        ORDER BY created_at DESC, id DESC
+        LIMIT ? OFFSET ?`,
+      [...whereParams, limit, offset]
+    );
+    const ids = Array.isArray(idRows) ? idRows.map((row) => Number(row.id)).filter((id) => Number.isFinite(id)) : [];
+
+    if (ids.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    const placeholders = ids.map(() => "?").join(", ");
+    const [rows] = await pool.query(
+      `SELECT id, user_id, guest_id, username, created_at, project_name, scenario, params_json, results_json
+         FROM design_history
+        WHERE id IN (${placeholders})`,
+      ids
+    );
+    const rowMap = new Map((rows || []).map((row) => [Number(row.id), row]));
+    const orderedRows = ids.map((id) => rowMap.get(id)).filter(Boolean);
+
+    const mapped = orderedRows.map((row) => ({
       id: row.id,
       userId: row.user_id,
       guestId: row.guest_id,
@@ -3961,15 +4290,19 @@ app.post("/api/plan/generate-markdowns-stream", async (req, res) => {
           }
         });
 
+        const simulationChapter = buildSimulationAnalysisChapter(plan?.simulationContext, String(scenario));
+        const markdownRawWithSimulation = injectSimulationIntoProfessionalSection(markdownRaw, simulationChapter);
+
         const postProcessStartAt = Date.now();
         tracePlanEvent("post-process-start", planTrace);
         const { markdownProcessed, postProcessReport } = postProcessMarkdown(
-          markdownRaw,
+          markdownRawWithSimulation,
           staticBlockMap,
           imageContext.mediaAssetMap,
           imageContext.commonImageGuidance,
           imageContext.deviceImageByName
         );
+        const markdownProcessedWithLength = ensureSubsectionMinimumLength(markdownProcessed, PLAN_MIN_SUBSECTION_CHARS);
         tracePlanEvent("post-process-end", planTrace, {
           elapsedMs: Date.now() - postProcessStartAt,
           postProcessReport
@@ -3979,7 +4312,7 @@ app.post("/api/plan/generate-markdowns-stream", async (req, res) => {
         const { docLink } = saveGeneratedDoc({
           projectName: String(projectName),
           planTitle,
-          markdownProcessed
+          markdownProcessed: markdownProcessedWithLength
         });
         tracePlanEvent("doc-saved", planTrace, {
           elapsedMs: Date.now() - saveDocStartAt,
@@ -3991,8 +4324,8 @@ app.post("/api/plan/generate-markdowns-stream", async (req, res) => {
             event: "plan-complete",
             planId,
             title: planTitle,
-            markdownRaw,
-            markdownProcessed,
+            markdownRaw: markdownRawWithSimulation,
+            markdownProcessed: markdownProcessedWithLength,
             docLink,
             postProcessReport,
             elapsedMs: Date.now() - planStartAt
@@ -4001,8 +4334,8 @@ app.post("/api/plan/generate-markdowns-stream", async (req, res) => {
 
         tracePlanEvent("plan-success", planTrace, {
           totalElapsedMs: Date.now() - planStartAt,
-          markdownRawLength: String(markdownRaw || "").length,
-          markdownProcessedLength: String(markdownProcessed || "").length
+          markdownRawLength: String(markdownRawWithSimulation || "").length,
+          markdownProcessedLength: String(markdownProcessedWithLength || "").length
         });
 
         return { status: "success" };
@@ -4130,15 +4463,19 @@ app.post("/api/plan/generate-markdowns", async (req, res) => {
           traceContext: planTrace
         });
 
+        const simulationChapter = buildSimulationAnalysisChapter(plan?.simulationContext, String(scenario));
+        const markdownRawWithSimulation = injectSimulationIntoProfessionalSection(markdownRaw, simulationChapter);
+
         const postProcessStartAt = Date.now();
         tracePlanEvent("post-process-start", planTrace);
         const { markdownProcessed, postProcessReport } = postProcessMarkdown(
-          markdownRaw,
+          markdownRawWithSimulation,
           staticBlockMap,
           imageContext.mediaAssetMap,
           imageContext.commonImageGuidance,
           imageContext.deviceImageByName
         );
+        const markdownProcessedWithLength = ensureSubsectionMinimumLength(markdownProcessed, PLAN_MIN_SUBSECTION_CHARS);
         tracePlanEvent("post-process-end", planTrace, {
           elapsedMs: Date.now() - postProcessStartAt,
           postProcessReport
@@ -4148,7 +4485,7 @@ app.post("/api/plan/generate-markdowns", async (req, res) => {
         const { docLink } = saveGeneratedDoc({
           projectName: String(projectName),
           planTitle,
-          markdownProcessed
+          markdownProcessed: markdownProcessedWithLength
         });
         tracePlanEvent("doc-saved", planTrace, {
           elapsedMs: Date.now() - saveDocStartAt,
@@ -4157,8 +4494,8 @@ app.post("/api/plan/generate-markdowns", async (req, res) => {
 
         tracePlanEvent("plan-success", planTrace, {
           totalElapsedMs: Date.now() - planStartAt,
-          markdownRawLength: String(markdownRaw || "").length,
-          markdownProcessedLength: String(markdownProcessed || "").length
+          markdownRawLength: String(markdownRawWithSimulation || "").length,
+          markdownProcessedLength: String(markdownProcessedWithLength || "").length
         });
 
         return {
@@ -4166,8 +4503,8 @@ app.post("/api/plan/generate-markdowns", async (req, res) => {
           data: {
             id: plan?.id,
             title: planTitle,
-            markdownRaw,
-            markdownProcessed,
+            markdownRaw: markdownRawWithSimulation,
+            markdownProcessed: markdownProcessedWithLength,
             docLink,
             postProcessReport
           }
@@ -4261,6 +4598,13 @@ try {
   console.log("✅ Inventory schema ready");
 } catch (error) {
   console.warn("⚠️ Inventory schema init failed:", error.message);
+}
+
+try {
+  await ensureHistorySchema();
+  console.log("✅ History schema ready");
+} catch (error) {
+  console.warn("⚠️ History schema init failed:", error.message);
 }
 
 try {

@@ -18,6 +18,10 @@ declare global {
   interface ImportMeta {
     readonly env: ImportMetaEnv;
   }
+
+  interface Window {
+    __acousticSimulationGetReportPayload?: (solutionId?: string) => Promise<Record<string, any> | null>;
+  }
 }
 
 const rawApiBase = import.meta.env.VITE_API_BASE ?? "";
@@ -2963,6 +2967,23 @@ const handleGenerateReports = async (scope: 'CURRENT' | 'ALL') => {
     return;
   }
 
+  const simulationContextByPlanId = new Map<string, Record<string, any>>();
+  const simulationPayloadProvider = window.__acousticSimulationGetReportPayload;
+  if (typeof simulationPayloadProvider === 'function') {
+    for (const target of targets) {
+      const planId = String(target.id || '');
+      if (!planId) continue;
+      try {
+        const payload = await simulationPayloadProvider(planId);
+        if (payload && typeof payload === 'object') {
+          simulationContextByPlanId.set(planId, payload);
+        }
+      } catch (error) {
+        console.warn('⚠️ Collect simulation report payload failed:', error);
+      }
+    }
+  }
+
   reportGenerationLockRef.current = true;
 
   const targetIdSet = new Set(targets.map((item) => String(item.id)));
@@ -3003,7 +3024,8 @@ const handleGenerateReports = async (scope: 'CURRENT' | 'ALL') => {
         plans: targets.map(plan => ({
           id: plan.id,
           title: plan.title,
-          items: plan.items
+          items: plan.items,
+          simulationContext: simulationContextByPlanId.get(String(plan.id)) || null,
         }))
       })
     });
@@ -3322,8 +3344,20 @@ const copyMarkdown = async (scope: 'CURRENT' | 'ALL' = 'CURRENT') => {
 // --- 4. 实现 handleDownload (文件下载逻辑) ---
 const handleDownload = async (type: 'EXCEL' | 'PDF' | 'PNG', scope: 'CURRENT' | 'ALL' = 'CURRENT') => {
   if (type === 'PNG') {
-    const fileName = designState.projectName || "声学方案";
-    alert(`系统正在准备 ${fileName} 的 ${type} 文件，请稍后...`);
+    const fileName = `${designState.projectName || '声学方案'}_逆向设计俯视图`;
+    const downloader = (window as Window & {
+      __acousticSimulationDownloadPng?: (name?: string) => Promise<boolean>;
+    }).__acousticSimulationDownloadPng;
+
+    if (typeof downloader !== 'function') {
+      alert('未找到可导出的逆向设计视图，请先切换到“逆向设计方案生成”并完成渲染。');
+      return;
+    }
+
+    const success = await downloader(fileName);
+    if (!success) {
+      alert('逆向设计图尚未准备好，请先生成并渲染逆向设计结果。');
+    }
     return;
   }
 

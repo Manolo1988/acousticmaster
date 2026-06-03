@@ -7,14 +7,6 @@ const ARK_MODEL = process.env.ARK_MODEL || "doubao-seed-2-0-pro-260215";
 export const LOCAL_STATIC_RESOURCE_TABLE = "本地静态资源";
 const LEGACY_STATIC_RESOURCE_TABLE = "static_markdown_blocks";
 
-const STATIC_BLOCK_KEYWORDS = {
-  STANDARDS_TABLE: ["国标", "指标", "规范", "标准"],
-  FORMULAS_BLOCK: ["公式", "计算", "依据"],
-  SIGNAL_FLOW_MERMAID: ["信号流", "链路"],
-  ROOM_LAYOUT_MERMAID: ["点位", "布局", "平面"],
-  CONTROL_FLOW_MERMAID: ["中控", "控制流程"]
-};
-
 const SYSTEM_KEYWORDS = {
   "扩声系统": ["音箱", "功放", "调音台", "处理器", "反馈抑制器", "线阵列", "台唇", "返听", "超低"],
   "中控系统": ["中控"],
@@ -92,26 +84,18 @@ function insertToc(markdown) {
   return lines.join("\n");
 }
 
-function injectStaticBlocks(markdown, blocks) {
-  const injected = [];
-  const content = String(markdown || "").replace(/\{\{INSERT:([A-Z0-9_]+)\}\}/g, (_, key) => {
-    if (blocks[key]) {
-      injected.push(key);
-      return blocks[key];
-    }
-    return `<!-- WARNING: static block '${key}' not found -->`;
+function stripStaticBlockPlaceholders(markdown) {
+  return String(markdown || "").replace(/\{\{INSERT:[A-Z0-9_]+\}\}/g, () => {
+    return "<!-- Note: static content has been automatically inserted by chapter via the database resource pipeline -->";
   });
-
-  return { content, injected };
 }
 
-function postProcessMarkdown(markdown, blocks) {
-  const { content, injected } = injectStaticBlocks(markdown, blocks);
+function postProcessMarkdown(markdown) {
+  const content = stripStaticBlockPlaceholders(markdown);
   const withToc = insertToc(content);
   return {
     markdown: withToc,
     report: {
-      injected_blocks: injected,
       toc_added: withToc !== content
     }
   };
@@ -190,9 +174,8 @@ function buildUserInput({ scenario, params, items }) {
   };
 }
 
-function buildPrompt({ projectName, planTitle, userInput, items, staticBlockKeys }) {
+function buildPrompt({ projectName, planTitle, userInput, items }) {
   const equipmentJson = buildEquipmentJson(items);
-  const staticHelp = staticBlockKeys.map((key) => `- ${key}: ${STATIC_BLOCK_KEYWORDS[key]?.join("/") || "静态知识块"}`).join("\n");
 
   return [
     `你是专业声学顾问，请为项目生成完整 Markdown 方案文档。`,
@@ -210,10 +193,8 @@ function buildPrompt({ projectName, planTitle, userInput, items, staticBlockKeys
     "2. 标题结构至少包含：项目概述、设计依据、系统设计、设备清单、结论。",
     "3. 所有设备型号和数量必须与设备清单一致，禁止编造设备。",
     "4. 会议室或报告厅应根据用户输入准确匹配。",
-    "5. 文中需要预留静态块占位符，按场景选择插入：",
-    staticHelp,
-    "6. 占位符格式必须是 {{INSERT:BLOCK_KEY}}，例如 {{INSERT:FORMULAS_BLOCK}}。",
-    "7. 正文请充分展开，不要只给表格。",
+    "5. 国标对照表、声学公式等静态内容由后端按章节自动插入，你不需要为它们生成占位符或章节。",
+    "6. 正文请充分展开，不要只给表格。",
     ""
   ].join("\n");
 }
@@ -339,6 +320,15 @@ export async function ensureStaticBlockTableAndSeed(pool, backendDir) {
   const raw = JSON.parse(readFileSync(indexPath, "utf-8"));
   const blocks = raw?.blocks || {};
 
+  const chapterMap = {
+    STANDARDS_TABLE: "设计依据和目标",
+    FORMULAS_BLOCK: "设计依据和目标"
+  };
+  const typeMap = {
+    STANDARDS_TABLE: "表格",
+    FORMULAS_BLOCK: "文字"
+  };
+
   for (const [key, meta] of Object.entries(blocks)) {
     const sourceFile = String(meta?.file || "");
     const title = String(meta?.description || key);
@@ -346,17 +336,35 @@ export async function ensureStaticBlockTableAndSeed(pool, backendDir) {
     const filePath = path.join(backendDir, "static_blocks", sourceFile);
     if (!existsSync(filePath)) continue;
     const content = readFileSync(filePath, "utf-8").trim();
+    const blockKey = sanitizeStaticBlockKey(key);
+    const insertChapter = chapterMap[blockKey] || "";
+    const resourceType = typeMap[blockKey] || "文字";
+
+    const isLegacyBlock = blockKey in chapterMap && insertChapter !== "";
+    const resourceTypeClause = isLegacyBlock
+      ? "`资源类型` = VALUES(`资源类型`)"
+      : "`资源类型` = IF(`资源类型` IS NULL OR `资源类型` = '', VALUES(`资源类型`), `资源类型`)";
+    const chapterClause = isLegacyBlock
+      ? "`插入章节` = VALUES(`插入章节`)"
+      : "`插入章节` = IF(`插入章节` IS NULL OR `插入章节` = '', VALUES(`插入章节`), `插入章节`)";
+    const sceneClause = isLegacyBlock
+      ? "`使用场景` = '通用'"
+      : "`使用场景` = IF(`使用场景` IS NULL OR `使用场景` = '', '通用', `使用场景`)";
 
     await pool.query(
-      `INSERT INTO \`${LOCAL_STATIC_RESOURCE_TABLE}\` (block_key, title, description, source_file, content, enabled)
-       VALUES (?, ?, ?, ?, ?, 1)
+      `INSERT INTO \`${LOCAL_STATIC_RESOURCE_TABLE}\`
+       (block_key, title, description, source_file, content, \`插入章节\`, \`使用场景\`, \`资源类型\`, enabled)
+       VALUES (?, ?, ?, ?, ?, ?, '通用', ?, 1)
        ON DUPLICATE KEY UPDATE
        title = VALUES(title),
        description = VALUES(description),
        source_file = VALUES(source_file),
        content = VALUES(content),
+       ${chapterClause},
+       ${sceneClause},
+       ${resourceTypeClause},
        enabled = VALUES(enabled)`,
-      [sanitizeStaticBlockKey(key), title, description, sourceFile, content]
+      [blockKey, title, description, sourceFile, content, insertChapter, resourceType]
     );
   }
 }
@@ -431,8 +439,6 @@ export async function generatePlanDocuments({
   params,
   plans
 }) {
-  const blockMap = await loadEnabledStaticBlockMap(pool);
-  const staticBlockKeys = Object.keys(blockMap);
   const outDir = path.join(backendDir, "generated_docs");
   mkdirSync(outDir, { recursive: true });
 
@@ -446,12 +452,11 @@ export async function generatePlanDocuments({
       projectName,
       planTitle: title,
       userInput,
-      items,
-      staticBlockKeys
+      items
     });
 
     const markdownRaw = await callArkForMarkdown(prompt);
-    const { markdown: markdownProcessed, report } = postProcessMarkdown(markdownRaw, blockMap);
+    const { markdown: markdownProcessed, report } = postProcessMarkdown(markdownRaw);
 
     const fileBase = `${Date.now()}-${slugify(projectName)}-${slugify(title)}`;
     const fileName = `${fileBase}.doc`;

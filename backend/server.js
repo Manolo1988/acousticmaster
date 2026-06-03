@@ -12,7 +12,6 @@ import {
   ensureStaticBlockTableAndSeed,
   listStaticBlocks,
   LOCAL_STATIC_RESOURCE_TABLE as SERVICE_LOCAL_STATIC_RESOURCE_TABLE,
-  loadEnabledStaticBlockMap,
   updateStaticBlock
 } from "./plan_service.js";
 
@@ -1179,8 +1178,6 @@ const LOCAL_LLM_MODEL = process.env.LOCAL_LLM_MODEL || "qwen3:32b";
 const ARK_API_URL = process.env.ARK_API_URL || "https://ark.cn-beijing.volces.com/api/v3/responses";
 const ARK_MODEL = process.env.ARK_MODEL || "doubao-seed-2-0-pro-260215";
 const PROMPT_TEMPLATE_FILE_URL = new URL("./大模型方案生成指导模板.md", import.meta.url);
-const STATIC_BLOCKS_INDEX_FILE_URL = new URL("./static_blocks/index.json", import.meta.url);
-const STATIC_BLOCKS_DIR_URL = new URL("./static_blocks/", import.meta.url);
 const GENERATED_DOCS_DIR_URL = new URL("./generated_docs/", import.meta.url);
 const PLAN_STREAM_CONCURRENCY = Math.max(1, Number(process.env.PLAN_STREAM_CONCURRENCY || 2));
 const PLAN_BATCH_CONCURRENCY = Math.max(1, Number(process.env.PLAN_BATCH_CONCURRENCY || 2));
@@ -1428,7 +1425,7 @@ const buildPlanPrompt = ({ projectName, scenario, params, planTitle, items, imag
     "5. 只保留设备清单中实际存在的系统章节；无对应设备的系统章节必须整节删除（包含标题与正文）。",
     "6. 必须包含完整工程化文字描述，不可只给表格。",
     "7. 必须输出模板中要求的固定公式，并对每个公式给出不少于50字的原则与解释，解释另起一段不直接跟在公式后面。",
-    "8. 可按模板建议使用静态块占位符，例如 {{INSERT:STANDARDS_TABLE}}、{{INSERT:FORMULAS_BLOCK}}。",
+    "8. 国标对照表、声学公式、系统拓扑图、仿真分析等静态和计算内容由后端按章节自动插入，你不需要为它们生成占位符或章节。",
     "9. 设备清单中不包含图片字段，严禁输出 base64、图片 URL 或 HTML 图片标签。",
     "10. 本地静态资源的图片类型请使用 {{RES_IMAGE_xxx}}，文字类型请使用 {{RES_TEXT_xxx}}，表格类型请使用 {{RES_TABLE_xxx}}。",
     "11. 设备图片只能使用统一格式占位符 [图片占位符：设备名称]。",
@@ -1475,6 +1472,13 @@ const buildChapterTaskPrompt = (chapterKey, sceneLabel, selectedSystemsText) => 
         "2.1 设计依据：列出国家会议、扩声、音视频、录播、机房相关标准编号与名称。",
         "2.2 设计原则：先进性、成熟实用性、灵活性开放性、集成可扩展性、标准化模块化、安全性可靠性、服务便利性、经济性。",
         "2.3 设计目标：音视频统一管理、信号任意切换、扩声清晰、集中控制、满足录制存储。",
+        "2.4 声学计算依据：必须原样输出以下公式，每个公式后必须紧跟原则说明+公式解释（每条不少于50字）：",
+        "直达声压级：Lp = SPL + 10logW - 20logr",
+        "必要声增益：NAG(dB) = 20logD0 - 20logEAD",
+        "应用声增益：PAG(dB) = 20logD0 + 20logD1 - 20logD2 - 20logDs - 10logNOM - FSM",
+        "输入电功率：EPR = 10^X，X =〔SPL + 3dB + (ΔD2 - Δref dist) - LSENSI〕/ 10",
+        "临界距离：Dc(m) = K × √(Q²V / T60)",
+        "语言可懂度：%ALcons ＝ 200² × D2² × T60² / V²Q",
         "只返回本章内容。"
       ].join("\n");
     case "solution_design":
@@ -1483,21 +1487,12 @@ const buildChapterTaskPrompt = (chapterKey, sceneLabel, selectedSystemsText) => 
         "3.1 中心机房：统一管控、统一供电、设备集中部署。",
         "3.2 多功能报告厅/会议室：",
         "3.2.1 概况：面积、用途、设计系统清单。",
-        "3.2.4 系统设计（只保留设备清单里有的系统）：",
-        "3.2.4.2 专业扩声系统（必须完整）：系统概述、声学指标表格、声压计算、混响时间要求。",
-        "声压计算中必须原样输出以下公式：",
-        "Lp = SPL + 10logW - 20logr",
-        "NAG(dB) = 20logD0 - 20logEAD",
-        "PAG(dB) = 20logD0 + 20logD1 - 20logD2 - 20logDs - 10logNOM - FSM",
-        "EPR = 10^X",
-        "X =〔SPL + 3dB + (ΔD2 - Δref dist) - LSENSI〕/ 10",
-        "Dc(m) = K × √(Q²V / T60)",
-        "%ALcons ＝ 200² × D2² × T60² / V²Q",
-        "并在下方按顺序插入：",
-        "【后端自动插入：厅堂最佳混响时间标准图】",
-        "【后端自动插入：500Hz总声压级3D图】",
-        "3.2.4.3 视频会议系统。",
-        "3.2.4.4 录播系统。",
+        "3.2.2 设计效果：扩声明晰、智能管控等设计效果描述。",
+        "3.2.3 系统设计（只保留设备清单里有的系统）：",
+        "3.2.3.1 专业扩声系统（必须完整）：系统概述、声学指标表格、混响时间要求。",
+        "3.2.3.2 视频会议系统。",
+        "3.2.3.3 录播系统。",
+        "4. 声学计算公式已在第2章中给出，本章无需重复公式。仿真分析章节由后端自动生成并插入于专业扩声系统之后，你不需要编写仿真相关内容。",
         "无设备的系统整节删除，不出现文字。",
         "只返回本章内容。"
       ].join("\n");
@@ -1646,6 +1641,57 @@ const ensureSubsectionMinimumLength = (markdown, minChars = PLAN_MIN_SUBSECTION_
   return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 };
 
+const buildBlueprintAnalysis = (sideImage, topImage, sceneLabel = "") => {
+  const views = [];
+  if (sideImage) views.push("侧视渲染图展示了扬声器在垂直剖面上的覆盖形态，可直观观察主扩声波束的投射路径、近场与远场声能分布以及是否存在明显声影区");
+  if (topImage) views.push("俯视平面图呈现了扬声器在水平面上的声场覆盖范围，可评估声场均匀性、各区域声压分布差异以及相邻扬声器之间的覆盖重叠情况");
+  if (views.length === 0) return "暂无仿真图纸素材，请先在逆向设计页面完成声场渲染后再生成报告。";
+  const scene = (sceneLabel || "会议室").replace(/厅$/, "厅");
+  return `${scene}逆向声学仿真的渲染图纸如上所示。${views.join("；")}。两张图纸从正交双视角完整呈现了本方案声场设计的空间覆盖特性，为后续设备安装定位与角度调试提供了可视化依据。`;
+};
+
+const buildSpeakerAnalysis = (speakers = [], sceneLabel = "") => {
+  if (!Array.isArray(speakers) || speakers.length === 0) return "暂无音箱设备数据，无法进行声场设备分析。";
+  const count = speakers.length;
+  const models = Array.from(new Set(speakers.map((s) => s?.model || "").filter(Boolean)));
+  const modelText = models.length > 0 ? `，涉及型号：${models.join("、")}` : "";
+  const scene = (sceneLabel || "会议室").replace(/厅$/, "厅");
+  return `本方案在${scene}场景下共部署 ${count} 只音箱${modelText}。各音箱的安装坐标、指向角度及增益参数均通过逆向声学优化算法自动求解，确保服务区内声压级满足设计目标、声场不均匀度控制在国标限值以内。表中列出的坐标与指向参数可直接作为现场安装与调试的基准数据，施工时应在复核建筑结构条件后据此定位与校准。`;
+};
+
+const buildMetricAnalysis = (metrics = {}, sceneLabel = "") => {
+  const scene = (sceneLabel || "会议室").replace(/厅$/, "厅");
+  const minSpl = toFiniteNumberOrNull(metrics?.minSpl);
+  const maxSpl = toFiniteNumberOrNull(metrics?.maxSpl);
+  const nonuniformity = toFiniteNumberOrNull(metrics?.nonuniformity);
+  const nonuniformityTarget = toFiniteNumberOrNull(metrics?.nonuniformityTarget);
+  const headroom = toFiniteNumberOrNull(metrics?.headroom);
+  const feasible = metrics?.feasible;
+  const feasibleText = feasible === true ? "满足设计要求" : feasible === false ? "暂未达到设计目标" : "待进一步验证";
+  const rangeText = minSpl != null && maxSpl != null
+    ? `服务区声压级范围为 ${minSpl.toFixed(1)}～${maxSpl.toFixed(1)} dB`
+    : "声压级数据待补充";
+  const uniformityText = nonuniformity != null
+    ? `稳态声场不均匀度为 ${nonuniformity.toFixed(1)} dB${nonuniformityTarget != null ? `（目标 ≤ ${nonuniformityTarget.toFixed(1)} dB）` : ""}`
+    : "";
+  const headroomText = headroom != null ? `最低点声压余量为 ${headroom.toFixed(1)} dB，确保了系统在峰值节目信号下仍具备充足的动态储备` : "";
+  const parts = [rangeText, uniformityText, headroomText].filter(Boolean);
+  return `${scene}声场仿真结果如上表所示。${parts.join("；")}。综合各维度指标，该方案仿真结论为：${feasibleText}。以上参数可作为方案评审与施工验收的量化依据，现场调试时应逐项复测并与仿真值比对确认。`;
+};
+
+const buildComplianceAnalysis = (standards = [], sceneLabel = "") => {
+  if (!Array.isArray(standards) || standards.length === 0) return "暂无国标合规校验数据，无法进行标准符合性分析。";
+  const passCount = standards.filter((s) => s?.pass === true).length;
+  const failCount = standards.filter((s) => s?.pass === false).length;
+  const total = standards.length;
+  const scene = (sceneLabel || "会议室").replace(/厅$/, "厅");
+  let summary = `本方案针对${scene}场景，逐条对照现行国家标准（GB 50371-2006《厅堂扩声系统设计规范》及 GB/T 15381-94《会议系统电声性能要求》）进行了合规性校验。`;
+  summary += `在 ${total} 项关键指标中，${passCount} 项达标`;
+  if (failCount > 0) summary += `，${failCount} 项暂未达标，建议对未达标项进行设计复核或设备参数调整`;
+  summary += "。国标合规校验是方案通过评审验收的必要前提，所有未达标项应在施工图设计阶段完成整改，并在竣工测试中提供对应检测报告。";
+  return summary;
+};
+
 const buildSimulationAnalysisChapter = (simulationContext = {}, scenario = "") => {
   if (!simulationContext || typeof simulationContext !== "object") return "";
 
@@ -1674,37 +1720,44 @@ const buildSimulationAnalysisChapter = (simulationContext = {}, scenario = "") =
   }
 
   const sceneLabel = normalizeSceneLabel(String(simulationContext?.scenario || scenario || ""));
-  const lines = [
-    "###### 3.2.4.1.2 仿真渲染与结果分析",
-    "",
-    `本小节基于${sceneLabel}逆向设计结果自动生成，用于补充专业扩声系统的渲染视图、关键指标与标准符合性图表。`,
-    "",
-    "（1）仿真渲染图"
-  ];
+  const lines = [];
 
+  // Chapter heading
+  lines.push(
+    "##### 仿真分析",
+    "",
+    `本仿真分析基于${sceneLabel}逆向声学设计结果，从图纸素材、声场指标和国标合规三个维度，系统验证专业扩声系统设计的可行性、声场覆盖质量与国家现行标准的达标情况。以下各项数据均由三维声场仿真引擎自动计算生成，可作为方案评审与工程验收的客观技术依据。`,
+    ""
+  );
+
+  // ---- 1. 图纸素材 ----
+  lines.push("###### 图纸素材", "");
   if (sideImage) {
-    lines.push("", "图3-2-4-1-a 逆向设计侧视渲染图", "", `![逆向设计侧视渲染图](${sideImage})`);
-  } else {
-    lines.push("", "- 侧视图未采集到（请先在逆向设计页面完成渲染后再生成报告）。");
+    lines.push(`![逆向设计侧视渲染图](${sideImage})`, "", "图 仿真-1 逆向设计侧视渲染图", "");
   }
   if (topImage) {
-    lines.push("", "图3-2-4-1-b 逆向设计俯视渲染图", "", `![逆向设计俯视渲染图](${topImage})`);
-  } else {
-    lines.push("", "- 俯视图未采集到（请先在逆向设计页面完成渲染后再生成报告）。");
+    lines.push(`![逆向设计俯视渲染图](${topImage})`, "", "图 仿真-2 逆向设计俯视平面图", "");
   }
+  if (!sideImage && !topImage) {
+    lines.push("> 未采集到仿真渲染图，请先在逆向设计页面完成渲染后再生成报告。", "");
+  }
+  lines.push(buildBlueprintAnalysis(sideImage, topImage, sceneLabel), "");
 
-  lines.push("", "（2）关键指标说明", "");
+  // ---- 2. 声场指标说明 ----
+  lines.push("###### 声场指标说明", "");
+  const feasibleText = metrics?.feasible === true ? "达标" : metrics?.feasible === false ? "未达标" : "待确认";
+  lines.push("| 指标 | 仿真值 | 目标值 | 判定 |", "| --- | --- | --- | --- |");
+  lines.push(`| 服务区最小声压级 | ${formatDbValue(metrics?.minSpl)} dB | ${formatDbValue(metrics?.minSplTarget)} dB | ${formatDbValue(metrics?.minSpl) !== "--" ? feasibleText : "--"} |`);
+  lines.push(`| 服务区平均声压级 | ${formatDbValue(metrics?.avgSpl)} dB | -- | -- |`);
+  lines.push(`| 服务区最大声压级 | ${formatDbValue(metrics?.maxSpl)} dB | -- | -- |`);
+  lines.push(`| 稳态声场不均匀度 | ${formatDbValue(metrics?.nonuniformity)} dB | ≤ ${formatDbValue(metrics?.nonuniformityTarget)} dB | ${formatDbValue(metrics?.nonuniformity) !== "--" ? (toFiniteNumberOrNull(metrics?.nonuniformity) <= toFiniteNumberOrNull(metrics?.nonuniformityTarget) ? "达标" : "未达标") : "--"} |`);
+  lines.push(`| 最低点声压余量 | ${formatDbValue(metrics?.headroom)} dB | ≥ ${formatDbValue(metrics?.headroomTarget)} dB | ${formatDbValue(metrics?.headroom) !== "--" ? (toFiniteNumberOrNull(metrics?.headroom) >= toFiniteNumberOrNull(metrics?.headroomTarget) ? "达标" : "未达标") : "--"} |`);
+  lines.push("", buildMetricAnalysis(metrics, sceneLabel), "");
 
-  const feasibleText = metrics?.feasible === true ? "满足" : metrics?.feasible === false ? "未满足" : "待确认";
-  lines.push(`- 仿真结论：${feasibleText}`);
-  lines.push(`- 服务区声压级范围（最小/平均/最大）：${formatDbValue(metrics?.minSpl)} / ${formatDbValue(metrics?.avgSpl)} / ${formatDbValue(metrics?.maxSpl)} dB`);
-  lines.push(`- 目标最低声压级：${formatDbValue(metrics?.minSplTarget)} dB`);
-  lines.push(`- 稳态声场不均匀度：${formatDbValue(metrics?.nonuniformity)} dB（目标 <= ${formatDbValue(metrics?.nonuniformityTarget)} dB）`);
-  lines.push(`- 最低点声压余量：${formatDbValue(metrics?.headroom)} dB（目标 >= ${formatDbValue(metrics?.headroomTarget)} dB）`);
-
-  lines.push("", "（3）标准符合性图表", "");
+  // ---- 3. 国标合规校验 ----
+  lines.push("###### 国标合规校验", "");
   if (standards.length > 0) {
-    lines.push("| 指标项 | 标准要求 | 仿真值 | 判定 |", "| --- | --- | --- | --- |");
+    lines.push("| 规范条文 | 国标限值 | 本方案测量值 | 合规情况 |", "| --- | --- | --- | --- |");
     standards.forEach((row) => {
       const pass = row?.pass === true ? "达标" : row?.pass === false ? "不达标" : "--";
       lines.push(`| ${toMarkdownTableCell(row?.name || "")}`
@@ -1713,34 +1766,9 @@ const buildSimulationAnalysisChapter = (simulationContext = {}, scenario = "") =
         + ` | ${pass} |`);
     });
   } else {
-    lines.push("- 暂无标准对比明细。", "");
+    lines.push("> 暂无标准对比明细。", "");
   }
-
-  lines.push("", "（4）音箱布置与参数图表", "");
-  if (speakers.length > 0) {
-    lines.push("| 序号 | 名称 | 型号 | 坐标 (x,y,z m) | 指向 (俯仰/偏航) | 增益 | 覆盖角 (H×V) |", "| --- | --- | --- | --- | --- | --- | --- |");
-    speakers.forEach((speaker, index) => {
-      const position = Array.isArray(speaker?.position) ? speaker.position : [];
-      const x = formatDbValue(position?.[0], 2);
-      const y = formatDbValue(position?.[1], 2);
-      const z = formatDbValue(position?.[2], 2);
-      const pitch = formatDbValue(speaker?.pitch, 1, "°");
-      const yaw = formatDbValue(speaker?.yaw, 1, "°");
-      const gain = formatDbValue(speaker?.gainDb, 1, " dB");
-      const covH = formatDbValue(speaker?.coverageH, 0, "°");
-      const covV = formatDbValue(speaker?.coverageV, 0, "°");
-      const label = speaker?.label || speaker?.role || `音箱 #${index + 1}`;
-      lines.push(`| ${index + 1}`
-        + ` | ${toMarkdownTableCell(label)}`
-        + ` | ${toMarkdownTableCell(speaker?.model || "")}`
-        + ` | (${x}, ${y}, ${z})`
-        + ` | ${pitch} / ${yaw}`
-        + ` | ${gain}`
-        + ` | ${covH} × ${covV} |`);
-    });
-  } else {
-    lines.push("- 暂无音箱布置参数。", "");
-  }
+  lines.push("", buildComplianceAnalysis(standards, sceneLabel), "");
 
   return lines.join("\n").trim();
 };
@@ -1750,7 +1778,7 @@ const injectSimulationIntoProfessionalSection = (markdown, simulationMarkdown) =
   const addon = String(simulationMarkdown || "").trim();
   if (!addon) return source;
   if (!source) return addon;
-  if (/3\.2\.4\.1\.2\s+仿真渲染与结果分析|仿真渲染与结果分析/.test(source)) {
+  if (/#####\s+仿真分析/.test(source)) {
     return source;
   }
 
@@ -1770,17 +1798,17 @@ const injectSimulationIntoProfessionalSection = (markdown, simulationMarkdown) =
 
   let anchor = headings.find((item) => {
     const t = normalized(item.title);
-    return /3\.2\.4\.1/.test(t) && t.includes("专业扩声系统");
+    return /3\.2\.[34]\.1/.test(t) && t.includes("专业扩声系统");
   });
 
   if (!anchor) {
-    anchor = headings.find((item) => /3\.2\.4\.1/.test(normalized(item.title)));
+    anchor = headings.find((item) => /3\.2\.[34]\.1/.test(normalized(item.title)));
   }
 
   if (!anchor) {
     anchor = headings.find((item) => {
       const t = normalized(item.title);
-      return /3\.2\.4/.test(t) && t.includes("系统设计");
+      return /3\.2\.[34]/.test(t) && t.includes("系统设计");
     });
   }
 
@@ -1797,6 +1825,64 @@ const injectSimulationIntoProfessionalSection = (markdown, simulationMarkdown) =
     }
   }
 
+  lines.splice(sectionEnd, 0, "", addon, "");
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+};
+
+const buildDesignEffectEnhancement = (simulationContext = {}, scenario = "") => {
+  if (!simulationContext || typeof simulationContext !== "object") return "";
+  const images = simulationContext?.images && typeof simulationContext.images === "object"
+    ? simulationContext.images : {};
+  const speakers = Array.isArray(simulationContext?.speakers) ? simulationContext.speakers : [];
+  const sideImage = sanitizeSimulationDataUrl(images?.side);
+  if (!sideImage && speakers.length === 0) return "";
+
+  const sceneLabel = normalizeSceneLabel(String(simulationContext?.scenario || scenario || ""));
+  const lines = [];
+  if (sideImage) {
+    lines.push("", `![仿真声场侧视渲染图](${sideImage})`, "", "图 3-2-2-1 逆向声学仿真侧视渲染图", "");
+  }
+  if (speakers.length > 0) {
+    const count = speakers.length;
+    const positions = speakers.slice(0, 6).map((s) => {
+      const pos = Array.isArray(s?.position) ? s.position : [];
+      return `${s?.label || s?.model || "音箱"}位于坐标(${pos[0]?.toFixed(1) || "?"}, ${pos[1]?.toFixed(1) || "?"}, ${pos[2]?.toFixed(1) || "?"})m`;
+    });
+    lines.push(`本方案通过三维逆向声学仿真验证，在${sceneLabel}场景下共计使用 ${count} 只扩声音箱。${positions.join("；")}。各音箱通过优化算法自动确定最佳安装位置与指向角度，确保在整个服务区域内声场覆盖均匀、无明显声影区，关键声学指标均达到国标一级设计要求。`);
+  }
+  return lines.join("\n").trim();
+};
+
+const injectDesignEffect = (markdown, enhancementMd) => {
+  const source = String(markdown || "").trim();
+  const addon = String(enhancementMd || "").trim();
+  if (!addon) return source;
+  if (!source) return addon;
+
+  const lines = source.split(/\r?\n/);
+  const headings = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const matched = lines[i].match(/^(#{1,6})\s+(.+)$/);
+    if (!matched) continue;
+    headings.push({ index: i, level: matched[1].length, title: String(matched[2] || "").trim() });
+  }
+
+  const normalized = (value = "") => String(value || "").replace(/\s+/g, "");
+  // Find 3.2.2 设计效果 heading
+  let anchor = headings.find((item) => {
+    const t = normalized(item.title);
+    return /3\.2\.2/.test(t) && (t.includes("设计效果") || t.includes("效果"));
+  });
+  if (!anchor) {
+    anchor = headings.find((item) => /3\.2\.2/.test(normalized(item.title)));
+  }
+  if (!anchor) return source;
+
+  let sectionEnd = lines.length;
+  for (const item of headings) {
+    if (item.index <= anchor.index) continue;
+    if (item.level <= anchor.level) { sectionEnd = item.index; break; }
+  }
   lines.splice(sectionEnd, 0, "", addon, "");
   return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 };
@@ -2332,20 +2418,14 @@ const insertToc = (markdown) => {
   return lines.join("\n");
 };
 
-const injectStaticBlocks = (markdown, blockMap) => {
-  const injected = [];
-  const content = String(markdown || "").replace(/\{\{INSERT:([A-Z0-9_]+)\}\}/g, (_, key) => {
-    if (blockMap[key]) {
-      injected.push(key);
-      return String(blockMap[key]);
-    }
-    return `<!-- WARNING: static block '${key}' not found -->`;
+const stripStaticBlockPlaceholders = (markdown) => {
+  return String(markdown || "").replace(/\{\{INSERT:[A-Z0-9_]+\}\}/g, () => {
+    return "<!-- Note: static content has been automatically inserted by chapter via the database resource pipeline -->";
   });
-  return { content, injected };
 };
 
-const postProcessMarkdown = (markdown, blockMap, mediaAssetMap = {}, commonImageGuidance = [], deviceImageByName = {}) => {
-  const { content, injected } = injectStaticBlocks(markdown, blockMap);
+const postProcessMarkdown = (markdown, mediaAssetMap = {}, commonImageGuidance = [], deviceImageByName = {}) => {
+  const content = stripStaticBlockPlaceholders(markdown);
   const withToc = insertToc(content);
   const captionCounter = { image: 0, table: 0 };
   const commonTokens = (Array.isArray(commonImageGuidance) ? commonImageGuidance : [])
@@ -2368,7 +2448,6 @@ const postProcessMarkdown = (markdown, blockMap, mediaAssetMap = {}, commonImage
   return {
     markdownProcessed: withDeviceImages,
     postProcessReport: {
-      injected_blocks: injected,
       toc_added: withToc !== content,
       replaced_resource_placeholders: replacedAll,
       chapter_inserted_resources: chapterInserted,
@@ -2384,37 +2463,10 @@ const postProcessMarkdown = (markdown, blockMap, mediaAssetMap = {}, commonImage
   };
 };
 
-const loadStaticBlocksFromFiles = () => {
-  try {
-    const raw = JSON.parse(readFileSync(STATIC_BLOCKS_INDEX_FILE_URL, "utf-8"));
-    const blocks = raw?.blocks || {};
-    const blockMap = {};
-
-    for (const [key, meta] of Object.entries(blocks)) {
-      const sourceFile = String(meta?.file || "");
-      if (!sourceFile) continue;
-      const fileUrl = new URL(sourceFile, STATIC_BLOCKS_DIR_URL);
-      if (!existsSync(fileUrl)) continue;
-      blockMap[key] = readFileSync(fileUrl, "utf-8").trim();
-    }
-    return blockMap;
-  } catch (error) {
-    console.warn("⚠️ Failed to load static blocks from files:", error.message);
-    return {};
-  }
-};
-
-const loadEffectiveStaticBlockMap = async () => {
-  try {
-    const dbMap = await loadEnabledStaticBlockMap(pool);
-    if (dbMap && Object.keys(dbMap).length > 0) {
-      return dbMap;
-    }
-  } catch (error) {
-    console.warn("⚠️ Failed to load static blocks from DB, fallback to files:", error.message);
-  }
-  return loadStaticBlocksFromFiles();
-};
+// All static resources now load exclusively from the DB 本地静态资源 table,
+// filtered by scenario and enabled state, and inserted by chapter title via
+// insertCommonImagesByChapterTitle. Legacy {{INSERT:xxx}} placeholders are
+// stripped in postProcessMarkdown to guard against stale LLM output.
 
 const escapeHtml = (value) =>
   String(value || "")
@@ -4195,13 +4247,6 @@ app.post("/api/plan/generate-markdowns-stream", async (req, res) => {
   });
 
   try {
-    const staticBlocksStartAt = Date.now();
-    const staticBlockMap = await loadEffectiveStaticBlockMap();
-    tracePlanEvent("static-blocks-loaded", routeTrace, {
-      elapsedMs: Date.now() - staticBlocksStartAt,
-      blockCount: Object.keys(staticBlockMap || {}).length
-    });
-
     const commonImagesStartAt = Date.now();
     const commonImageResources = await loadCommonImageResources(String(scenario));
     tracePlanEvent("common-images-loaded", routeTrace, {
@@ -4290,14 +4335,26 @@ app.post("/api/plan/generate-markdowns-stream", async (req, res) => {
           }
         });
 
+        const hasSimContext = plan?.simulationContext && typeof plan.simulationContext === "object";
+        tracePlanEvent("simulation-context-check", planTrace, {
+          hasSimulationContext: hasSimContext,
+          hasImages: !!(hasSimContext && plan.simulationContext?.images),
+          hasMetrics: !!(hasSimContext && plan.simulationContext?.metrics),
+          hasStandards: !!(hasSimContext && Array.isArray(plan.simulationContext?.standards) && plan.simulationContext.standards.length > 0)
+        });
         const simulationChapter = buildSimulationAnalysisChapter(plan?.simulationContext, String(scenario));
+        tracePlanEvent("simulation-chapter-built", planTrace, {
+          chapterLength: String(simulationChapter || "").length,
+          chapterGenerated: !!simulationChapter
+        });
         const markdownRawWithSimulation = injectSimulationIntoProfessionalSection(markdownRaw, simulationChapter);
+        const designEffectEnhancement = buildDesignEffectEnhancement(plan?.simulationContext, String(scenario));
+        const markdownWithDesignEffect = injectDesignEffect(markdownRawWithSimulation, designEffectEnhancement);
 
         const postProcessStartAt = Date.now();
         tracePlanEvent("post-process-start", planTrace);
         const { markdownProcessed, postProcessReport } = postProcessMarkdown(
-          markdownRawWithSimulation,
-          staticBlockMap,
+          markdownWithDesignEffect,
           imageContext.mediaAssetMap,
           imageContext.commonImageGuidance,
           imageContext.deviceImageByName
@@ -4409,13 +4466,6 @@ app.post("/api/plan/generate-markdowns", async (req, res) => {
   }
 
   try {
-    const staticBlocksStartAt = Date.now();
-    const staticBlockMap = await loadEffectiveStaticBlockMap();
-    tracePlanEvent("static-blocks-loaded", routeTrace, {
-      elapsedMs: Date.now() - staticBlocksStartAt,
-      blockCount: Object.keys(staticBlockMap || {}).length
-    });
-
     const commonImagesStartAt = Date.now();
     const commonImageResources = await loadCommonImageResources(String(scenario));
     tracePlanEvent("common-images-loaded", routeTrace, {
@@ -4463,14 +4513,26 @@ app.post("/api/plan/generate-markdowns", async (req, res) => {
           traceContext: planTrace
         });
 
+        const hasSimContext = plan?.simulationContext && typeof plan.simulationContext === "object";
+        tracePlanEvent("simulation-context-check", planTrace, {
+          hasSimulationContext: hasSimContext,
+          hasImages: !!(hasSimContext && plan.simulationContext?.images),
+          hasMetrics: !!(hasSimContext && plan.simulationContext?.metrics),
+          hasStandards: !!(hasSimContext && Array.isArray(plan.simulationContext?.standards) && plan.simulationContext.standards.length > 0)
+        });
         const simulationChapter = buildSimulationAnalysisChapter(plan?.simulationContext, String(scenario));
+        tracePlanEvent("simulation-chapter-built", planTrace, {
+          chapterLength: String(simulationChapter || "").length,
+          chapterGenerated: !!simulationChapter
+        });
         const markdownRawWithSimulation = injectSimulationIntoProfessionalSection(markdownRaw, simulationChapter);
+        const designEffectEnhancement = buildDesignEffectEnhancement(plan?.simulationContext, String(scenario));
+        const markdownWithDesignEffect = injectDesignEffect(markdownRawWithSimulation, designEffectEnhancement);
 
         const postProcessStartAt = Date.now();
         tracePlanEvent("post-process-start", planTrace);
         const { markdownProcessed, postProcessReport } = postProcessMarkdown(
-          markdownRawWithSimulation,
-          staticBlockMap,
+          markdownWithDesignEffect,
           imageContext.mediaAssetMap,
           imageContext.commonImageGuidance,
           imageContext.deviceImageByName

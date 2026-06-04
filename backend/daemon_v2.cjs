@@ -4,7 +4,7 @@ const path = require('path');
 const { exec, spawn } = require('child_process');
 
 const app = express();
-const SCRIPT = '/home/ubuntu/zdh/manage_backend.sh';
+const SCRIPT = path.join(__dirname, '..', 'manage_backend.sh');
 const DOCKER_COMPOSE_MANAGED = process.env.DOCKER_COMPOSE_MANAGED === 'true';
 const PROJECT_ROOT = process.env.PROJECT_ROOT || '/app';
 const SERVER_ENTRY = path.join(PROJECT_ROOT, 'server.js');

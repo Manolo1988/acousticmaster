@@ -3,9 +3,13 @@ import express from "express";
 import cors from "cors";
 import { exec } from "child_process";
 
+import { fileURLToPath } from "url";
+import { dirname } from "path";
+
 const app = express();
 const PORT = 4000;
-const SCRIPT_PATH = "/home/ubuntu/zdh/manage_backend.sh";
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SCRIPT_PATH = new URL("./manage_backend.sh", import.meta.url).pathname;
 
 app.use(cors());
 app.use(express.json());

@@ -29,8 +29,8 @@ COPY --from=builder --chown=nodejs:nodejs /app/plan_service.js ./
 COPY --from=builder --chown=nodejs:nodejs /app/static_blocks ./static_blocks
 COPY --from=builder --chown=nodejs:nodejs /app/大模型方案生成指导模板.md ./大模型方案生成指导模板.md
 
-# 运行时会写入生成文档，提前创建并赋予 nodejs 写权限
-RUN mkdir -p /app/generated_docs && chown nodejs:nodejs /app/generated_docs
+# 运行时会写入生成文档和 LLM 轨迹日志，提前创建并赋予 nodejs 写权限
+RUN mkdir -p /app/generated_docs /app/llm_traces && chown nodejs:nodejs /app/generated_docs /app/llm_traces
 
 # 切换到非root用户
 USER nodejs

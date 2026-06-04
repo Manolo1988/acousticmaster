@@ -419,7 +419,7 @@ def optimize_fixed_plan(payload: dict) -> dict:
         preliminary.append((result, layout_name_candidate, speakers))
 
     preliminary.sort(key=lambda item: fixed_plan_order_key(item[0], config))
-    refine_targets = preliminary[: min(1, len(preliminary))]
+    refine_targets = preliminary[: min(2, len(preliminary))]
 
     results: list[CandidateResult] = []
     fields = {}
@@ -429,10 +429,18 @@ def optimize_fixed_plan(payload: dict) -> dict:
         results.append(result)
         fields[(result.model, result.layout)] = field
 
-    results.sort(key=lambda item: fixed_plan_order_key(item, config))
-    best = results[0]
-    best_field = fields[(best.model, best.layout)]
-    candidate_results = results[: min(8, len(results))]
+    boosted_results: list[CandidateResult] = []
+    boosted_fields = dict(fields)
+    for item in results:
+        field = boosted_fields[(item.model, item.layout)]
+        boosted_item, boosted_field = apply_uniform_headroom_boost(item, field, product_map, config["targets"])
+        boosted_results.append(boosted_item)
+        boosted_fields[(boosted_item.model, boosted_item.layout)] = boosted_field
+
+    boosted_results.sort(key=lambda item: fixed_plan_order_key(item, config))
+    best = boosted_results[0]
+    best_field = boosted_fields[(best.model, best.layout)]
+    candidate_results = boosted_results[: min(8, len(boosted_results))]
 
     response = {
         "config": config,
@@ -447,12 +455,25 @@ def optimize_fixed_plan(payload: dict) -> dict:
             serialize_result(
                 item,
                 include_speakers=True,
-                field=field_to_grid(fields[(item.model, item.layout)], xs, ys, grid_indices),
+                field=field_to_grid(boosted_fields[(item.model, item.layout)], xs, ys, grid_indices),
             )
             for item in candidate_results
         ],
         "mode": "fixed_plan",
     }
+    if not best.feasible:
+        adjustment = build_fixed_plan_adjustment(
+            units,
+            product_map,
+            config,
+            receivers,
+            xs,
+            ys,
+            grid_indices,
+            best,
+        )
+        if adjustment:
+            response["adjustment"] = adjustment
     response["elapsedSeconds"] = round(time.perf_counter() - started, 3)
     return response
 
@@ -468,6 +489,113 @@ def fixed_plan_order_key(result: CandidateResult, config: dict) -> tuple[float, 
         max(0.0, result.max_spl_db - result.avg_spl_db - 6.0),
         -result.headroom_db,
     )
+
+
+def build_fixed_plan_adjustment(
+    units: list[dict],
+    product_map: dict[str, Product],
+    config: dict,
+    receivers: np.ndarray,
+    xs: list[float],
+    ys: list[float],
+    grid_indices: list[tuple[int, int]],
+    baseline: CandidateResult,
+) -> dict | None:
+    ceiling_models = [
+        model
+        for model, product in product_map.items()
+        if product.coverage_v_deg >= 95 or "ceiling" in product.model.lower()
+    ]
+    other_models = [model for model in product_map if model not in ceiling_models]
+    existing_models = {unit["model"] for unit in units}
+    model_order = sorted(
+        [*ceiling_models, *other_models],
+        key=lambda model: (
+            0 if model in existing_models else 1,
+            0 if model in ceiling_models else 1,
+            product_map[model].price / max(product_map[model].continuous_spl_db - 80.0, 1.0),
+        ),
+    )[:1]
+    if not model_order:
+        return None
+
+    best_adjusted: tuple[CandidateResult, np.ndarray, str, int] | None = None
+
+    for add_count in (1, 2):
+        for model in model_order:
+            product = product_map[model]
+            extra_units = [
+                {
+                    "model": model,
+                    "source_item_id": None,
+                    "source_row_index": None,
+                    "source_name": product.name,
+                    "source_type": "建议增补",
+                    "source_unit_index": idx + 1,
+                    "source_label": f"建议增补 / {product.name} / {model} #{idx + 1}",
+                }
+                for idx in range(add_count)
+            ]
+            candidates = generate_fixed_plan_candidates([*units, *extra_units], product_map, config)
+            if not candidates:
+                continue
+
+            preliminary: list[tuple[CandidateResult, np.ndarray, str, int]] = []
+            for layout_name_candidate, speakers in candidates:
+                result, field = evaluate_mixed_layout(layout_name_candidate, speakers, product_map, config, receivers)
+                result, field = apply_uniform_headroom_boost(result, field, product_map, config["targets"])
+                preliminary.append((result, field, model, add_count))
+            preliminary.sort(key=lambda item: fixed_plan_order_key(item[0], config))
+
+            for candidate in preliminary[: min(6, len(preliminary))]:
+                adjusted_result = candidate[0]
+                if best_adjusted is None or fixed_plan_order_key(adjusted_result, config) < fixed_plan_order_key(best_adjusted[0], config):
+                    best_adjusted = candidate
+                if adjusted_result.feasible:
+                    return serialize_adjustment(candidate, baseline, xs, ys, grid_indices)
+
+    if best_adjusted is None:
+        return None
+    return serialize_adjustment(best_adjusted, baseline, xs, ys, grid_indices)
+
+
+def serialize_adjustment(
+    candidate: tuple[CandidateResult, np.ndarray, str, int],
+    baseline: CandidateResult,
+    xs: list[float],
+    ys: list[float],
+    grid_indices: list[tuple[int, int]],
+) -> dict:
+    result, field, model, add_count = candidate
+    if not result.feasible:
+        return {
+            "needed": True,
+            "feasible": False,
+            "reason": (
+                f"{baseline.reason or '当前固定清单未满足对标指标'}。"
+                "当前固定清单已优化到约束边界，快速增补诊断仍未找到达标解；"
+                "请增补补声音箱数量或替换为更高连续声压级型号后重新生成。"
+            ),
+            "added": [],
+            "result": serialize_result(result),
+            "grid": field_to_grid(field, xs, ys, grid_indices),
+        }
+    return {
+        "needed": True,
+        "feasible": result.feasible,
+        "reason": (
+            f"{baseline.reason or '当前固定清单未满足对标指标'}。"
+            f"当前清单固定布点已优化到约束边界，建议增补 {add_count} 只 {model} 后重新生成。"
+        ),
+        "added": [
+            {
+                "model": model,
+                "quantity": add_count,
+            }
+        ],
+        "result": serialize_result(result),
+        "grid": field_to_grid(field, xs, ys, grid_indices),
+    }
 
 
 def layout_quality_penalty(speakers: list[Speaker], config: dict) -> float:
@@ -537,13 +665,14 @@ def clone_speaker(
     speaker: Speaker,
     position: tuple[float, float, float] | None = None,
     aim: tuple[float, float, float] | None = None,
+    gain_db: float | None = None,
 ) -> Speaker:
     return Speaker(
         speaker.model,
         position or speaker.position,
         aim or speaker.aim,
         speaker.layout_role,
-        speaker.gain_db,
+        speaker.gain_db if gain_db is None else gain_db,
         source_item_id=speaker.source_item_id,
         source_row_index=speaker.source_row_index,
         source_name=speaker.source_name,
@@ -555,6 +684,84 @@ def clone_speaker(
 
 def clamp(value: float, lower: float, upper: float) -> float:
     return min(upper, max(lower, value))
+
+
+def max_allowed_gain(speaker: Speaker, product_map: dict[str, Product]) -> float:
+    product = product_map[speaker.model]
+    return min(6.0, max(0.0, product.peak_spl_db - product.continuous_spl_db))
+
+
+def build_candidate_failures(min_spl: float, nonuniformity: float, headroom: float, targets: dict) -> list[str]:
+    failures = []
+    tolerance = 1.0e-6
+    if min_spl + tolerance < targets["min_spl_db"]:
+        failures.append(f"最低声压级不足 {targets['min_spl_db']:.1f} dB")
+    if nonuniformity - tolerance > targets["max_nonuniformity_db"]:
+        failures.append(f"声场不均匀度超过 {targets['max_nonuniformity_db']:.1f} dB")
+    if headroom + tolerance < targets["min_headroom_db"]:
+        failures.append(f"最低点余量低于 {targets['min_headroom_db']:.1f} dB")
+    return failures
+
+
+def rebuild_candidate_with_field(
+    template: CandidateResult,
+    speakers: list[Speaker],
+    field: np.ndarray,
+    targets: dict,
+) -> CandidateResult:
+    min_spl = float(np.min(field))
+    max_spl = float(np.max(field))
+    avg_spl = float(10.0 * np.log10(np.mean(10.0 ** (field / 10.0)) + EPS))
+    nonuniformity = max_spl - min_spl
+    headroom = min_spl - targets["min_spl_db"]
+    failures = build_candidate_failures(min_spl, nonuniformity, headroom, targets)
+    return CandidateResult(
+        feasible=not failures,
+        total_cost=template.total_cost,
+        product_cost=template.product_cost,
+        install_cost=template.install_cost,
+        dsp_cost=template.dsp_cost,
+        model=template.model,
+        layout=template.layout,
+        speaker_count=template.speaker_count,
+        min_spl_db=min_spl,
+        avg_spl_db=avg_spl,
+        max_spl_db=max_spl,
+        nonuniformity_db=nonuniformity,
+        headroom_db=headroom,
+        coverage_loss_db_p95=template.coverage_loss_db_p95,
+        reason="达标" if not failures else "；".join(failures),
+        speakers=speakers,
+    )
+
+
+def apply_uniform_headroom_boost(
+    result: CandidateResult,
+    field: np.ndarray,
+    product_map: dict[str, Product],
+    targets: dict,
+) -> tuple[CandidateResult, np.ndarray]:
+    required_boost = targets["min_spl_db"] + targets["min_headroom_db"] - result.min_spl_db
+    if required_boost <= 1.0e-6:
+        return result, field
+    if result.nonuniformity_db > targets["max_nonuniformity_db"] + 1.0e-6:
+        return result, field
+
+    remaining_boosts = [
+        max_allowed_gain(speaker, product_map) - float(speaker.gain_db)
+        for speaker in result.speakers
+    ]
+    available_boost = min(remaining_boosts) if remaining_boosts else 0.0
+    boost = min(required_boost + 0.15, available_boost)
+    if boost <= 1.0e-6:
+        return result, field
+
+    boosted_speakers = [
+        clone_speaker(speaker, gain_db=float(speaker.gain_db + boost))
+        for speaker in result.speakers
+    ]
+    boosted_field = field + boost
+    return rebuild_candidate_with_field(result, boosted_speakers, boosted_field, targets), boosted_field
 
 
 def refine_fixed_plan_layout(
@@ -753,7 +960,7 @@ def refine_fixed_plan_layout(
                 penalty += max(0.0, min_spacing - distance) ** 2 * 1.2
         for point, initial_point in zip(xy, initial_xy):
             drift = float(np.linalg.norm(point - initial_point))
-            penalty += max(0.0, drift - min(lx, ly) * 0.12) ** 2 * 8.0
+            penalty += max(0.0, drift - min(lx, ly) * 0.28) ** 2 * 1.2
         return penalty
 
     def objective(vector: np.ndarray) -> float:
@@ -769,13 +976,13 @@ def refine_fixed_plan_layout(
         standard_penalty = (
             max(0.0, targets["min_spl_db"] - min_spl) ** 2 * 4000.0
             + max(0.0, nonuniformity - targets["max_nonuniformity_db"]) ** 2 * 3200.0
-            + max(0.0, targets["min_headroom_db"] - headroom) ** 2 * 1800.0
+            + max(0.0, targets["min_headroom_db"] - headroom) ** 2 * 5200.0
         )
         return (
             standard_penalty
             + nonuniformity * 18.0
             + variance * 5.0
-            + mean_error * 0.5
+            + mean_error * 0.2
             + engineering_penalty(speakers)
         )
 
@@ -794,13 +1001,13 @@ def refine_fixed_plan_layout(
     def installation_bounds(speaker: Speaker) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
         role = speaker.layout_role
         if is_ceiling_speaker(speaker):
-            return (max(area["x_min_m"], lx * 0.18), min(area["x_max_m"], lx * 0.86)), (y_min, y_max), (max(z_max - 0.12, z_min), z_max)
+            return (max(0.8, area["x_min_m"] * 0.75), min(area["x_max_m"], lx * 0.9)), (y_min, y_max), (max(z_max - 0.12, z_min), z_max)
         if role.startswith("screen") or role.startswith("front"):
             return (0.35, min(1.2, lx - 0.35)), (y_min, y_max), (max(2.1, z_min), z_max)
         if "side_left" in role:
-            return (max(area["x_min_m"], lx * 0.18), min(area["x_max_m"], lx * 0.82)), (0.25, min(1.0, ly * 0.16)), (max(2.1, z_min), z_max)
+            return (max(0.8, area["x_min_m"] * 0.75), min(area["x_max_m"], lx * 0.86)), (0.25, min(1.0, ly * 0.16)), (max(2.1, z_min), z_max)
         if "side_right" in role:
-            return (max(area["x_min_m"], lx * 0.18), min(area["x_max_m"], lx * 0.82)), (max(ly - 1.0, ly * 0.84), ly - 0.25), (max(2.1, z_min), z_max)
+            return (max(0.8, area["x_min_m"] * 0.75), min(area["x_max_m"], lx * 0.86)), (max(ly - 1.0, ly * 0.84), ly - 0.25), (max(2.1, z_min), z_max)
         return (x_min, x_max), (y_min, y_max), (z_min, z_max)
 
     bounds = []
@@ -896,7 +1103,7 @@ def refine_fixed_plan_layout(
                 method="SLSQP",
                 bounds=bounds,
                 constraints=constraints,
-                options={"maxiter": max_steps, "ftol": 8.0e-4, "disp": False},
+                options={"maxiter": max_steps, "ftol": 1.0e-5, "disp": False},
             )
             candidate_vector = local.x if local.success or np.isfinite(local.fun) else start_vector
             candidate_value = objective(candidate_vector)
@@ -968,8 +1175,8 @@ def generate_fixed_plan_candidates(units: list[dict], product_map: dict[str, Pro
     ceiling_ids = {id(unit) for unit in ceiling_units}
     wall_units = [unit for unit in units if id(unit) not in ceiling_ids]
     candidates: list[tuple[str, list[Speaker]]] = []
-    wall_modes = ("uniform",)
-    ceiling_modes = ("uniform",)
+    wall_modes = ("front_distributed", "uniform", "side_distributed_mid", "side_distributed_rear")
+    ceiling_modes = ("balanced", "uniform", "mid", "rear", "front")
     seen = set()
     for wall_mode in wall_modes:
         wall_speakers = fixed_wall_speakers(wall_units, wall_mode, lx, ly, z_wall, area)
@@ -1151,14 +1358,14 @@ def fixed_ceiling_speakers(units: list[dict], z: float, lx: float, ly: float, ar
     y_right = center_y + y_sep / 2
     pair_count = count // 2
     if pair_count == 1:
-        focus_ratio = {"front": 0.28, "mid": 0.38, "rear": 0.72, "spread": 0.28}.get(mode, 0.5)
+        focus_ratio = {"front": 0.28, "mid": 0.50, "rear": 0.72, "spread": 0.28, "balanced": 0.64}.get(mode, 0.5)
         pair_xs = [x_min + (x_max - x_min) * focus_ratio]
     else:
         pair_xs = symmetric_slots_1d(max(1, pair_count), x_min, x_max)
     slots: list[tuple[float, float]] = []
     if count % 2 == 1:
         if pair_count > 0:
-            single_ratio = {"front": 0.76, "mid": 0.68, "rear": 0.24, "spread": 0.76}.get(mode, 0.5)
+            single_ratio = {"front": 0.76, "mid": 0.50, "rear": 0.24, "spread": 0.76, "balanced": 0.38}.get(mode, 0.5)
             single_x = x_min + (x_max - x_min) * single_ratio
         else:
             single_x = lx / 2
@@ -1592,6 +1799,8 @@ def evaluate_mixed_layout(
         failures.append(f"声场不均匀度超过 {targets['max_nonuniformity_db']:.1f} dB")
     if headroom < targets["min_headroom_db"]:
         failures.append(f"最低点余量低于 {targets['min_headroom_db']:.1f} dB")
+        if best_gains and all(gain >= gain_max - 1.0e-3 for gain in best_gains):
+            failures.append("全部音箱增益已达当前型号峰值上限")
 
     product_cost = sum(product_map[speaker.model].price for speaker in speakers)
     install_cost = opt["installation_cost_per_speaker"] * len(speakers)

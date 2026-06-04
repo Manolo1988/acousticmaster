@@ -93,14 +93,37 @@ interface SimulationResult {
     }>;
     missing?: string[];
   };
+  adjustment?: {
+    needed?: boolean;
+    feasible?: boolean;
+    reason?: string;
+    added?: Array<{
+      model: string;
+      quantity: number;
+    }>;
+    result?: {
+      minSpl?: number;
+      avgSpl?: number;
+      maxSpl?: number;
+      nonuniformity?: number;
+      headroom?: number;
+      speakerCount?: number;
+      reason?: string;
+    };
+  };
 }
 
 type SimulationSnapshotView = 'top' | 'side';
 
 const rawApiBase = import.meta.env.VITE_API_BASE ?? '';
 const API_BASE = rawApiBase.replace(/\/+$/, '');
-const SIM_RESULT_CACHE_PREFIX = 'acoustic-sim-result:v3:';
+const SIM_RESULT_CACHE_PREFIX = 'acoustic-sim-result:v5:';
 const SIM_RESULT_CACHE_LIMIT = 24;
+const SIMULATION_TARGETS = {
+  minSpl: 95,
+  maxUniformity: 8,
+  minHeadroom: 3,
+};
 const persistentSimulationResultCache = new Map<string, SimulationResult>();
 
 const normalizeText = (value: unknown) => String(value ?? '').trim();
@@ -145,6 +168,7 @@ const buildSimulationCacheSignatures = (
       width: normalizeNumber(params.width, 2),
       height: normalizeNumber(params.height, 2),
     },
+    targets: SIMULATION_TARGETS,
     items: normalizedItems,
     layout: normalizedLayout,
   };
@@ -239,7 +263,12 @@ const buildSimulationRunEndpoints = () => {
 };
 
 const postSimulationRun = async (
-  payload: { params: AcousticParams; items: EquipmentItem[]; layoutItems: SolutionLayoutItem[] },
+  payload: {
+    params: AcousticParams;
+    items: EquipmentItem[];
+    layoutItems: SolutionLayoutItem[];
+    targets: typeof SIMULATION_TARGETS;
+  },
   signal: AbortSignal,
 ) => {
   const endpoints = buildSimulationRunEndpoints();
@@ -935,8 +964,8 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
   }, [colorbarTargetBottomPercent]);
 
   const standardRows = useMemo(() => {
-    const uniformityTarget = Number(simulationData?.config?.targets?.max_nonuniformity_db || 8);
-    const headroomTarget = Number(simulationData?.config?.targets?.min_headroom_db || 3);
+    const uniformityTarget = Number(simulationData?.config?.targets?.max_nonuniformity_db ?? SIMULATION_TARGETS.maxUniformity);
+    const headroomTarget = Number(simulationData?.config?.targets?.min_headroom_db ?? SIMULATION_TARGETS.minHeadroom);
     const nonuniformity = Number(simulationData?.best?.nonuniformity || (splField.max - splField.min));
     const headroom = Number(simulationData?.best?.headroom ?? (splField.min - minSplTarget));
     return [
@@ -1037,6 +1066,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
         params,
         items,
         layoutItems,
+        targets: SIMULATION_TARGETS,
       },
       controller.signal,
     )
@@ -1297,8 +1327,8 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
       captureSimulationSnapshot('top'),
     ]);
 
-    const uniformityTarget = Number(simulationData?.config?.targets?.max_nonuniformity_db || 8);
-    const headroomTarget = Number(simulationData?.config?.targets?.min_headroom_db || 3);
+    const uniformityTarget = Number(simulationData?.config?.targets?.max_nonuniformity_db ?? SIMULATION_TARGETS.maxUniformity);
+    const headroomTarget = Number(simulationData?.config?.targets?.min_headroom_db ?? SIMULATION_TARGETS.minHeadroom);
     const nonuniformity = Number(simulationData?.best?.nonuniformity || (splField.max - splField.min));
     const headroom = Number(simulationData?.best?.headroom ?? (splField.min - minSplTarget));
 
@@ -1345,6 +1375,11 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
       })),
     };
   }, [cmax, cmin, colorbarTargetBottomPercent, minSplTarget, room.height, room.length, room.width, scenario, simulationData, speakers, splField.avg, splField.max, splField.min, standardRows]);
+
+  const standardsPass = useMemo(
+    () => Boolean(simulationData) && standardRows.every((row) => row.pass),
+    [simulationData, standardRows],
+  );
 
   useEffect(() => {
     window.__acousticSimulationDownloadPng = exportTopViewPng;
@@ -1749,8 +1784,8 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
       <div className="h-12 px-4 border-b border-slate-200 flex items-center justify-between gap-4 shrink-0">
         <div className="min-w-0 flex items-center gap-3">
           <h3 className="text-sm font-black text-slate-900 truncate">逆向设计方案生成</h3>
-          <span className={`px-2 py-0.5 rounded-sm text-[11px] font-black border ${simulationData?.best?.feasible ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : isSimulating ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
-            {isSimulating ? `迭代中 ${elapsedSeconds}s` : simulationData ? simulationData.best?.feasible ? '指标满足' : '需调整清单' : '待生成'}
+          <span className={`px-2 py-0.5 rounded-sm text-[11px] font-black border ${standardsPass ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : isSimulating ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
+            {isSimulating ? `迭代中 ${elapsedSeconds}s` : simulationData ? standardsPass ? '指标满足' : '需调整清单' : '待生成'}
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -1876,7 +1911,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
                   />
                 </div>
                 <div className="mt-2 text-[11px] text-slate-400 font-bold">
-                  最多迭代 20 步；若提前满足国标约束，求解会直接结束。
+                  若提前满足国标约束，求解会直接结束。
                 </div>
               </div>
             </div>
@@ -1936,6 +1971,32 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
                 {simulationData?.source?.missing?.length ? ` 未匹配：${simulationData.source.missing.join('、')}` : ''}
               </div>
             </section>
+
+            {simulationData?.adjustment?.needed && (
+              <section>
+                <div className="text-[12px] font-black text-slate-500 mb-2">清单调整建议</div>
+                <div className={`rounded border px-3 py-3 text-[12px] leading-relaxed ${simulationData.adjustment.feasible ? 'border-emerald-100 bg-emerald-50 text-emerald-800' : 'border-amber-100 bg-amber-50 text-amber-800'}`}>
+                  <div className="font-black">
+                    {simulationData.adjustment.feasible ? '增补后预估可满足指标' : '当前清单仍未找到满足解'}
+                  </div>
+                  <div className="mt-1">
+                    {simulationData.adjustment.reason}
+                  </div>
+                  {simulationData.adjustment.added?.length ? (
+                    <div className="mt-2 font-mono">
+                      建议增补：{simulationData.adjustment.added.map((item) => `${item.model} x ${item.quantity}`).join('、')}
+                    </div>
+                  ) : null}
+                  {simulationData.adjustment.result ? (
+                    <div className="mt-2 font-mono">
+                      {simulationData.adjustment.feasible ? '增补后预估' : '当前最佳诊断'}：SPL {Number(simulationData.adjustment.result.minSpl || 0).toFixed(1)} / {Number(simulationData.adjustment.result.avgSpl || 0).toFixed(1)} / {Number(simulationData.adjustment.result.maxSpl || 0).toFixed(1)}，
+                      不均匀度 {Number(simulationData.adjustment.result.nonuniformity || 0).toFixed(1)} dB，
+                      余量 {Number(simulationData.adjustment.result.headroom || 0).toFixed(1)} dB
+                    </div>
+                  ) : null}
+                </div>
+              </section>
+            )}
 
             <section>
               <div className="text-[12px] font-black text-slate-500 mb-2">国标指标对比</div>

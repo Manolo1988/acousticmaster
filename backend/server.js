@@ -3307,7 +3307,7 @@ app.post("/api/simulation/run", async (req, res) => {
       targets: {
         minSpl: Number(req.body?.targets?.minSpl || 95),
         maxUniformity: Number(req.body?.targets?.maxUniformity || 8),
-        minHeadroom: Number(req.body?.targets?.minHeadroom ?? 0)
+        minHeadroom: Number(req.body?.targets?.minHeadroom ?? 3)
       },
       optimizer: {
         maxSteps: 20

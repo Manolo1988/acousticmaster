@@ -122,6 +122,7 @@ export interface SolutionResult {
   reportGenerationError?: string;
   isGenerating?: boolean;
   simulationImage?: string;
+  simulationContext?: Record<string, any>;
   lastReportSignature?: string;
 }
 
@@ -191,6 +192,8 @@ export interface HistoryRecord {
   scenario: Scenario;
   params: AcousticParams;
   results: SolutionResult[];
+  simulationImageSide?: string;
+  simulationImageTop?: string;
 }
 
 export enum TableType {

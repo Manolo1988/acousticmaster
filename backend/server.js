@@ -1320,7 +1320,10 @@ const renderTypedResourceMarkdown = (asset = {}, token = "", captionCounter = { 
   }
 
   captionCounter.image += 1;
-  return `![${sanitizeImageAltText(asset.alt || resourceTitle, resourceTitle)}](${rawContent})\n\n图 ${captionCounter.image} ${resourceTitle}`;
+  // 图片写入文件，避免大 base64 内联导致 HTML/DOC 无法渲染
+  const imgUrl = saveSimulationImageToFile(rawContent, `res-${String(asset.id || captionCounter.image)}`);
+  const src = imgUrl || rawContent; // 如果写入失败保持内联 base64 兜底
+  return `![${sanitizeImageAltText(asset.alt || resourceTitle, resourceTitle)}](${src})\n\n图 ${captionCounter.image} ${resourceTitle}`;
 };
 
 const renderDeviceImageMarkdown = (asset = {}, deviceName = "", captionCounter = { image: 0, table: 0 }) => {
@@ -1562,7 +1565,7 @@ const sanitizeSimulationDataUrl = (value) => {
 };
 
 // 将 base64 仿真图写入文件，返回相对路径引用
-const saveSimulationImageToFile = (dataUrl, prefix) => {
+function saveSimulationImageToFile(dataUrl, prefix) {
   const match = String(dataUrl || "").match(/^data:image\/(png|jpg|jpeg|webp);base64,(.+)$/i);
   if (!match) return "";
   const ext = match[1] === "jpeg" ? "jpg" : match[1];
@@ -1743,20 +1746,15 @@ const buildSimulationAnalysisChapter = (simulationContext = {}, scenario = "") =
     ""
   );
 
-  // ---- 1. 图纸素材 ----
+  // ---- 1. 图纸素材 (仅俯视平面图，侧视图在3.2.2设计效果中) ----
   lines.push("###### 图纸素材", "");
-  const sideImgFile = sideImage ? saveSimulationImageToFile(sideImage, "sim-side") : "";
   const topImgFile = topImage ? saveSimulationImageToFile(topImage, "sim-top") : "";
-  if (sideImgFile) {
-    lines.push(`![逆向设计侧视渲染图](${sideImgFile})`, "", "图 仿真-1 逆向设计侧视渲染图", "");
-  }
   if (topImgFile) {
-    lines.push(`![逆向设计俯视渲染图](${topImgFile})`, "", "图 仿真-2 逆向设计俯视平面图", "");
-  }
-  if (!sideImgFile && !topImgFile) {
+    lines.push(`![逆向设计俯视渲染图](${topImgFile})`, "", "图 仿真-1 逆向设计俯视平面图", "");
+  } else {
     lines.push("> 未采集到仿真渲染图，请先在逆向设计页面完成渲染后再生成报告。", "");
   }
-  lines.push(buildBlueprintAnalysis(!!sideImage, !!topImage, sceneLabel), "");
+  lines.push(buildBlueprintAnalysis(false, !!topImage, sceneLabel), "");
 
   // ---- 2. 声场指标说明 ----
   lines.push("###### 声场指标说明", "");

@@ -4,7 +4,7 @@ import { Scenario, AcousticParams } from './types';
 export const DEFAULT_PARAMS: AcousticParams = {
   length: 20,
   width: 10,
-  height: 8,
+  height: 4,
   stageToNearAudience: 0,
   stageToFarAudience: 0,
   stageWidth: 0,

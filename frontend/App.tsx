@@ -3052,7 +3052,7 @@ const App: React.FC = () => {
                     />
                   </td>
                   <td className="px-6 py-4 font-black text-slate-900">{h.projectName}</td>
-                  <td className="px-6 py-4 text-slate-400 font-mono">{new Date(h.createdAt).toISOString().slice(0, 10)}</td>
+                  <td className="px-6 py-4 text-slate-400 font-mono">{new Date(h.createdAt).toISOString().slice(0, 19).replace('T', ' ')}</td>
                   <td className="px-6 py-4">
                     <span className={`px-2 py-0.5 rounded-full text-[13px] font-black uppercase ${h.scenario === Scenario.MEETING_ROOM ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'
                       }`}>{h.scenario === Scenario.MEETING_ROOM ? '会议室' : '报告厅'}</span>
@@ -3221,7 +3221,7 @@ const App: React.FC = () => {
           <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
             <div>
               <h2 className="text-xl font-black text-slate-900 tracking-tight uppercase">{item.projectName}</h2>
-              <p className="text-[13px] font-bold text-slate-400 uppercase tracking-widest">设计归档于 {new Date(item.createdAt).toISOString().slice(0, 10)}</p>
+              <p className="text-[13px] font-bold text-slate-400 uppercase tracking-widest">设计归档于 {new Date(item.createdAt).toISOString().slice(0, 19).replace('T', ' ')}</p>
             </div>
             <button onClick={logic.closeHistoryPreview} className="w-9 h-9 rounded-full border border-slate-200 flex items-center justify-center text-slate-400 hover:text-slate-900 hover:bg-slate-50 transition-all">✕</button>
           </div>

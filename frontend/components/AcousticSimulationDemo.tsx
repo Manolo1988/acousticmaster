@@ -656,7 +656,7 @@ const addDimensionAnnotations = (scene: THREE.Scene, room: RoomModel, wallHeight
   const heightLabelY = room.width + 0.18;
 
   // 仅显示尺寸数字，不绘制引导线，避免遮挡场景。
-  const labelOptions = { color: '#334155', background: 'rgba(255,255,255,0.9)', fontSize: 38 };
+  const labelOptions = { color: '#1e293b', background: 'rgba(255,255,255,0.95)', fontSize: 52 };
   const l = makeTextSprite(`L=${room.length.toFixed(1)}m`, labelOptions);
   const w = makeTextSprite(`W=${room.width.toFixed(1)}m`, labelOptions);
   const h = makeTextSprite(`H=${room.height.toFixed(1)}m`, labelOptions);
@@ -1077,8 +1077,8 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
         setOptimizationStep(3);
         // 立即持久化仿真数据到 window（不依赖 Three.js 渲染）
         try {
-          const best = data?.best || {};
-          const cfg = data?.config || {};
+          const best = (data?.best || {}) as any;
+          const cfg = (data?.config || {}) as any;
           const spks = (data?.best?.speakers || []).map((s: any, i: number) => ({
             index: i + 1,
             label: s.sourceLabel || s.sourceName || `${s.model || '音箱'} #${i + 1}`,
@@ -1147,18 +1147,19 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
       const coneStates: Array<{ object: THREE.Object3D; visible: boolean }> = [];
 
       try {
-        if (view === 'top') {
-          scene.traverse((object) => {
-            if (object.userData?.coverageCone) {
-              coneStates.push({ object, visible: object.visible });
-              object.visible = false;
-            }
-          });
+        // Both side and top views: hide coverage cones for clean rendering
+        scene.traverse((object) => {
+          if (object.userData?.coverageCone) {
+            coneStates.push({ object, visible: object.visible });
+            object.visible = false;
+          }
+        });
 
+        if (view === 'top') {
           camera.up.set(0, 1, 0);
-          camera.position.set(room.length * 0.5, room.width * 0.5, room.height + Math.max(8, Math.max(room.length, room.width) * 1.4));
+          camera.position.set(room.length * 0.5, room.width * 0.5, room.height + Math.max(4, Math.max(room.length, room.width) * 0.65));
           camera.lookAt(room.length * 0.5, room.width * 0.5, 0.2);
-          camera.zoom = prevZoom;
+          camera.zoom = prevZoom * 1.2;
           camera.updateProjectionMatrix();
 
           if (controls) {
@@ -1184,14 +1185,16 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
           return composedCanvas.toDataURL('image/png');
         }
 
+        // Side view: 45° isometric from top-left, zoomed in
         camera.up.set(0, 0, 1);
-        const sideDistance = Math.max(room.length, room.width) * 1.15;
-        camera.position.set(room.length * 0.5, -sideDistance, room.height * 0.7 + 0.6);
-        camera.lookAt(room.length * 0.5, room.width * 0.5, room.height * 0.36);
-        camera.zoom = prevZoom;
+        const isoDist = Math.max(room.length, room.width) * 0.42;
+        const a45 = Math.PI / 4;
+        camera.position.set(room.length * 0.5 - isoDist * Math.cos(a45), room.width * 0.5 - isoDist * Math.sin(a45), room.height * 0.38);
+        camera.lookAt(room.length * 0.5, room.width * 0.5, room.height * 0.22);
+        camera.zoom = prevZoom * 1.25;
         camera.updateProjectionMatrix();
         if (controls) {
-          controls.target.set(room.length * 0.5, room.width * 0.5, room.height * 0.36);
+          controls.target.set(room.length * 0.5, room.width * 0.5, room.height * 0.3);
           controls.update();
         }
         renderer.render(scene, camera);
@@ -1253,18 +1256,19 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
       const coneStates: Array<{ object: THREE.Object3D; visible: boolean }> = [];
 
       try {
-        if (view === 'top') {
-          scene.traverse((object) => {
-            if (object.userData?.coverageCone) {
-              coneStates.push({ object, visible: object.visible });
-              object.visible = false;
-            }
-          });
+        // Always hide coverage cones for clean rendering
+        scene.traverse((object) => {
+          if (object.userData?.coverageCone) {
+            coneStates.push({ object, visible: object.visible });
+            object.visible = false;
+          }
+        });
 
+        if (view === 'top') {
           camera.up.set(0, 1, 0);
-          camera.position.set(room.length * 0.5, room.width * 0.5, room.height + Math.max(8, Math.max(room.length, room.width) * 1.4));
+          camera.position.set(room.length * 0.5, room.width * 0.5, room.height + Math.max(4, Math.max(room.length, room.width) * 0.65));
           camera.lookAt(room.length * 0.5, room.width * 0.5, 0.2);
-          camera.zoom = prevZoom;
+          camera.zoom = prevZoom * 1.2;
           camera.updateProjectionMatrix();
 
           if (controls) {
@@ -1290,14 +1294,16 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
           return composedCanvas.toDataURL('image/png');
         }
 
+        // Side view: 45° isometric from top-left, zoomed in
         camera.up.set(0, 0, 1);
-        const sideDistance = Math.max(room.length, room.width) * 1.15;
-        camera.position.set(room.length * 0.5, -sideDistance, room.height * 0.7 + 0.6);
-        camera.lookAt(room.length * 0.5, room.width * 0.5, room.height * 0.36);
-        camera.zoom = prevZoom;
+        const isoDist = Math.max(room.length, room.width) * 0.38;
+        const a45 = Math.PI / 4;
+        camera.position.set(room.length * 0.5 - isoDist * Math.cos(a45), room.width * 0.5 - isoDist * Math.sin(a45), room.height * 0.35);
+        camera.lookAt(room.length * 0.5, room.width * 0.5, room.height * 0.2);
+        camera.zoom = prevZoom * 1.3;
         camera.updateProjectionMatrix();
         if (controls) {
-          controls.target.set(room.length * 0.5, room.width * 0.5, room.height * 0.36);
+          controls.target.set(room.length * 0.5, room.width * 0.5, room.height * 0.28);
           controls.update();
         }
         renderer.render(scene, camera);
@@ -1322,10 +1328,9 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
       }
     };
 
-    const [sideImage, topImage] = await Promise.all([
-      captureSimulationSnapshot('side'),
-      captureSimulationSnapshot('top'),
-    ]);
+    // 只获取俯视图（侧视图在3.2.2设计效果中使用，仿真章节不需要）
+    const topImage = await captureSimulationSnapshot('top');
+    const sideImage = await captureSimulationSnapshot('side');
 
     const uniformityTarget = Number(simulationData?.config?.targets?.max_nonuniformity_db ?? SIMULATION_TARGETS.maxUniformity);
     const headroomTarget = Number(simulationData?.config?.targets?.min_headroom_db ?? SIMULATION_TARGETS.minHeadroom);

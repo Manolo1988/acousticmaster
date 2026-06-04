@@ -3164,6 +3164,32 @@ const handleGenerateReports = async (scope: 'CURRENT' | 'ALL') => {
 
     if (successCount > 0 && errorCount === 0) {
       alert(scope === 'CURRENT' ? '当前方案生成已完成' : '所有方案生成已完成');
+      // 报告生成成功后，将仿真图持久化到历史记录 DB
+      try {
+        const resultsWithSim = designState.results.map(r => {
+          const sc = simulationContextByPlanId.get(String(r.id));
+          return sc ? { ...r, simulationContext: sc } : r;
+        });
+        const hasSimData = resultsWithSim.some(r => r.simulationContext);
+        console.log('[SIM_DIAG] 📝 保存历史记录 with simulationContext:', hasSimData);
+        const resp = await fetch(`${API_BASE}/api/history`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: currentUser.username || currentUser.guestId || 'guest',
+            projectName: designState.projectName,
+            scenario: designState.scenario,
+            params: designState.params,
+            results: resultsWithSim
+          })
+        });
+        console.log('[SIM_DIAG] 历史保存响应:', resp.status, resp.ok ? '✅' : '❌');
+        if (resp.ok) {
+          const data = await resp.json();
+          console.log('[SIM_DIAG] 历史记录 ID:', data.id);
+          await fetchHistory(currentUser);
+        }
+      } catch (e) { console.warn('[SIM_DIAG] 历史保存失败:', e); }
     } else if (successCount > 0) {
       alert('方案生成已结束：部分方案生成失败，请重试。');
     } else {

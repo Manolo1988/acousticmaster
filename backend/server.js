@@ -14,7 +14,6 @@ import {
   LOCAL_STATIC_RESOURCE_TABLE as SERVICE_LOCAL_STATIC_RESOURCE_TABLE,
   updateStaticBlock
 } from "./plan_service.js";
-import { traceLlmCall, traceFinalReport } from "./llm_tracer.js";
 
 dotenv.config({ path: fileURLToPath(new URL("./.env", import.meta.url)) });
 
@@ -1817,15 +1816,18 @@ const injectSimulationIntoProfessionalSection = (markdown, simulationMarkdown) =
   if (!anchor) {
     anchor = headings.find((item) => /3\.2\.[34]\.1/.test(normalized(item.title)));
   }
-
   if (!anchor) {
     anchor = headings.find((item) => {
       const t = normalized(item.title);
       return /3\.2\.[34]/.test(t) && t.includes("系统设计");
     });
   }
-
+  // Ultimate fallback: any heading containing "专业扩声" at level 4-6
   if (!anchor) {
+    anchor = headings.find((item) => item.level >= 4 && item.title.includes("专业扩声"));
+  }
+  if (!anchor) {
+    console.warn('[SIM_INJECT] ⚠️ 找不到专业扩声系统标题，仿真内容将追加到末尾');
     return `${source}\n\n${addon}\n`;
   }
 
@@ -1890,7 +1892,14 @@ const injectDesignEffect = (markdown, enhancementMd) => {
   if (!anchor) {
     anchor = headings.find((item) => /3\.2\.2/.test(normalized(item.title)));
   }
-  if (!anchor) return source;
+  // Ultimate fallback: any heading containing "设计效果" at level 3-5
+  if (!anchor) {
+    anchor = headings.find((item) => item.level >= 3 && item.level <= 5 && item.title.includes("设计效果"));
+  }
+  if (!anchor) {
+    console.warn('[DESIGN_EFFECT] ⚠️ 找不到设计效果标题，侧视图将跳过注入');
+    return source;
+  }
 
   let sectionEnd = lines.length;
   for (const item of headings) {
@@ -2102,14 +2111,6 @@ const callArkMarkdown = async (prompt, traceContext = {}) => {
   const markdown = extractArkMarkdown(response.data);
   tracePlanEvent("ark-markdown-extracted", traceContext, {
     markdown: clipTraceText(markdown)
-  });
-  // Save LLM interaction to llm_traces/ folder
-  traceLlmCall({
-    stage: "plan-generation",
-    planTitle: traceContext?.planTitle || "unknown",
-    prompt,
-    response: markdown,
-    metadata: { elapsedMs: Date.now() - requestStartAt, model: ARK_MODEL }
   });
   if (!markdown) {
     throw new Error("Ark returned empty markdown content");
@@ -4416,13 +4417,6 @@ app.post("/api/plan/generate-markdowns-stream", async (req, res) => {
           hasMetrics: !!(hasSimContext && plan.simulationContext?.metrics),
           hasStandards: !!(hasSimContext && Array.isArray(plan.simulationContext?.standards) && plan.simulationContext.standards.length > 0)
         });
-        // 保存仿真上下文到 llm_traces/ 供排查
-        traceLlmCall({
-          stage: "sim-context-check",
-          planTitle,
-          simulationContext: plan?.simulationContext || null,
-          metadata: { hasSimulationContext: hasSimContext, planId: String(plan?.id || "") }
-        });
         const simulationChapter = buildSimulationAnalysisChapter(plan?.simulationContext, String(scenario));
         tracePlanEvent("simulation-chapter-built", planTrace, {
           chapterLength: String(simulationChapter || "").length,
@@ -4456,7 +4450,6 @@ app.post("/api/plan/generate-markdowns-stream", async (req, res) => {
           elapsedMs: Date.now() - saveDocStartAt,
           docLink
         });
-        traceFinalReport(planTitle, markdownRawWithSimulation, markdownProcessedWithLength, simulationChapter);
 
         if (!closed) {
           sendSse({
@@ -4618,13 +4611,6 @@ app.post("/api/plan/generate-markdowns", async (req, res) => {
           hasMetrics: !!(hasSimContext && plan.simulationContext?.metrics),
           hasStandards: !!(hasSimContext && Array.isArray(plan.simulationContext?.standards) && plan.simulationContext.standards.length > 0)
         });
-        // 保存仿真上下文到 llm_traces/ 供排查
-        traceLlmCall({
-          stage: "sim-context-check",
-          planTitle,
-          simulationContext: plan?.simulationContext || null,
-          metadata: { hasSimulationContext: hasSimContext, planId: String(plan?.id || "") }
-        });
         const simulationChapter = buildSimulationAnalysisChapter(plan?.simulationContext, String(scenario));
         tracePlanEvent("simulation-chapter-built", planTrace, {
           chapterLength: String(simulationChapter || "").length,
@@ -4658,7 +4644,6 @@ app.post("/api/plan/generate-markdowns", async (req, res) => {
           elapsedMs: Date.now() - saveDocStartAt,
           docLink
         });
-        traceFinalReport(planTitle, markdownRawWithSimulation, markdownProcessedWithLength, simulationChapter);
 
         tracePlanEvent("plan-success", planTrace, {
           totalElapsedMs: Date.now() - planStartAt,

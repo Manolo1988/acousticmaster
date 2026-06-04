@@ -992,12 +992,51 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
 
   useEffect(() => {
     abortRef.current?.abort();
-    setSimulationData(readSimulationResultCache(requestSignatures));
+    const cached = readSimulationResultCache(requestSignatures);
+    setSimulationData(cached);
     setSimulationError('');
     setIsSimulating(false);
     setOptimizationStep(0);
     setOptimizationRound(0);
     setElapsedSeconds(0);
+    // 从缓存恢复后立即持久化到 window（不依赖 Three.js 渲染）
+    if (cached) {
+      try {
+        const best = (cached.best || {}) as any;
+        const cfg = (cached.config || {}) as any;
+        window.__acousticSimulationLatestPayload = {
+          solutionId: String(solutionId || ''),
+          payload: {
+            generatedAt: new Date().toISOString(),
+            scenario,
+            room: { length: cfg.room?.length_m || 0, width: cfg.room?.width_m || 0, height: cfg.room?.height_m || 0 },
+            images: {},
+            metrics: {
+              feasible: Boolean(best.feasible),
+              minSpl: Number((best.minSpl || 0).toFixed(2)),
+              avgSpl: Number((best.avgSpl || 0).toFixed(2)),
+              maxSpl: Number((best.maxSpl || 0).toFixed(2)),
+              minSplTarget: Number((cfg.targets?.min_spl_db || 95).toFixed(2)),
+              nonuniformity: Number((best.nonuniformity || 0).toFixed(2)),
+              nonuniformityTarget: Number((cfg.targets?.max_nonuniformity_db || 8).toFixed(2)),
+              headroom: Number((best.headroom || 0).toFixed(2)),
+              headroomTarget: Number((cfg.targets?.min_headroom_db || 3).toFixed(2)),
+            },
+            standards: [
+              { name: '最大声压级', standard: `≥${cfg.targets?.min_spl_db || 95}dB`, value: `${(best.maxSpl || 0).toFixed(1)}dB`, pass: (best.maxSpl || 0) >= (cfg.targets?.min_spl_db || 95) },
+              { name: '声场不均匀度', standard: `≤${cfg.targets?.max_nonuniformity_db || 8}dB`, value: `${(best.nonuniformity || 0).toFixed(1)}dB`, pass: (best.nonuniformity || 99) <= (cfg.targets?.max_nonuniformity_db || 8) },
+              { name: '最低点声压余量', standard: `≥${cfg.targets?.min_headroom_db || 3}dB`, value: `${(best.headroom || 0).toFixed(1)}dB`, pass: (best.headroom || 0) >= (cfg.targets?.min_headroom_db || 3) },
+            ],
+            speakers: (best.speakers || []).map((s: any, i: number) => ({
+              index: i + 1, label: s.sourceLabel || s.sourceName || `${s.model || '音箱'} #${i + 1}`, model: s.model || '', role: s.role || '',
+              position: s.position || [], pitch: Number(s.aim?.[0] || 0), yaw: Number(s.aim?.[1] || 0),
+              gainDb: Number(s.gainDb || 0), coverageH: Number(s.coverageH || 0), coverageV: Number(s.coverageV || 0),
+            })),
+          }
+        };
+        console.log('[SIM_PERSIST] ✅ 从缓存恢复后已持久化到 window');
+      } catch (e) { console.warn('[SIM_PERSIST] 缓存恢复持久化失败:', e); }
+    }
   }, [requestSignatures]);
 
   useEffect(() => {

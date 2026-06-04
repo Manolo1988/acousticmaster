@@ -22,7 +22,8 @@ FROM node:20-alpine AS production
 
 # 逆向设计依赖 Python 运行时和科学计算库
 # numpy/scipy 从 apk 安装（预编译包，快且可靠），plotly 从 pip 安装（纯 Python）
-RUN apk add --no-cache \
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.ustc.edu.cn/g' /etc/apk/repositories \
+    && apk add --no-cache \
     python3 \
     py3-pip \
     py3-numpy \
@@ -43,7 +44,6 @@ COPY --from=builder --chown=node:node /app/package*.json ./
 COPY --from=builder --chown=node:node /app/server.js ./
 COPY --from=builder --chown=node:node /app/daemon_v2.cjs ./
 COPY --from=builder --chown=node:node /app/plan_service.js ./
-COPY --from=builder --chown=node:node /app/llm_tracer.js ./llm_tracer.js
 COPY --from=builder --chown=node:node /app/大模型方案生成指导模板.md ./大模型方案生成指导模板.md
 
 # 运行时会写入生成文档，提前创建并赋予 node 写权限

@@ -264,7 +264,7 @@ async function callArkForMarkdown(prompt) {
   return markdown;
 }
 
-export async function ensureStaticBlockTableAndSeed(pool, backendDir) {
+export async function ensureStaticBlockTableAndSeed(pool, _backendDir) {
   try {
     const [legacyRows] = await pool.query(
       "SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1",
@@ -292,81 +292,22 @@ export async function ensureStaticBlockTableAndSeed(pool, backendDir) {
       content MEDIUMTEXT NOT NULL,
       \`插入章节\` VARCHAR(255) NULL,
       \`使用场景\` VARCHAR(32) NULL,
+      \`资源类型\` VARCHAR(32) NULL,
       enabled TINYINT(1) NOT NULL DEFAULT 1,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
 
-  const [chapterColumnRows] = await pool.query(
-    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = '插入章节' LIMIT 1",
-    [LOCAL_STATIC_RESOURCE_TABLE]
-  );
-  if (chapterColumnRows.length === 0) {
-    await pool.query(`ALTER TABLE \`${LOCAL_STATIC_RESOURCE_TABLE}\` ADD COLUMN \`插入章节\` VARCHAR(255) NULL`);
-  }
-
-  const [sceneColumnRows] = await pool.query(
-    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = '使用场景' LIMIT 1",
-    [LOCAL_STATIC_RESOURCE_TABLE]
-  );
-  if (sceneColumnRows.length === 0) {
-    await pool.query(`ALTER TABLE \`${LOCAL_STATIC_RESOURCE_TABLE}\` ADD COLUMN \`使用场景\` VARCHAR(32) NULL`);
-  }
-
-  const indexPath = path.join(backendDir, "static_blocks", "index.json");
-  if (!existsSync(indexPath)) return;
-
-  const raw = JSON.parse(readFileSync(indexPath, "utf-8"));
-  const blocks = raw?.blocks || {};
-
-  const chapterMap = {
-    STANDARDS_TABLE: "设计依据和目标",
-    FORMULAS_BLOCK: "设计依据和目标"
+  // Ensure optional columns exist
+  const ensureColumn = async (table, col, def) => {
+    try {
+      await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${col}\` ${def}`);
+    } catch (e) { /* column already exists */ }
   };
-  const typeMap = {
-    STANDARDS_TABLE: "表格",
-    FORMULAS_BLOCK: "文字"
-  };
-
-  for (const [key, meta] of Object.entries(blocks)) {
-    const sourceFile = String(meta?.file || "");
-    const title = String(meta?.description || key);
-    const description = String(meta?.description || "");
-    const filePath = path.join(backendDir, "static_blocks", sourceFile);
-    if (!existsSync(filePath)) continue;
-    const content = readFileSync(filePath, "utf-8").trim();
-    const blockKey = sanitizeStaticBlockKey(key);
-    const insertChapter = chapterMap[blockKey] || "";
-    const resourceType = typeMap[blockKey] || "文字";
-
-    const isLegacyBlock = blockKey in chapterMap && insertChapter !== "";
-    const resourceTypeClause = isLegacyBlock
-      ? "`资源类型` = VALUES(`资源类型`)"
-      : "`资源类型` = IF(`资源类型` IS NULL OR `资源类型` = '', VALUES(`资源类型`), `资源类型`)";
-    const chapterClause = isLegacyBlock
-      ? "`插入章节` = VALUES(`插入章节`)"
-      : "`插入章节` = IF(`插入章节` IS NULL OR `插入章节` = '', VALUES(`插入章节`), `插入章节`)";
-    const sceneClause = isLegacyBlock
-      ? "`使用场景` = '通用'"
-      : "`使用场景` = IF(`使用场景` IS NULL OR `使用场景` = '', '通用', `使用场景`)";
-
-    await pool.query(
-      `INSERT INTO \`${LOCAL_STATIC_RESOURCE_TABLE}\`
-       (block_key, title, description, source_file, content, \`插入章节\`, \`使用场景\`, \`资源类型\`, enabled)
-       VALUES (?, ?, ?, ?, ?, ?, '通用', ?, 1)
-       ON DUPLICATE KEY UPDATE
-       title = VALUES(title),
-       description = VALUES(description),
-       source_file = VALUES(source_file),
-       content = VALUES(content),
-       ${chapterClause},
-       ${sceneClause},
-       ${resourceTypeClause},
-       enabled = VALUES(enabled)`,
-      [blockKey, title, description, sourceFile, content, insertChapter, resourceType]
-    );
-  }
+  await ensureColumn(LOCAL_STATIC_RESOURCE_TABLE, "插入章节", "VARCHAR(255) NULL");
+  await ensureColumn(LOCAL_STATIC_RESOURCE_TABLE, "使用场景", "VARCHAR(32) NULL");
+  await ensureColumn(LOCAL_STATIC_RESOURCE_TABLE, "资源类型", "VARCHAR(32) NULL");
 }
 
 export async function listStaticBlocks(pool) {

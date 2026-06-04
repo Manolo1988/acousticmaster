@@ -151,6 +151,8 @@ export interface HistoryItem {
   scenario: Scenario;
   params: AcousticParams;
   results: SolutionResult[];
+  simulationImageSide?: string;
+  simulationImageTop?: string;
 }
 
 export type EquipmentCategory = '音箱' | '功放' | '中控' | '矩阵' | '视频会议' | '录播' | '话筒';

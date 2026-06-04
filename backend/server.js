@@ -14,6 +14,7 @@ import {
   LOCAL_STATIC_RESOURCE_TABLE as SERVICE_LOCAL_STATIC_RESOURCE_TABLE,
   updateStaticBlock
 } from "./plan_service.js";
+import { traceLlmCall, traceFinalReport } from "./llm_tracer.js";
 
 dotenv.config({ path: fileURLToPath(new URL("./.env", import.meta.url)) });
 
@@ -1077,6 +1078,8 @@ const ensureHistorySchema = async () => {
   }
 
   const physicalTable = resolvePhysicalTableName("design_history");
+  await ensureColumnExists(physicalTable, "simulation_image_side", "LONGTEXT NULL");
+  await ensureColumnExists(physicalTable, "simulation_image_top", "LONGTEXT NULL");
   await ensureIndexExists(physicalTable, "idx_history_created_id", ["created_at", "id"]);
   await ensureIndexExists(physicalTable, "idx_history_user_created_id", ["user_id", "created_at", "id"]);
   await ensureIndexExists(physicalTable, "idx_history_guest_created_id", ["guest_id", "created_at", "id"]);
@@ -1425,7 +1428,7 @@ const buildPlanPrompt = ({ projectName, scenario, params, planTitle, items, imag
     "5. 只保留设备清单中实际存在的系统章节；无对应设备的系统章节必须整节删除（包含标题与正文）。",
     "6. 必须包含完整工程化文字描述，不可只给表格。",
     "7. 必须输出模板中要求的固定公式，并对每个公式给出不少于50字的原则与解释，解释另起一段不直接跟在公式后面。",
-    "8. 国标对照表、声学公式、系统拓扑图、仿真分析等静态和计算内容由后端按章节自动插入，你不需要为它们生成占位符或章节。",
+    "8. 声学计算公式（Lp/NAG/PAG/EPR/Dc/ALcons）全部只在第2章「2.4 声学计算依据」输出一次，第3章专业扩声系统绝对不要再写公式。国标对照表、仿真分析等由后端自动插入，你不需生成。",
     "9. 设备清单中不包含图片字段，严禁输出 base64、图片 URL 或 HTML 图片标签。",
     "10. 本地静态资源的图片类型请使用 {{RES_IMAGE_xxx}}，文字类型请使用 {{RES_TEXT_xxx}}，表格类型请使用 {{RES_TABLE_xxx}}。",
     "11. 设备图片只能使用统一格式占位符 [图片占位符：设备名称]。",
@@ -1492,7 +1495,7 @@ const buildChapterTaskPrompt = (chapterKey, sceneLabel, selectedSystemsText) => 
         "3.2.3.1 专业扩声系统（必须完整）：系统概述、声学指标表格、混响时间要求。",
         "3.2.3.2 视频会议系统。",
         "3.2.3.3 录播系统。",
-        "4. 声学计算公式已在第2章中给出，本章无需重复公式。仿真分析章节由后端自动生成并插入于专业扩声系统之后，你不需要编写仿真相关内容。",
+        "4. ⚠️ 声学公式全部在第2章2.4节已输出，本章绝对不要重复Lp/NAG/PAG/EPR/Dc/ALcons任何公式。仿真分析章节由后端自动生成。",
         "无设备的系统整节删除，不出现文字。",
         "只返回本章内容。"
       ].join("\n");
@@ -1554,11 +1557,21 @@ const sanitizeSimulationDataUrl = (value) => {
   const raw = String(value || "").trim();
   if (!raw) return "";
   if (!/^data:image\/(png|jpg|jpeg|webp);base64,/i.test(raw)) return "";
-  if (raw.length > 20 * 1024 * 1024) {
-    // 保护文档大小，避免将超大 base64 内联到 Markdown
-    return "";
-  }
+  if (raw.length > 20 * 1024 * 1024) return "";
   return raw;
+};
+
+// 将 base64 仿真图写入文件，返回相对路径引用
+const saveSimulationImageToFile = (dataUrl, prefix) => {
+  const match = String(dataUrl || "").match(/^data:image\/(png|jpg|jpeg|webp);base64,(.+)$/i);
+  if (!match) return "";
+  const ext = match[1] === "jpeg" ? "jpg" : match[1];
+  const base64Data = match[2];
+  const filename = `${prefix}-${Date.now()}.${ext}`;
+  const outDir = fileURLToPath(GENERATED_DOCS_DIR_URL);
+  mkdirSync(outDir, { recursive: true });
+  writeFileSync(fileURLToPath(new URL(`./${filename}`, GENERATED_DOCS_DIR_URL)), Buffer.from(base64Data, "base64"));
+  return `/api/plan/documents/${encodeURIComponent(filename)}`;
 };
 
 const toMarkdownTableCell = (value) =>
@@ -1732,16 +1745,18 @@ const buildSimulationAnalysisChapter = (simulationContext = {}, scenario = "") =
 
   // ---- 1. 图纸素材 ----
   lines.push("###### 图纸素材", "");
-  if (sideImage) {
-    lines.push(`![逆向设计侧视渲染图](${sideImage})`, "", "图 仿真-1 逆向设计侧视渲染图", "");
+  const sideImgFile = sideImage ? saveSimulationImageToFile(sideImage, "sim-side") : "";
+  const topImgFile = topImage ? saveSimulationImageToFile(topImage, "sim-top") : "";
+  if (sideImgFile) {
+    lines.push(`![逆向设计侧视渲染图](${sideImgFile})`, "", "图 仿真-1 逆向设计侧视渲染图", "");
   }
-  if (topImage) {
-    lines.push(`![逆向设计俯视渲染图](${topImage})`, "", "图 仿真-2 逆向设计俯视平面图", "");
+  if (topImgFile) {
+    lines.push(`![逆向设计俯视渲染图](${topImgFile})`, "", "图 仿真-2 逆向设计俯视平面图", "");
   }
-  if (!sideImage && !topImage) {
+  if (!sideImgFile && !topImgFile) {
     lines.push("> 未采集到仿真渲染图，请先在逆向设计页面完成渲染后再生成报告。", "");
   }
-  lines.push(buildBlueprintAnalysis(sideImage, topImage, sceneLabel), "");
+  lines.push(buildBlueprintAnalysis(!!sideImage, !!topImage, sceneLabel), "");
 
   // ---- 2. 声场指标说明 ----
   lines.push("###### 声场指标说明", "");
@@ -1839,8 +1854,9 @@ const buildDesignEffectEnhancement = (simulationContext = {}, scenario = "") => 
 
   const sceneLabel = normalizeSceneLabel(String(simulationContext?.scenario || scenario || ""));
   const lines = [];
-  if (sideImage) {
-    lines.push("", `![仿真声场侧视渲染图](${sideImage})`, "", "图 3-2-2-1 逆向声学仿真侧视渲染图", "");
+  const sideImgFile = sideImage ? saveSimulationImageToFile(sideImage, "sim-design-effect") : "";
+  if (sideImgFile) {
+    lines.push("", `![仿真声场侧视渲染图](${sideImgFile})`, "", "图 3-2-2-1 逆向声学仿真侧视渲染图", "");
   }
   if (speakers.length > 0) {
     const count = speakers.length;
@@ -2088,6 +2104,14 @@ const callArkMarkdown = async (prompt, traceContext = {}) => {
   const markdown = extractArkMarkdown(response.data);
   tracePlanEvent("ark-markdown-extracted", traceContext, {
     markdown: clipTraceText(markdown)
+  });
+  // Save LLM interaction to llm_traces/ folder
+  traceLlmCall({
+    stage: "plan-generation",
+    planTitle: traceContext?.planTitle || "unknown",
+    prompt,
+    response: markdown,
+    metadata: { elapsedMs: Date.now() - requestStartAt, model: ARK_MODEL }
   });
   if (!markdown) {
     throw new Error("Ark returned empty markdown content");
@@ -2483,11 +2507,12 @@ const slugify = (value) =>
 
 const markdownToDocHtml = (markdown, title) => {
   const escaped = escapeHtml(markdown).replace(/\r?\n/g, "<br/>");
+  // Render both inline base64 images AND URL-based images from /api/plan/documents/
   const withRenderedImages = escaped.replace(
-    /!\[([^\]]*)\]\((data:image\/(?:png|jpg|jpeg|webp);base64,[^)]+)\)/gi,
+    /!\[([^\]]*)\]\(((?:data:image\/(?:png|jpg|jpeg|webp);base64,[^)]+)|(?:\/api\/plan\/documents\/[^)]+))\)/gi,
     (_, altText, src) => {
       const caption = String(altText || "").trim() || "仿真渲染图";
-      return `<br/><figure class=\"sim-figure\"><img src=\"${src}\" alt=\"${escapeHtml(caption)}\" /><figcaption>${escapeHtml(caption)}</figcaption></figure><br/>`;
+      return `<br/><figure class="sim-figure"><img src="${src}" alt="${escapeHtml(caption)}" /><figcaption>${escapeHtml(caption)}</figcaption></figure><br/>`;
     }
   );
   return `<!DOCTYPE html>
@@ -3113,11 +3138,21 @@ const getSimulationPythonCandidates = () => {
   const condaPrefix = process.env.CONDA_PREFIX || "";
   const candidates = uniqueNonEmpty([
     process.env.SIM_PYTHON_COMMAND,
+    // 优先: conda 环境（有科学计算包）
+    condaPrefix ? `${condaPrefix}/bin/python` : "",
+    `${home}/anaconda3/bin/python3`,
+    `${home}/anaconda3/bin/python`,
+    `${home}/miniconda3/bin/python3`,
+    `${home}/miniconda3/bin/python`,
     `${home}/miniconda3/envs/sound/bin/python`,
     `${home}/anaconda3/envs/sound/bin/python`,
     condaPrefix ? `${condaPrefix}/envs/sound/bin/python` : "",
     condaPrefix.endsWith("/envs/sound") ? `${condaPrefix}/bin/python` : "",
     "/opt/conda/envs/sound/bin/python",
+    // Docker: 已安装科学计算包的 python3
+    "/usr/bin/python3",
+    "/usr/bin/python",
+    // 通用回退 (PATH 中查找 — 可能没有 plotly)
     "python3",
     "python"
   ]);
@@ -4027,7 +4062,7 @@ app.get("/api/history", async (req, res) => {
 
     const placeholders = ids.map(() => "?").join(", ");
     const [rows] = await pool.query(
-      `SELECT id, user_id, guest_id, username, created_at, project_name, scenario, params_json, results_json
+      `SELECT id, user_id, guest_id, username, created_at, project_name, scenario, params_json, results_json, simulation_image_side, simulation_image_top
          FROM design_history
         WHERE id IN (${placeholders})`,
       ids
@@ -4044,7 +4079,9 @@ app.get("/api/history", async (req, res) => {
       projectName: row.project_name,
       scenario: row.scenario,
       params: parseJsonField(row.params_json, {}),
-      results: parseJsonField(row.results_json, [])
+      results: parseJsonField(row.results_json, []),
+      simulationImageSide: row.simulation_image_side || "",
+      simulationImageTop: row.simulation_image_top || ""
     }));
 
     res.json(mapped);
@@ -4060,10 +4097,20 @@ app.post("/api/history", async (req, res) => {
     return res.status(400).json({ error: "Missing required fields" });
   }
 
+  // 提取仿真图片
+  let simImageSide = null;
+  let simImageTop = null;
+  const resultsArr = Array.isArray(results) ? results : [];
+  for (const r of resultsArr) {
+    if (r?.simulationContext?.images?.side) simImageSide = String(r.simulationContext.images.side);
+    if (r?.simulationContext?.images?.top) simImageTop = String(r.simulationContext.images.top);
+    if (simImageSide && simImageTop) break;
+  }
+
   try {
     const [result] = await pool.query(
-      "INSERT INTO design_history (user_id, guest_id, username, project_name, scenario, params_json, results_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [userId || null, guestId || null, username, projectName, scenario, JSON.stringify(params || {}), JSON.stringify(results || [])]
+      "INSERT INTO design_history (user_id, guest_id, username, project_name, scenario, params_json, results_json, simulation_image_side, simulation_image_top) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [userId || null, guestId || null, username, projectName, scenario, JSON.stringify(params || {}), JSON.stringify(results || []), simImageSide, simImageTop]
     );
     res.json({ id: result.insertId });
   } catch (error) {
@@ -4081,7 +4128,17 @@ app.put("/api/history/:id", async (req, res) => {
     if (projectName) { fields.push("project_name = ?"); values.push(projectName); }
     if (scenario) { fields.push("scenario = ?"); values.push(scenario); }
     if (params) { fields.push("params_json = ?"); values.push(JSON.stringify(params)); }
-    if (results) { fields.push("results_json = ?"); values.push(JSON.stringify(results)); }
+    if (results) {
+      fields.push("results_json = ?"); values.push(JSON.stringify(results));
+      // 更新仿真图片
+      const resultsArr = Array.isArray(results) ? results : [];
+      for (const r of resultsArr) {
+        if (r?.simulationContext?.images?.side) { fields.push("simulation_image_side = ?"); values.push(String(r.simulationContext.images.side)); break; }
+      }
+      for (const r of resultsArr) {
+        if (r?.simulationContext?.images?.top) { fields.push("simulation_image_top = ?"); values.push(String(r.simulationContext.images.top)); break; }
+      }
+    }
 
     if (fields.length === 0) {
       return res.status(400).json({ error: "No fields to update" });
@@ -4190,12 +4247,31 @@ app.get("/api/plan/documents/:fileName", (req, res) => {
     return res.status(404).json({ error: "Document not found" });
   }
 
-  res.setHeader("Content-Type", "application/msword; charset=utf-8");
+  // Serve correct content type based on file extension
+  const ext = rawName.split(".").pop()?.toLowerCase();
+  const mimeMap = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", doc: "application/msword; charset=utf-8", html: "text/html; charset=utf-8" };
+  res.setHeader("Content-Type", mimeMap[ext] || "application/octet-stream");
   res.sendFile(filePath);
 });
 
 app.post("/api/plan/generate-markdowns-stream", async (req, res) => {
   const { projectName, scenario, params, plans } = req.body || {};
+  console.log('══════════════════════════════════════════════');
+  console.log('[SIM_DIAG] 📥 收到报告生成请求');
+  console.log('[SIM_DIAG]   方案数量:', Array.isArray(plans) ? plans.length : 0);
+  (Array.isArray(plans) ? plans : []).forEach((p, i) => {
+    const hasSim = !!(p?.simulationContext && typeof p.simulationContext === 'object');
+    const sc = p?.simulationContext;
+    console.log(`[SIM_DIAG]   方案${i+1} "${p?.title || '?'}" simulationContext: ${hasSim ? '✅ 有数据' : '❌ null'}`);
+    if (hasSim) {
+      console.log(`[SIM_DIAG]     - images.side: ${sc.images?.side ? '有(' + sc.images.side.length + 'chars)' : '无'}`);
+      console.log(`[SIM_DIAG]     - images.top:  ${sc.images?.top ? '有(' + sc.images.top.length + 'chars)' : '无'}`);
+      console.log(`[SIM_DIAG]     - metrics: ${sc.metrics ? Object.keys(sc.metrics).length + '项' : '无'}`);
+      console.log(`[SIM_DIAG]     - standards: ${Array.isArray(sc.standards) ? sc.standards.length + '条' : '无'}`);
+      console.log(`[SIM_DIAG]     - speakers: ${Array.isArray(sc.speakers) ? sc.speakers.length + '只' : '无'}`);
+    }
+  });
+  console.log('══════════════════════════════════════════════');
   const routeTrace = {
     traceId: createTraceId("plan-stream"),
     route: "/api/plan/generate-markdowns-stream",
@@ -4342,6 +4418,13 @@ app.post("/api/plan/generate-markdowns-stream", async (req, res) => {
           hasMetrics: !!(hasSimContext && plan.simulationContext?.metrics),
           hasStandards: !!(hasSimContext && Array.isArray(plan.simulationContext?.standards) && plan.simulationContext.standards.length > 0)
         });
+        // 保存仿真上下文到 llm_traces/ 供排查
+        traceLlmCall({
+          stage: "sim-context-check",
+          planTitle,
+          simulationContext: plan?.simulationContext || null,
+          metadata: { hasSimulationContext: hasSimContext, planId: String(plan?.id || "") }
+        });
         const simulationChapter = buildSimulationAnalysisChapter(plan?.simulationContext, String(scenario));
         tracePlanEvent("simulation-chapter-built", planTrace, {
           chapterLength: String(simulationChapter || "").length,
@@ -4375,6 +4458,7 @@ app.post("/api/plan/generate-markdowns-stream", async (req, res) => {
           elapsedMs: Date.now() - saveDocStartAt,
           docLink
         });
+        traceFinalReport(planTitle, markdownRawWithSimulation, markdownProcessedWithLength, simulationChapter);
 
         if (!closed) {
           sendSse({
@@ -4447,6 +4531,22 @@ app.post("/api/plan/generate-markdowns-stream", async (req, res) => {
 
 app.post("/api/plan/generate-markdowns", async (req, res) => {
   const { projectName, scenario, params, plans } = req.body || {};
+  console.log('══════════════════════════════════════════════');
+  console.log('[SIM_DIAG] 📥 收到报告生成请求');
+  console.log('[SIM_DIAG]   方案数量:', Array.isArray(plans) ? plans.length : 0);
+  (Array.isArray(plans) ? plans : []).forEach((p, i) => {
+    const hasSim = !!(p?.simulationContext && typeof p.simulationContext === 'object');
+    const sc = p?.simulationContext;
+    console.log(`[SIM_DIAG]   方案${i+1} "${p?.title || '?'}" simulationContext: ${hasSim ? '✅ 有数据' : '❌ null'}`);
+    if (hasSim) {
+      console.log(`[SIM_DIAG]     - images.side: ${sc.images?.side ? '有(' + sc.images.side.length + 'chars)' : '无'}`);
+      console.log(`[SIM_DIAG]     - images.top:  ${sc.images?.top ? '有(' + sc.images.top.length + 'chars)' : '无'}`);
+      console.log(`[SIM_DIAG]     - metrics: ${sc.metrics ? Object.keys(sc.metrics).length + '项' : '无'}`);
+      console.log(`[SIM_DIAG]     - standards: ${Array.isArray(sc.standards) ? sc.standards.length + '条' : '无'}`);
+      console.log(`[SIM_DIAG]     - speakers: ${Array.isArray(sc.speakers) ? sc.speakers.length + '只' : '无'}`);
+    }
+  });
+  console.log('══════════════════════════════════════════════');
   const routeTrace = {
     traceId: createTraceId("plan-batch"),
     route: "/api/plan/generate-markdowns",
@@ -4520,6 +4620,13 @@ app.post("/api/plan/generate-markdowns", async (req, res) => {
           hasMetrics: !!(hasSimContext && plan.simulationContext?.metrics),
           hasStandards: !!(hasSimContext && Array.isArray(plan.simulationContext?.standards) && plan.simulationContext.standards.length > 0)
         });
+        // 保存仿真上下文到 llm_traces/ 供排查
+        traceLlmCall({
+          stage: "sim-context-check",
+          planTitle,
+          simulationContext: plan?.simulationContext || null,
+          metadata: { hasSimulationContext: hasSimContext, planId: String(plan?.id || "") }
+        });
         const simulationChapter = buildSimulationAnalysisChapter(plan?.simulationContext, String(scenario));
         tracePlanEvent("simulation-chapter-built", planTrace, {
           chapterLength: String(simulationChapter || "").length,
@@ -4553,6 +4660,7 @@ app.post("/api/plan/generate-markdowns", async (req, res) => {
           elapsedMs: Date.now() - saveDocStartAt,
           docLink
         });
+        traceFinalReport(planTitle, markdownRawWithSimulation, markdownProcessedWithLength, simulationChapter);
 
         tracePlanEvent("plan-success", planTrace, {
           totalElapsedMs: Date.now() - planStartAt,

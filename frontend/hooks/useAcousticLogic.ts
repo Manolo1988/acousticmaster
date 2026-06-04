@@ -21,6 +21,7 @@ declare global {
 
   interface Window {
     __acousticSimulationGetReportPayload?: (solutionId?: string) => Promise<Record<string, any> | null>;
+    __acousticSimulationLatestPayload?: { solutionId: string; payload: Record<string, any> };
   }
 }
 
@@ -2968,6 +2969,8 @@ const handleGenerateReports = async (scope: 'CURRENT' | 'ALL') => {
   }
 
   const simulationContextByPlanId = new Map<string, Record<string, any>>();
+
+  // 方案1: 从当前挂载的仿真组件实时获取
   const simulationPayloadProvider = window.__acousticSimulationGetReportPayload;
   if (typeof simulationPayloadProvider === 'function') {
     for (const target of targets) {
@@ -2984,8 +2987,37 @@ const handleGenerateReports = async (scope: 'CURRENT' | 'ALL') => {
     }
   }
 
-  reportGenerationLockRef.current = true;
+  // 方案2: 回退到持久化数据 —— 即使离开仿真页面也能获取之前完成的仿真结果
+  const persistedPayload = window.__acousticSimulationLatestPayload;
+  if (persistedPayload?.payload && typeof persistedPayload.payload === 'object') {
+    for (const target of targets) {
+      const planId = String(target.id || '');
+      if (!planId || simulationContextByPlanId.has(planId)) continue;
+      // 如果 solutionId 匹配，或者是唯一的仿真结果，使用持久化数据
+      if (persistedPayload.solutionId === planId || targets.length === 1) {
+        simulationContextByPlanId.set(planId, persistedPayload.payload);
+        console.log('[SIM_PERSIST] 使用离线仿真数据 for planId=' + planId);
+      }
+    }
+  }
 
+  // 🔍 日志：仿真上下文收集结果
+  console.log('[SIM_DIAG] simulationContextByPlanId size:', simulationContextByPlanId.size);
+  for (const [pid, ctx] of simulationContextByPlanId) {
+    console.log('[SIM_DIAG] planId=' + pid, {
+      hasImages: !!(ctx.images?.side || ctx.images?.top),
+      hasMetrics: !!(ctx.metrics && Object.keys(ctx.metrics).length > 0),
+      hasStandards: !!(Array.isArray(ctx.standards) && ctx.standards.length > 0),
+      speakerCount: Array.isArray(ctx.speakers) ? ctx.speakers.length : 0
+    });
+  }
+  if (simulationContextByPlanId.size === 0) {
+    console.warn('[SIM_DIAG] ⚠️ 没有为任何方案收集到仿真上下文');
+    console.warn('[SIM_DIAG]    window.__acousticSimulationLatestPayload =', window.__acousticSimulationLatestPayload);
+    console.warn('[SIM_DIAG]    window.__acousticSimulationGetReportPayload =', typeof window.__acousticSimulationGetReportPayload);
+  }
+
+  reportGenerationLockRef.current = true;
   const targetIdSet = new Set(targets.map((item) => String(item.id)));
 
   setDesignState((prev) => ({
@@ -3014,20 +3046,27 @@ const handleGenerateReports = async (scope: 'CURRENT' | 'ALL') => {
       targetCount: targets.length
     });
 
+    // 🔍 日志：汇总即将发送的请求
+    const requestPayload = {
+      projectName: designState.projectName,
+      scenario: designState.scenario,
+      params: designState.params,
+      plans: targets.map(plan => ({
+        id: plan.id,
+        title: plan.title,
+        items: plan.items,
+        simulationContext: simulationContextByPlanId.get(String(plan.id)) || null,
+      }))
+    };
+    console.log('[SIM_DIAG] 📤 即将发送请求到 /api/plan/generate-markdowns');
+    for (const p of requestPayload.plans) {
+      console.log('[SIM_DIAG]   plan ' + p.title + ' simulationContext:', p.simulationContext ? '✅ 有数据' : '❌ null');
+    }
+
     const response = await fetch(`${API_BASE}/api/plan/generate-markdowns`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        projectName: designState.projectName,
-        scenario: designState.scenario,
-        params: designState.params,
-        plans: targets.map(plan => ({
-          id: plan.id,
-          title: plan.title,
-          items: plan.items,
-          simulationContext: simulationContextByPlanId.get(String(plan.id)) || null,
-        }))
-      })
+      body: JSON.stringify(requestPayload)
     });
 
     const responseData = await response.json().catch(() => ({} as any));

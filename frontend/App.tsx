@@ -552,6 +552,7 @@ const App: React.FC = () => {
   const [editingEq, setEditingEq] = useState<DbInventoryItem | null>(null);
   const [isAddingEq, setIsAddingEq] = useState(false);
   const [previewImage, setPreviewImage] = useState<{ src: string; title: string } | null>(null);
+  const [simViewerHistoryItem, setSimViewerHistoryItem] = useState<any>(null);
   const [editingHistory, setEditingHistory] = useState<HistoryRecord | null>(null);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [isProfileDialogOpen, setIsProfileDialogOpen] = useState(false);
@@ -3316,6 +3317,19 @@ const App: React.FC = () => {
           )}
         </div>
 
+        {/* 查看仿真渲染图按钮 */}
+        <button
+          onClick={() => setSimViewerHistoryItem(item)}
+          disabled={!item.simulationImageSide && !item.simulationImageTop}
+          className={`px-5 py-2.5 rounded-xl text-[13px] font-bold transition-all ${
+            (item.simulationImageSide || item.simulationImageTop)
+              ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-sm'
+              : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+          }`}
+        >
+          📐 查看仿真渲染图
+        </button>
+
         <div className="space-y-4">
           <div className="text-[13px] font-black text-slate-400 uppercase tracking-widest">方案正文预览</div>
           {historyResults.map((res: any, idx: number) => {
@@ -4093,6 +4107,35 @@ const App: React.FC = () => {
             </div>
             <div className="max-h-[75vh] overflow-auto bg-slate-50 p-6">
               <img src={previewImage.src} alt={previewImage.title} className="max-w-full h-auto mx-auto rounded-xl border border-slate-200 bg-white" />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 仿真渲染图查看弹窗 */}
+      {simViewerHistoryItem && (
+        <div className="fixed inset-0 z-[660] bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-6" onClick={() => setSimViewerHistoryItem(null)}>
+          <div className="bg-white w-full max-w-5xl rounded-3xl shadow-2xl overflow-hidden max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
+              <h3 className="text-base font-black text-slate-900 tracking-tight">逆向仿真渲染图 — {simViewerHistoryItem.projectName || ''}</h3>
+              <button onClick={() => setSimViewerHistoryItem(null)} className="text-slate-400 hover:text-slate-900 text-xl leading-none">✕</button>
+            </div>
+            <div className="flex-1 overflow-auto p-6 space-y-6 bg-slate-50">
+              {simViewerHistoryItem.simulationImageSide && (
+                <div className="bg-white rounded-2xl border border-slate-200 p-4">
+                  <div className="text-[13px] font-black text-slate-500 uppercase tracking-widest mb-3">侧向视图</div>
+                  <img src={simViewerHistoryItem.simulationImageSide} alt="侧向渲染图" className="w-full h-auto rounded-xl border border-slate-100" />
+                </div>
+              )}
+              {simViewerHistoryItem.simulationImageTop && (
+                <div className="bg-white rounded-2xl border border-slate-200 p-4">
+                  <div className="text-[13px] font-black text-slate-500 uppercase tracking-widest mb-3">俯视平面图</div>
+                  <img src={simViewerHistoryItem.simulationImageTop} alt="俯视渲染图" className="w-full h-auto rounded-xl border border-slate-100" />
+                </div>
+              )}
+              {!simViewerHistoryItem.simulationImageSide && !simViewerHistoryItem.simulationImageTop && (
+                <div className="text-center py-12 text-slate-400 text-[13px] font-bold">该方案未进行逆向仿真，无渲染图数据</div>
+              )}
             </div>
           </div>
         </div>

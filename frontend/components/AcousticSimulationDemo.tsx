@@ -9,6 +9,7 @@ declare global {
     Plotly?: any;
     __acousticSimulationDownloadPng?: (fileName?: string) => Promise<boolean>;
     __acousticSimulationGetReportPayload?: (solutionId?: string) => Promise<Record<string, any> | null>;
+    __acousticSimulationLatestPayload?: { solutionId: string; payload: Record<string, any> };
   }
 }
 
@@ -1044,6 +1045,51 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
         writeSimulationResultCache(requestSignatures, data);
         setSimulationData(data);
         setOptimizationStep(3);
+        // 立即持久化仿真数据到 window（不依赖 Three.js 渲染）
+        try {
+          const best = data?.best || {};
+          const cfg = data?.config || {};
+          const spks = (data?.best?.speakers || []).map((s: any, i: number) => ({
+            index: i + 1,
+            label: s.sourceLabel || s.sourceName || `${s.model || '音箱'} #${i + 1}`,
+            model: s.model || '',
+            role: s.role || '',
+            position: s.position || [],
+            pitch: Number(s.aim?.[0] || 0),
+            yaw: Number(s.aim?.[1] || 0),
+            gainDb: Number(s.gainDb || 0),
+            coverageH: Number(s.coverageH || 0),
+            coverageV: Number(s.coverageV || 0),
+          }));
+          window.__acousticSimulationLatestPayload = {
+            solutionId: String(solutionId || ''),
+            payload: {
+              generatedAt: new Date().toISOString(),
+              scenario,
+              room: { length: cfg.room?.length_m || 0, width: cfg.room?.width_m || 0, height: cfg.room?.height_m || 0 },
+              images: {}, // 图片由后续 useEffect 补填
+              metrics: {
+                feasible: Boolean(best.feasible),
+                minSpl: Number((best.minSpl || 0).toFixed(2)),
+                avgSpl: Number((best.avgSpl || 0).toFixed(2)),
+                maxSpl: Number((best.maxSpl || 0).toFixed(2)),
+                minSplTarget: Number((cfg.targets?.min_spl_db || 95).toFixed(2)),
+                nonuniformity: Number((best.nonuniformity || 0).toFixed(2)),
+                nonuniformityTarget: Number((cfg.targets?.max_nonuniformity_db || 8).toFixed(2)),
+                headroom: Number((best.headroom || 0).toFixed(2)),
+                headroomTarget: Number((cfg.targets?.min_headroom_db || 3).toFixed(2)),
+              },
+              standards:
+                [
+                  { name: '最大声压级', standard: `≥${cfg.targets?.min_spl_db || 95}dB (GB 50371-2006一级)`, value: `${(best.maxSpl || 0).toFixed(1)}dB`, pass: (best.maxSpl || 0) >= (cfg.targets?.min_spl_db || 95) },
+                  { name: '声场不均匀度', standard: `≤${cfg.targets?.max_nonuniformity_db || 8}dB (GB 50371-2006一级)`, value: `${(best.nonuniformity || 0).toFixed(1)}dB`, pass: (best.nonuniformity || 99) <= (cfg.targets?.max_nonuniformity_db || 8) },
+                  { name: '最低点声压余量', standard: `≥${cfg.targets?.min_headroom_db || 3}dB`, value: `${(best.headroom || 0).toFixed(1)}dB`, pass: (best.headroom || 0) >= (cfg.targets?.min_headroom_db || 3) },
+                ],
+              speakers: spks,
+            }
+          };
+          console.log('[SIM_PERSIST] ✅ 仿真结果已立即持久化，solutionId=' + solutionId);
+        } catch (e) { console.warn('[SIM_PERSIST] 持久化失败:', e); }
       })
       .catch((error) => {
         if (controller.signal.aborted) return;
@@ -1309,6 +1355,39 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
     };
   }, [exportTopViewPng]);
 
+  // 仿真数据一就绪立刻持久化到 window，确保离开仿真页面后仍可用于报告生成
+  // 触发时机: 1) 新仿真完成 (step=3)  2) 从缓存恢复旧仿真 (mount 时 setSimulationData)
+  const lastPersistedDataRef = useRef<any>(null);
+  useEffect(() => {
+    if (!simulationData) return;
+    // 避免对同一份数据重复持久化
+    const dataFingerprint = JSON.stringify(simulationData.best || {}).slice(0, 100);
+    if (dataFingerprint === lastPersistedDataRef.current) return;
+    lastPersistedDataRef.current = dataFingerprint;
+
+    let cancelled = false;
+    const savePayload = async () => {
+      // 延迟 2s 等 Three.js 场景渲染完毕，补填仿真截图
+      await new Promise(r => setTimeout(r, 2000));
+      if (cancelled) return;
+      const payload = await buildSimulationReportPayload();
+      if (!cancelled && payload && typeof payload === 'object') {
+        // 合并到已有 payload（保留立即持久化的 metrics/standards/speakers）
+        const existing = window.__acousticSimulationLatestPayload;
+        window.__acousticSimulationLatestPayload = {
+          solutionId: String(solutionId || existing?.solutionId || ''),
+          payload: {
+            ...(existing?.payload || {}),
+            images: payload.images || existing?.payload?.images || {},
+          }
+        };
+        console.log('[SIM_PERSIST] ✅ 仿真截图已补填');
+      }
+    };
+    savePayload();
+    return () => { cancelled = true; };
+  }, [simulationData, buildSimulationReportPayload, solutionId]);
+
   useEffect(() => {
     const reportProvider = async (requestedSolutionId?: string) => {
       const requested = String(requestedSolutionId || '').trim();
@@ -1317,11 +1396,17 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
         return null;
       }
       const payload = await buildSimulationReportPayload();
+      if (payload && typeof payload === 'object') {
+        // 持久化到 window，即使组件卸载也能被报告生成读取
+        window.__acousticSimulationLatestPayload = { solutionId: currentSolutionId, payload };
+      }
       return payload || null;
     };
 
     window.__acousticSimulationGetReportPayload = reportProvider;
     return () => {
+      // 组件卸载时保留 __acousticSimulationLatestPayload 供报告生成使用
+      // 只清理 __acousticSimulationGetReportPayload（动态数据采集函数）
       if (window.__acousticSimulationGetReportPayload === reportProvider) {
         delete window.__acousticSimulationGetReportPayload;
       }
@@ -1717,22 +1802,21 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
         <div ref={scenePanelRef} className="relative min-h-[420px] bg-white border-r border-slate-200">
           <div ref={plotRef} className={`absolute inset-0 bg-white ${simulationData ? '' : 'hidden'}`} />
           {simulationData && !plotError && (
-            <div className="absolute left-3 top-5 rounded border border-slate-200/90 bg-white/90 px-2 py-2 shadow-sm backdrop-blur-[1px]">
+            <div className="absolute left-3 top-5 z-10 rounded border border-slate-200/90 bg-white/90 px-2 py-2 shadow-sm backdrop-blur-[1px]">
               <div className="text-[10px] font-black text-slate-500">SPL dB</div>
-              <div className="relative mt-1 h-56 w-[76px]">
+              <div className="relative mt-1 h-56 w-[72px]">
                 <div
-                  className="absolute left-2 top-0 h-56 w-4 rounded-sm border border-slate-200"
+                  className="absolute left-0 top-0 h-56 w-5 rounded-sm border border-slate-200"
                   style={{ background: splLegendGradient }}
                 />
-                <div className="absolute left-0 right-[14px] -translate-y-1/2 flex items-center gap-1" style={{ bottom: `${colorbarTargetBottomPercent}%` }}>
-                  <div className="h-[2px] flex-1 bg-slate-900" />
+                <div className="absolute left-0 right-0 -translate-y-1/2 flex items-center gap-0.5" style={{ bottom: `${colorbarTargetBottomPercent}%` }}>
+                  <div className="h-[2px] w-5 bg-slate-900" />
                   <div className="whitespace-nowrap rounded-sm border border-slate-300 bg-white/95 px-1 text-[9px] font-black text-slate-700">
                     场景要求 {minSplTarget.toFixed(0)} dB
                   </div>
                 </div>
-
-                <div className="absolute left-8 top-0 -translate-y-1/2 text-[9px] font-black text-slate-700">{cmax.toFixed(0)}</div>
-                <div className="absolute left-8 bottom-0 translate-y-1/2 text-[9px] font-black text-slate-700">{cmin.toFixed(0)}</div>
+                <div className="absolute left-6 top-0 -translate-y-1/2 text-[9px] font-black text-slate-700">{cmax.toFixed(0)}</div>
+                <div className="absolute left-6 bottom-0 translate-y-1/2 text-[9px] font-black text-slate-700">{cmin.toFixed(0)}</div>
               </div>
             </div>
           )}

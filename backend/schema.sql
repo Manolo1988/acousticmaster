@@ -1,0 +1,25 @@
+CREATE TABLE IF NOT EXISTS users (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  username VARCHAR(64) NOT NULL UNIQUE,
+  phone VARCHAR(32) DEFAULT '',
+  company VARCHAR(128) DEFAULT '',
+  role ENUM('管理员','普通用户') NOT NULL DEFAULT '普通用户',
+  password_hash VARCHAR(255) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS design_history (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NULL,
+  guest_id VARCHAR(64) DEFAULT NULL,
+  username VARCHAR(64) NOT NULL,
+  project_name VARCHAR(128) NOT NULL,
+  scenario VARCHAR(32) NOT NULL,
+  params_json JSON NULL,
+  results_json JSON NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_user_id (user_id),
+  INDEX idx_guest_id (guest_id),
+  CONSTRAINT fk_history_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

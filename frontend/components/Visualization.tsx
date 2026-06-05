@@ -72,7 +72,7 @@ const Visualization: React.FC<VisualizationProps> = ({ params, scenario, bluepri
         {/* 尺寸标注 */}
         <div className="absolute -top-7 left-0 right-0 flex items-center justify-between px-1">
           <div className="h-px bg-slate-200 flex-1"></div>
-          <div className="mx-2 text-[9px] font-mono font-bold text-slate-500 uppercase tracking-tighter whitespace-nowrap">
+          <div className="mx-2 text-[13px] font-mono font-bold text-slate-500 uppercase tracking-tighter whitespace-nowrap">
             L: {params.length}M
           </div>
           <div className="h-px bg-slate-200 flex-1"></div>
@@ -80,7 +80,7 @@ const Visualization: React.FC<VisualizationProps> = ({ params, scenario, bluepri
 
         <div className="absolute -left-10 top-0 bottom-0 flex flex-col items-center justify-between py-1">
           <div className="w-px bg-slate-200 flex-1"></div>
-          <div className="my-2 text-[9px] font-mono font-bold text-slate-500 uppercase -rotate-90 whitespace-nowrap">
+          <div className="my-2 text-[13px] font-mono font-bold text-slate-500 uppercase -rotate-90 whitespace-nowrap">
             W: {params.width}M
           </div>
           <div className="w-px bg-slate-200 flex-1"></div>
@@ -101,7 +101,7 @@ const Visualization: React.FC<VisualizationProps> = ({ params, scenario, bluepri
               height: `${Math.min(stageDepthPx, roomWidth)}px` 
             }}
           >
-             <div className="text-[8px] font-bold text-slate-300 uppercase tracking-tighter text-center px-1">STAGE</div>
+             <div className="text-[13px] font-bold text-slate-300 uppercase tracking-tighter text-center px-1">STAGE</div>
           </div>
         )}
 

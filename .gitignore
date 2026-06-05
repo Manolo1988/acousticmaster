@@ -6,11 +6,27 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
-
+editor
 node_modules
 dist
 dist-ssr
+build
+.next
 *.local
+
+# Python/cache/generated runtime files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local data dumps and archives
+dataset/*.sql
+*.tar.gz
+
+# Frontend deployment build output
+docker/nginx/html/
 
 # Editor directories and files
 .vscode/*
@@ -22,3 +38,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Backend local secrets
+backend/.env
+backend/generated_docs/

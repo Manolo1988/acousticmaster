@@ -41,7 +41,19 @@ export interface AcousticParams {
   hasMatrix: boolean;
   hasVideoConf: boolean;
   hasRecording: boolean;
-  mics: MicConfig[];
+  mics?: MicConfig[];
+  // 各类型话筒数量
+  micHandheld: number;
+  micGooseneck: number;
+  micOmni: number;
+  micLavalier: number;
+  micCeiling: number;
+  scenarioConfirmed: boolean;
+  roomConfirmed: boolean;
+  stageConfirmed: boolean;
+  micsConfirmed: boolean;
+  subsystemsConfirmed: boolean;
+  extraRequirementsConfirmed: boolean;
   extraRequirements: string;
 }
 
@@ -51,15 +63,67 @@ export interface EquipmentItem {
   name: string;      // 产品名称
   model: string;     // 型号
   quantity: number;  // 数量
+  brand?: string;    // 品牌（可选）
+  unitPrice?: number; // 单价（可选）
+  inventoryMatched?: boolean; // 是否匹配到库存
+  inventoryMatchNote?: string; // 匹配提示
+  recentlyUpdated?: boolean; // 最近被编辑/联动更新，用于行高亮
+}
+
+export type ReportGenerationStatus = 'idle' | 'generating' | 'done' | 'error';
+export type ReportChapterStatus = 'pending' | 'generating' | 'done' | 'error';
+
+export interface ReportChapterState {
+  key: string;
+  title: string;
+  markdown: string;
+  status: ReportChapterStatus;
+  error?: string;
+}
+
+export interface SolutionLayoutItem {
+  id: string;
+  function: string;
+  name: string;
+  model: string;
+  x: number;
+  y: number;
+  z: number;
+  pitch: number;
+  yaw: number;
 }
 
 export interface SolutionResult {
   id: string;
   title: string;
   items: EquipmentItem[];
+  layoutItems?: SolutionLayoutItem[];
+  layoutRaw?: string;
   wordLink?: string;
   excelLink?: string;
+  markdownRaw?: string;
+  markdownProcessed?: string;
+  postProcessReport?: {
+    injected_blocks?: string[];
+    toc_added?: boolean;
+    replaced_resource_placeholders?: string[];
+    chapter_inserted_resources?: string[];
+    chapter_skipped_resources?: string[];
+    replaced_image_placeholders?: string[];
+    chapter_inserted_images?: string[];
+    chapter_skipped_images?: string[];
+    replaced_device_placeholders?: string[];
+    missing_device_placeholders?: string[];
+    figure_caption_count?: number;
+    table_caption_count?: number;
+  };
+  chapters?: ReportChapterState[];
+  reportGenerationStatus?: ReportGenerationStatus;
+  reportGenerationError?: string;
   isGenerating?: boolean;
+  simulationImage?: string;
+  simulationContext?: Record<string, any>;
+  lastReportSignature?: string;
 }
 
 export interface ChatMessage {
@@ -88,6 +152,8 @@ export interface HistoryItem {
   scenario: Scenario;
   params: AcousticParams;
   results: SolutionResult[];
+  simulationImageSide?: string;
+  simulationImageTop?: string;
 }
 
 export type EquipmentCategory = '音箱' | '功放' | '中控' | '矩阵' | '视频会议' | '录播' | '话筒';
@@ -100,21 +166,43 @@ export interface Equipment {
   specs: string;
 }
 
+export type UserRole = '管理员' | '普通用户' | '游客';
+
 export interface User {
-  id: string;
-  name: string;
-  role: '系统管理员' | '资深工程师' | '设计助理' | '访客';
-  email: string;
-  lastActive: string;
-  status: '活跃' | '禁用';
+  id: number;
+  username: string;
+  phone: string;
+  company: string;
+  role: UserRole;
+  createdAt?: string;
+}
+
+export interface AuthUser extends User {
+  isGuest: boolean;
+  guestId?: string;
+}
+
+export interface HistoryRecord {
+  id: number;
+  userId?: number | null;
+  guestId?: string | null;
+  username: string;
+  createdAt: string;
+  projectName: string;
+  scenario: Scenario;
+  params: AcousticParams;
+  results: SolutionResult[];
+  simulationImageSide?: string;
+  simulationImageTop?: string;
 }
 
 export enum TableType {
   SPEAKER = '音箱',
-  LINE_ARRAY = '线阵列配套',
+  LINE_ARRAY_SUPPORT = '线阵列配套',
   AMPLIFIER = '定阻功放',
   PERIPHERAL = '周边设备',
-  OTHER = '其他设备'
+  SUBSYSTEM = '子系统',
+  LOCAL_STATIC_RESOURCE = '本地静态资源管理'
 }
 export interface DbInventoryItem {
   id: number; // 数据库 int 类型，解决 string 冲突
@@ -123,6 +211,10 @@ export interface DbInventoryItem {
   市场价: number;
   品牌?: string;
   类型?: string;
+  产品类型?: string;
+  功能?: string | string[];
+  水平覆盖角?: string | number;
+  垂直覆盖角?: string | number;
   // 定阻功放/线阵配套/音箱共有
   额定功率?: string;
   额定阻抗?: string;
@@ -141,6 +233,26 @@ export interface DbInventoryItem {
   // 其他设备特有
   描述?: string;
   场景?: string;
+  设备图片?: string;
+
+  // 资源管理兼容字段
+  图片名称?: string;
+  插入章节?: string;
+  目标章节?: string;
+  图片文件?: string;
+  使用场景?: string;
+  图片解释?: string;
+  资源类型?: string;
+
+  // 本地静态资源
+  资源内容?: string;
+  标识键?: string;
+  来源文件?: string;
+  是否启用?: string;
+
+  // 兼容字段
+  设备类型?: string;
+  序号?: number;
   // 前端辅助标识
   isChild?: boolean; 
 }

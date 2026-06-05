@@ -1329,9 +1329,18 @@ const renderDeviceImageMarkdown = (asset = {}, deviceName = "", captionCounter =
   const rawContent = String(asset.src || "").trim();
   if (!rawContent) return "";
 
+  // 确保是完整的 data URL（兼容只存了 raw base64 的情况）
+  let imgSrc = rawContent;
+  if (!/^data:image\//i.test(imgSrc) && !/^https?:\/\//i.test(imgSrc) && !/^\/api\//i.test(imgSrc)) {
+    imgSrc = `data:image/png;base64,${imgSrc}`;
+  }
+
   captionCounter.image += 1;
   const title = sanitizeResourceTitle(deviceName || asset.deviceName || asset.alt, "设备图片");
-  return `![${sanitizeImageAltText(asset.alt || title, title)}](${rawContent})\n\n图 ${captionCounter.image} ${title}`;
+  // 图片写入文件，避免大 base64 内联导致 HTML/DOC 无法渲染
+  const imgUrl = saveSimulationImageToFile(imgSrc, `dev-${String(captionCounter.image)}`);
+  const src = imgUrl || imgSrc;
+  return `![${sanitizeImageAltText(asset.alt || title, title)}](${src})\n\n图 ${captionCounter.image} ${title}`;
 };
 
 const buildImagePromptSection = (imageContext = {}) => {

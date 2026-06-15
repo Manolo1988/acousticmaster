@@ -4206,6 +4206,23 @@ app.post("/api/history/batch-delete", async (req, res) => {
   }
 });
 
+app.delete("/api/static-blocks/:blockKey", async (req, res) => {
+  const blockKey = String(req.params.blockKey || "").trim();
+  if (!blockKey) {
+    return res.status(400).json({ error: "Missing block key" });
+  }
+  try {
+    const [result] = await pool.query("DELETE FROM `本地静态资源` WHERE block_key = ?", [blockKey]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Static block not found" });
+    }
+    res.json({ ok: true, blockKey, deleted: result.affectedRows });
+  } catch (error) {
+    console.error("❌ Delete static block failed:", error.message);
+    res.status(500).json({ error: "Failed to delete static block" });
+  }
+});
+
 app.get("/api/static-blocks", async (req, res) => {
   try {
     const rows = await listStaticBlocks(pool);

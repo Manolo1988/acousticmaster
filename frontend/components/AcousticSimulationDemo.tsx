@@ -695,7 +695,7 @@ const addSplFloorMesh = (
     colors.push(color.r, color.g, color.b);
   }
   geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-  const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.02, transparent: true, opacity: 0.95 });
+  const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0, transparent: true, opacity: 0.85 });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.position.set(room.length / 2, room.width / 2, 0.03);
   scene.add(mesh);
@@ -705,18 +705,18 @@ const getWallOccludedConeLength = (
   room: RoomModel,
   position: [number, number, number],
   forward: THREE.Vector3,
-  preferredLength: number,
 ) => {
   const tValues: number[] = [];
   if (forward.x > 1e-6) tValues.push((room.length - position[0]) / forward.x);
   if (forward.x < -1e-6) tValues.push((0 - position[0]) / forward.x);
   if (forward.y > 1e-6) tValues.push((room.width - position[1]) / forward.y);
   if (forward.y < -1e-6) tValues.push((0 - position[1]) / forward.y);
+  if (forward.z > 1e-6) tValues.push((room.height - position[2]) / forward.z);
+  if (forward.z < -1e-6) tValues.push((0 - position[2]) / forward.z);
 
   const hit = tValues.filter((t) => Number.isFinite(t) && t > 0);
-  if (hit.length === 0) return preferredLength;
-  const wallLimited = Math.max(0.45, Math.min(...hit) - 0.05);
-  return Math.min(preferredLength, wallLimited);
+  if (hit.length === 0) return Math.max(room.length, room.width, room.height);
+  return Math.max(0.45, Math.min(...hit) - 0.02);
 };
 
 const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
@@ -803,27 +803,27 @@ const drawSplLegendOnCanvas = (
 const createSpeakerWhiteModel = (
   speaker: DemoSpeaker,
   sizeScale: number,
-  color: THREE.Color,
+  _color: THREE.Color,
 ) => {
   const group = new THREE.Group();
-  const bodyMaterial = new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.82, metalness: 0.05 });
-  const grilleMaterial = new THREE.MeshStandardMaterial({ color, roughness: 0.62, metalness: 0.02, transparent: true, opacity: 0.95 });
+  const whiteMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.9, metalness: 0 });
+  const darkMat = new THREE.MeshStandardMaterial({ color: '#e8e8e8', roughness: 0.85, metalness: 0 });
 
   const width = 0.34 * sizeScale;
   const depth = 0.22 * sizeScale;
   const height = 0.46 * sizeScale;
 
-  const body = new THREE.Mesh(new THREE.BoxGeometry(width, depth, height), bodyMaterial);
+  const body = new THREE.Mesh(new THREE.BoxGeometry(width, depth, height), whiteMat);
   body.position.set(0, 0, 0);
   group.add(body);
 
-  const grille = new THREE.Mesh(new THREE.BoxGeometry(width * 0.84, depth * 0.08, height * 0.7), grilleMaterial);
+  const grille = new THREE.Mesh(new THREE.BoxGeometry(width * 0.84, depth * 0.08, height * 0.7), darkMat);
   grille.position.set(0, depth * 0.47, 0.01);
   group.add(grille);
 
   const horn = new THREE.Mesh(
     new THREE.CylinderGeometry(width * 0.1, width * 0.18, depth * 0.24, 18, 1, true),
-    new THREE.MeshStandardMaterial({ color: '#e2e8f0', roughness: 0.65, metalness: 0.05 })
+    darkMat
   );
   horn.rotation.x = Math.PI / 2;
   horn.position.set(0, depth * 0.5, height * 0.2);
@@ -832,7 +832,7 @@ const createSpeakerWhiteModel = (
   const standHeight = Math.max(0.4, speaker.position[2] - height * 0.55);
   const stand = new THREE.Mesh(
     new THREE.CylinderGeometry(width * 0.04, width * 0.05, standHeight, 14),
-    new THREE.MeshStandardMaterial({ color: '#cbd5e1', roughness: 0.9, metalness: 0.05 })
+    darkMat
   );
   stand.position.set(0, 0, -height * 0.52 - standHeight / 2 + speaker.position[2]);
   group.add(stand);
@@ -993,14 +993,16 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
   useEffect(() => {
     abortRef.current?.abort();
     const cached = readSimulationResultCache(requestSignatures);
-    setSimulationData(cached);
     setSimulationError('');
-    setIsSimulating(false);
-    setOptimizationStep(0);
-    setOptimizationRound(0);
-    setElapsedSeconds(0);
-    // 从缓存恢复后立即持久化到 window（不依赖 Three.js 渲染）
+    // 仅在命中缓存时恢复仿真数据；未命中时保留当前仿真结果不消失
+    // 用户点击“启动方案设计”后组件卸载，仿真结果自然清除
     if (cached) {
+      setSimulationData(cached);
+      setIsSimulating(false);
+      setOptimizationStep(0);
+      setOptimizationRound(0);
+      setElapsedSeconds(0);
+      // 从缓存恢复后立即持久化到 window（不依赖 Three.js 渲染）
       try {
         const best = (cached.best || {}) as any;
         const cfg = (cached.config || {}) as any;
@@ -1518,19 +1520,13 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
       const width = Math.max(320, mount.clientWidth || 320);
       const height = Math.max(320, mount.clientHeight || 320);
       const scene = new THREE.Scene();
-      scene.background = new THREE.Color('#f3f4f6');
-      scene.fog = new THREE.Fog('#f3f4f6', 24, 140);
+      scene.background = new THREE.Color('#e8e8e8');
 
       const maxDim = Math.max(room.length, room.width, room.height);
       const frustum = maxDim * 0.72;
       const aspect = width / height;
       const camera = new THREE.OrthographicCamera(
-        -frustum * aspect,
-        frustum * aspect,
-        frustum,
-        -frustum,
-        0.1,
-        600,
+        -frustum * aspect, frustum * aspect, frustum, -frustum, 0.1, 600,
       );
       camera.up.set(0, 0, 1);
       camera.position.set(room.length * 1.22, -room.width * 1.3, room.height * 1.22);
@@ -1540,6 +1536,9 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
       renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
       renderer.setSize(width, height);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.0;
+      renderer.localClippingEnabled = true;
       mount.appendChild(renderer.domElement);
 
       controls = new OrbitControls(camera, renderer.domElement);
@@ -1554,118 +1553,230 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
       rendererRef.current = renderer;
       controlsRef.current = controls;
 
-      scene.add(new THREE.AmbientLight('#ffffff', 0.6));
-      const hemi = new THREE.HemisphereLight('#f8fafc', '#d6d3d1', 0.75);
+      // Soft even skylight for white model look
+      scene.add(new THREE.AmbientLight('#ffffff', 0.85));
+      const hemi = new THREE.HemisphereLight('#ffffff', '#d0d0d0', 0.5);
       hemi.position.set(0, 0, 35);
       scene.add(hemi);
-      const key = new THREE.DirectionalLight('#ffffff', 0.5);
-      key.position.set(room.length * 0.35, -room.width * 0.65, room.height * 2);
+      const key = new THREE.DirectionalLight('#ffffff', 0.4);
+      key.position.set(room.length * 0.3, -room.width * 0.5, room.height * 2);
       scene.add(key);
 
-      const sampleSpl = buildSplSampler(splField);
       const coverageMeshes: THREE.Mesh[] = [];
       const wallThickness = 0.14;
       const wallHeight = room.height + Math.max(0.45, room.height * 0.08);
 
-      const shellFloor = new THREE.Mesh(
-        new THREE.PlaneGeometry(room.length + 0.22, room.width + 0.22),
-        new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.95, metalness: 0 }),
-      );
-      shellFloor.position.set(room.length / 2, room.width / 2, 0);
-      scene.add(shellFloor);
+      // 房间裁剪平面——用于裁掉音响锥形超出包围盒的部分
+      // THREE.Plane(normal, constant): 满足 normal·point + constant < 0 的部分被裁掉
+      const pad = 0.06;
+      const roomClipPlanes = [
+        new THREE.Plane(new THREE.Vector3( 1,  0,  0), -pad),                 // 裁掉 x < pad → 保留 x >= pad
+        new THREE.Plane(new THREE.Vector3(-1,  0,  0), room.length - pad),    // 裁掉 x > room.length - pad
+        new THREE.Plane(new THREE.Vector3( 0,  1,  0), -pad),                 // 裁掉 y < pad
+        new THREE.Plane(new THREE.Vector3( 0, -1,  0), room.width - pad),     // 裁掉 y > room.width - pad
+        new THREE.Plane(new THREE.Vector3( 0,  0,  1), -pad),                 // 裁掉 z < pad
+        new THREE.Plane(new THREE.Vector3( 0,  0, -1), room.height - pad),    // 裁掉 z > room.height - pad
+      ];
 
-      addSplFloorMesh(scene, room, sampleSpl, minSplTarget, cmin, cmax);
+      // White floor
+      const floorMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.9, metalness: 0 });
+      const floor = new THREE.Mesh(new THREE.PlaneGeometry(room.length + 0.22, room.width + 0.22), floorMat);
+      floor.position.set(room.length / 2, room.width / 2, 0);
+      scene.add(floor);
 
-      const wallMaterial = new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.92, metalness: 0, transparent: true, opacity: 0.44 });
-      const trimMaterial = new THREE.MeshStandardMaterial({ color: '#e2e8f0', roughness: 0.88, metalness: 0 });
-      const glassMaterial = new THREE.MeshStandardMaterial({ color: '#dbeafe', roughness: 0.22, metalness: 0, transparent: true, opacity: 0.28 });
+      // Pure white matte wall material
+      const wallMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.9, metalness: 0 });
+      // Transparent glass (fully see-through)
+      const glassMat = new THREE.MeshStandardMaterial({ color: '#dce8f4', roughness: 0.02, metalness: 0.02, transparent: true, opacity: 0.22, depthWrite: false });
+      // Trim: slightly darker white for depth
+      const trimMat = new THREE.MeshStandardMaterial({ color: '#f0f0f0', roughness: 0.85, metalness: 0 });
 
-      const addBox = (
-        size: [number, number, number],
-        position: [number, number, number],
-        material: THREE.Material,
-      ) => {
-        const mesh = new THREE.Mesh(new THREE.BoxGeometry(size[0], size[1], size[2]), material);
-        mesh.position.set(position[0], position[1], position[2]);
-        scene.add(mesh);
-        return mesh;
+      const addBox = (sz: [number, number, number], pos: [number, number, number], mat: THREE.Material) => {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(sz[0], sz[1], sz[2]), mat);
+        m.position.set(pos[0], pos[1], pos[2]); scene.add(m); return m;
       };
 
-      addBox([room.length, wallThickness, wallHeight], [room.length / 2, 0, wallHeight / 2], wallMaterial);
-      addBox([room.length, wallThickness, wallHeight], [room.length / 2, room.width, wallHeight / 2], wallMaterial);
-      addBox([wallThickness, room.width, wallHeight], [0, room.width / 2, wallHeight / 2], wallMaterial);
-      addBox([wallThickness, room.width, wallHeight], [room.length, room.width / 2, wallHeight / 2], wallMaterial);
+      const sampleSpl = buildSplSampler(splField);
+      addSplFloorMesh(scene, room, sampleSpl, minSplTarget, cmin, cmax);
 
-      const doorWidth = Math.min(1.2, Math.max(0.9, room.length * 0.065));
-      const doorHeight = Math.min(2.15, wallHeight - 0.45);
-      const doorX = room.length * 0.15;
-      addBox([doorWidth + 0.08, wallThickness * 0.8, doorHeight + 0.08], [doorX, wallThickness * 0.55, doorHeight / 2], trimMaterial);
-      addBox([doorWidth, wallThickness * 0.36, doorHeight], [doorX, wallThickness * 0.58, doorHeight / 2], new THREE.MeshStandardMaterial({ color: '#f1f5f9', roughness: 0.88, metalness: 0 }));
+      const wSill = Math.min(1.0, room.height * 0.28);
+      const wTop = Math.min(2.2, wallHeight - 0.5);
+      const wH = Math.max(0.8, wTop - wSill);
+      const wW = Math.min(2.2, Math.max(1.2, room.length * 0.17));
+      const windowCenters = [room.length * 0.33, room.length * 0.68];
 
-      const windowSill = Math.min(1.0, room.height * 0.28);
-      const windowTop = Math.min(2.2, wallHeight - 0.5);
-      const windowHeight = Math.max(0.8, windowTop - windowSill);
-      const windowWidth = Math.min(2.2, Math.max(1.2, room.length * 0.17));
-      const windowY = room.width - wallThickness * 0.55;
-      const windowLeftX = room.length * 0.33;
-      const windowRightX = room.length * 0.68;
-      addBox([windowWidth, wallThickness * 0.42, windowHeight], [windowLeftX, windowY, windowSill + windowHeight / 2], glassMaterial);
-      addBox([windowWidth, wallThickness * 0.42, windowHeight], [windowRightX, windowY, windowSill + windowHeight / 2], glassMaterial);
-      addBox([windowWidth + 0.06, wallThickness * 0.76, windowHeight + 0.06], [windowLeftX, windowY, windowSill + windowHeight / 2], trimMaterial);
-      addBox([windowWidth + 0.06, wallThickness * 0.76, windowHeight + 0.06], [windowRightX, windowY, windowSill + windowHeight / 2], trimMaterial);
+      const addBackWallBand = (x0: number, x1: number, z0: number, z1: number) => {
+        const width = x1 - x0;
+        const height = z1 - z0;
+        if (width <= 0.02 || height <= 0.02) return;
+        addBox([width, wallThickness, height], [(x0 + x1) * 0.5, room.width, (z0 + z1) * 0.5], wallMat);
+      };
 
-      addBox([room.length * 0.24, wallThickness * 0.8, room.height * 0.2], [room.length * 0.5, windowY, room.height * 0.64], new THREE.MeshStandardMaterial({ color: '#0f172a', roughness: 0.8, metalness: 0 }));
+      const openingIntervals = windowCenters
+        .map((center) => [Math.max(0, center - wW * 0.5), Math.min(room.length, center + wW * 0.5)] as [number, number])
+        .filter(([start, end]) => end - start > 0.08)
+        .sort((a, b) => a[0] - b[0]);
+      const mergedOpenings: Array<[number, number]> = [];
+      openingIntervals.forEach(([start, end]) => {
+        const last = mergedOpenings[mergedOpenings.length - 1];
+        if (!last || start > last[1] + 0.04) {
+          mergedOpenings.push([start, end]);
+          return;
+        }
+        last[1] = Math.max(last[1], end);
+      });
+
+      // Front and side walls keep full geometry; back wall is cut with real window openings.
+      addBox([room.length, wallThickness, wallHeight], [room.length / 2, 0, wallHeight / 2], wallMat);
+      addBox([wallThickness, room.width, wallHeight], [0, room.width / 2, wallHeight / 2], wallMat);
+      addBox([wallThickness, room.width, wallHeight], [room.length, room.width / 2, wallHeight / 2], wallMat);
+
+      let cursorX = 0;
+      mergedOpenings.forEach(([start, end]) => {
+        addBackWallBand(cursorX, start, 0, wallHeight);
+        addBackWallBand(start, end, 0, wSill);
+        addBackWallBand(start, end, wSill + wH, wallHeight);
+        cursorX = end;
+      });
+      addBackWallBand(cursorX, room.length, 0, wallHeight);
+
+      // Door with frame + panel + handle
+      const dW = Math.min(1.0, Math.max(0.85, room.length * 0.06));
+      const dH = Math.min(2.1, wallHeight - 0.4);
+      const dX = room.length * 0.12;
+      const doorGroup = new THREE.Group();
+      doorGroup.position.set(dX, wallThickness * 0.25, 0);
+      // Frame
+      const fw = 0.06;
+      addBox([fw, wallThickness * 0.5, dH + fw * 2], [dX, wallThickness * 0.3, dH / 2], trimMat);
+      addBox([dW + fw, wallThickness * 0.5, fw], [dX, wallThickness * 0.3, dH + fw / 2], trimMat);
+      // Panel
+      addBox([dW, wallThickness * 0.35, dH], [dX, wallThickness * 0.35, dH / 2], wallMat);
+      // Handle
+      addBox([0.06, wallThickness * 0.15, 0.14], [dX + dW * 0.4, wallThickness * 0.5, dH * 0.55], trimMat);
+
+      // Windows (transparent glass embedded in wall openings)
+      const frameDepth = wallThickness * 0.86;
+      const glassDepth = wallThickness * 0.34;
+      const backWallInnerY = room.width - wallThickness * 0.06;
+      mergedOpenings.forEach(([start, end]) => {
+        const wX = (start + end) * 0.5;
+        const openingW = end - start;
+        if (openingW <= 0.08) return;
+        addBox([openingW + 0.04, frameDepth, wH + 0.04], [wX, backWallInnerY, wSill + wH / 2], trimMat);
+        addBox([openingW - 0.02, glassDepth, wH - 0.02], [wX, backWallInnerY, wSill + wH / 2], glassMat);
+      });
+
+      // White model base materials with SPL color blending
+      const makeSplBlendMat = (x: number, y: number, baseColor: string = '#ffffff', roughness: number = 0.85, blend: number = 0.14) => {
+        const spl = sampleSpl(x, y);
+        const splColor = splToRequirementColor(spl, minSplTarget, cmin, cmax);
+        const color = splColor.clone().lerp(new THREE.Color(baseColor), blend);
+        return new THREE.MeshStandardMaterial({ color, roughness, metalness: 0 });
+      };
+      const wmLight = new THREE.MeshStandardMaterial({ color: '#f0f0f0', roughness: 0.82, metalness: 0 });
+      const wmDark  = new THREE.MeshStandardMaterial({ color: '#e0e0e0', roughness: 0.78, metalness: 0 });
 
       const addChair = (
         center: [number, number, number],
         target: [number, number, number],
-        seatSize: [number, number, number],
-        backSize: [number, number, number],
+        seatW: number, seatD: number, seatH: number,
+        backH: number,
       ) => {
-        const group = new THREE.Group();
-        group.position.set(center[0], center[1], 0);
+        const g = new THREE.Group();
+        g.position.set(center[0], center[1], 0);
         const angle = Math.atan2(target[1] - center[1], target[0] - center[0]) - Math.PI / 2;
-        group.rotation.z = angle;
+        g.rotation.z = angle;
 
-        const seatSpl = sampleSpl(center[0], center[1]);
-        const seatColor = splToRequirementColor(seatSpl, minSplTarget, cmin, cmax).clone().lerp(new THREE.Color('#ffffff'), 0.16);
-        const seat = new THREE.Mesh(
-          new THREE.BoxGeometry(seatSize[0], seatSize[1], seatSize[2]),
-          new THREE.MeshStandardMaterial({ color: seatColor, roughness: 0.86, metalness: 0.02 }),
-        );
-        seat.position.set(0, 0, 0.45);
-        group.add(seat);
+        // Seat cushion with SPL color
+        const seatMat = makeSplBlendMat(center[0], center[1], '#ffffff', 0.8, 0.22);
+        const seat = new THREE.Mesh(new THREE.CylinderGeometry(seatW * 0.4, seatW * 0.42, seatH, 24), seatMat);
+        seat.rotation.x = Math.PI / 2;
+        seat.position.set(0, 0, 0.44);
+        g.add(seat);
 
-        const back = new THREE.Mesh(new THREE.BoxGeometry(backSize[0], backSize[1], backSize[2]), trimMaterial);
-        back.position.set(0, -seatSize[1] * 0.42, 0.7);
-        group.add(back);
+        // Backrest
+        const back = new THREE.Mesh(new THREE.BoxGeometry(seatW * 0.88, 0.04, backH), wmLight);
+        back.position.set(0, -seatD * 0.42, 0.44 + backH * 0.5);
+        g.add(back);
 
-        scene.add(group);
+        // Armrests
+        [-1, 1].forEach(side => {
+          const armPad = new THREE.Mesh(new THREE.BoxGeometry(0.06, seatD * 0.7, 0.04), wmLight);
+          armPad.position.set(side * seatW * 0.35, 0, 0.44 + seatH * 0.5);
+          g.add(armPad);
+          const armSupport = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.25, 12), wmDark);
+          armSupport.position.set(side * seatW * 0.35, -seatD * 0.15, 0.32);
+          g.add(armSupport);
+        });
+
+        // Legs
+        const legOffsets: Array<[number, number]> = [[0.3, 0.28], [-0.3, 0.28], [0.3, -0.28], [-0.3, -0.28]];
+        legOffsets.forEach(([ox, oy]) => {
+          const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.022, 0.38, 12), wmDark);
+          leg.position.set(ox * seatW, oy * seatD, 0.22);
+          g.add(leg);
+        });
+
+        // Base plate
+        const base = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 0.03, 16), wmDark);
+        base.position.set(0, 0, 0.04);
+        g.add(base);
+
+        scene.add(g);
       };
 
       if (scenario === Scenario.MEETING_ROOM) {
-        const tableCenter: [number, number, number] = [room.length * 0.52, room.width * 0.55, 0.77];
-        const tableLength = Math.min(6.2, Math.max(2.8, room.length * 0.34));
-        const tableWidth = Math.min(2.2, Math.max(1.15, room.width * 0.18));
-        const tableSpl = sampleSpl(tableCenter[0], tableCenter[1]);
-        const tableColor = splToRequirementColor(tableSpl, minSplTarget, cmin, cmax).clone().lerp(new THREE.Color('#ffffff'), 0.22);
-        addBox([tableLength, tableWidth, 0.1], tableCenter, new THREE.MeshStandardMaterial({ color: tableColor, roughness: 0.72, metalness: 0.04 }));
-        const legOffsets: Array<[number, number]> = [[-0.45, -0.42], [0.45, -0.42], [-0.45, 0.42], [0.45, 0.42]];
-        legOffsets.forEach(([ox, oy]) => {
-          addBox([0.08, 0.08, 0.68], [tableCenter[0] + ox * tableLength * 0.5, tableCenter[1] + oy * tableWidth * 0.5, 0.38], trimMaterial);
-        });
+        const isLongRoom = room.length > 10;
 
-        const chairsPerRow = 5;
-        const rowOffset = Math.max(0.72, tableWidth * 0.64);
-        const spanX = Math.max(2.3, tableLength * 0.84);
-        const chairXs = linspace(tableCenter[0] - spanX * 0.5, tableCenter[0] + spanX * 0.5, chairsPerRow);
-        const frontRowY = Math.max(0.6, tableCenter[1] - rowOffset);
-        const backRowY = Math.min(room.width - 0.6, tableCenter[1] + rowOffset);
+        if (isLongRoom) {
+          // Long room: lectern at front, rows of chairs facing front
+          const lecternX = room.length * 0.5;
+          const lecternY = room.width * 0.22;
+          // Lectern body with SPL color
+          const lecternMat = makeSplBlendMat(lecternX, lecternY, '#ffffff', 0.85, 0.24);
+          addBox([0.5, 0.4, 1.1], [lecternX, lecternY, 0.6], lecternMat);
+          // Lectern top
+          addBox([0.56, 0.46, 0.06], [lecternX, lecternY - 0.02, 1.14], new THREE.MeshStandardMaterial({ color: '#f5f5f5', roughness: 0.8, metalness: 0 }));
 
-        chairXs.forEach((x) => {
-          addChair([x, frontRowY, 0], [x, tableCenter[1], 0], [0.48, 0.46, 0.09], [0.48, 0.1, 0.55]);
-          addChair([x, backRowY, 0], [x, tableCenter[1], 0], [0.48, 0.46, 0.09], [0.48, 0.1, 0.55]);
-        });
+          // Rows of chairs facing forward (all facing y=0)
+          const frontY = room.width * 0.38;
+          const rowSpan = Math.max(2, room.width * 0.48);
+          const rowCount = Math.min(12, Math.max(4, Math.floor(rowSpan / 0.9)));
+          const rowYs = linspace(frontY, frontY + rowSpan, rowCount);
+          const seatSpan = Math.max(2.5, room.length * 0.7);
+          const seatsPerRow = Math.max(4, Math.min(16, Math.floor(seatSpan / 0.62)));
+          const seatXs = linspace(room.length * 0.5 - seatSpan * 0.5, room.length * 0.5 + seatSpan * 0.5, seatsPerRow);
+
+          rowYs.forEach(rowY => {
+            seatXs.forEach(seatX => {
+              addChair([seatX, rowY, 0], [seatX, 0, 0], 0.48, 0.44, 0.09, 0.55);
+            });
+          });
+        } else {
+          // Standard room: conference table + chairs
+          const tableCenter: [number, number, number] = [room.length * 0.52, room.width * 0.55, 0.77];
+          const tableLength = Math.min(6.2, Math.max(2.8, room.length * 0.34));
+          const tableWidth = Math.min(2.2, Math.max(1.15, room.width * 0.18));
+          const tableMat = makeSplBlendMat(tableCenter[0], tableCenter[1], '#ffffff', 0.8, 0.22);
+          addBox([tableLength, tableWidth, 0.1], tableCenter, tableMat);
+          const tableLegs = [[-0.45, -0.42], [0.45, -0.42], [-0.45, 0.42], [0.45, 0.42]];
+          tableLegs.forEach(([ox, oy]) => {
+            addBox([0.08, 0.08, 0.68], [tableCenter[0] + ox * tableLength * 0.5, tableCenter[1] + oy * tableWidth * 0.5, 0.38], new THREE.MeshStandardMaterial({ color: '#f0f0f0', roughness: 0.85, metalness: 0 }));
+          });
+
+          const chairsPerRow = 5;
+          const rowOffset = Math.max(0.72, tableWidth * 0.64);
+          const spanX = Math.max(2.3, tableLength * 0.84);
+          const chairXs = linspace(tableCenter[0] - spanX * 0.5, tableCenter[0] + spanX * 0.5, chairsPerRow);
+          const frontRowY = Math.max(0.6, tableCenter[1] - rowOffset);
+          const backRowY = Math.min(room.width - 0.6, tableCenter[1] + rowOffset);
+
+          chairXs.forEach((x) => {
+            addChair([x, frontRowY, 0], [x, tableCenter[1], 0], 0.48, 0.46, 0.09, 0.55);
+            addChair([x, backRowY, 0], [x, tableCenter[1], 0], 0.48, 0.46, 0.09, 0.55);
+          });
+        }
       }
 
       if (scenario === Scenario.LECTURE_HALL) {
@@ -1675,10 +1786,9 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
         const stageWidth = Math.max(2.4, Math.min(room.length - 0.8, Number.isFinite(rawStageWidth) ? rawStageWidth : room.length * 0.42));
         const stageDepth = Math.max(1, Math.min(room.width * 0.38, Number.isFinite(rawStageDepth) ? rawStageDepth : room.width * 0.14));
         const stageCenter: [number, number, number] = [room.length * 0.5, stageDepth * 0.5 + 0.08, stageHeight * 0.5];
-        const stageSpl = sampleSpl(stageCenter[0], stageCenter[1]);
-        const stageColor = splToRequirementColor(stageSpl, minSplTarget, cmin, cmax).clone().lerp(new THREE.Color('#ffffff'), 0.3);
-        addBox([stageWidth, stageDepth, stageHeight], stageCenter, new THREE.MeshStandardMaterial({ color: stageColor, roughness: 0.74, metalness: 0.05 }));
-        addBox([stageWidth, 0.08, 0.16], [stageCenter[0], stageCenter[1] + stageDepth * 0.5 - 0.02, 0.08], trimMaterial);
+        const stageMat = makeSplBlendMat(stageCenter[0], stageCenter[1], '#ffffff', 0.75, 0.2);
+        addBox([stageWidth, stageDepth, stageHeight], stageCenter, stageMat);
+        addBox([stageWidth, 0.08, 0.16], [stageCenter[0], stageCenter[1] + stageDepth * 0.5 - 0.02, 0.08], new THREE.MeshStandardMaterial({ color: '#f0f0f0', roughness: 0.85, metalness: 0 }));
 
         const stageLabel = makeTextSprite('STAGE', { color: '#1f2937', background: 'rgba(255,255,255,0.9)', fontSize: 32 });
         if (stageLabel) {
@@ -1703,7 +1813,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
 
         rowYs.forEach((rowY) => {
           seatXs.forEach((seatX) => {
-            addChair([seatX, rowY, 0], [seatX, stageCenter[1], 0], [0.46, 0.42, 0.09], [0.46, 0.1, 0.52]);
+            addChair([seatX, rowY, 0], [seatX, stageCenter[1], 0], 0.46, 0.42, 0.09, 0.52);
           });
         });
       }
@@ -1731,13 +1841,12 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
         }
 
         {
-          const preferredLen = Math.min(Math.max(room.length, room.width) * 0.32, 8.5);
-          const coneLen = getWallOccludedConeLength(room, speaker.position, forward, preferredLen);
+          const coneLen = getWallOccludedConeLength(room, speaker.position, forward);
           const coneRadius = coneLen * Math.tan((speaker.coverageH / 2) * Math.PI / 180);
           const initialOpacity = showCoverageRef.current ? 0.12 : 0;
           const coverage = new THREE.Mesh(
             new THREE.ConeGeometry(coneRadius, coneLen, 30, 1, true),
-            new THREE.MeshStandardMaterial({ color: '#38bdf8', transparent: true, opacity: initialOpacity, side: THREE.DoubleSide, depthWrite: false }),
+            new THREE.MeshStandardMaterial({ color: '#38bdf8', transparent: true, opacity: initialOpacity, side: THREE.DoubleSide, depthWrite: false, clippingPlanes: roomClipPlanes, clipShadows: true }),
           );
           coverage.userData.coverageCone = true;
           coverage.visible = initialOpacity > 0.002;

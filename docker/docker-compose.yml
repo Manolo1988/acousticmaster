@@ -35,7 +35,7 @@ services:
       - PROJECT_ROOT=/app
       - AI_BACKEND_PORT=3003
       - AI_DAEMON_PORT=4000
-      - LOCAL_LLM_MODEL=qwen2.5:7b
+      - LOCAL_LLM_MODEL=qwen3:14b
       - LOCAL_LLM_URL=http://host.docker.internal:11434/v1/chat/completions
       - OLLAMA_KEEP_ALIVE=-1
       - CORS_ORIGINS=http://115.231.236.153:8100

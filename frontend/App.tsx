@@ -2270,7 +2270,12 @@ const App: React.FC = () => {
               <div className="bg-slate-50 p-0.5 rounded-md border border-slate-200 flex items-center h-8">
                 {/* 切换放置在每个方案之下，体现它是针对当前方案的属性 */}
                 <button onClick={() => logic.setCurrentResultTab(ResultTab.PLAN)} className={`px-3 h-7 rounded-sm text-[13px] font-bold transition-all ${logic.currentResultTab === ResultTab.PLAN ? `bg-white ${themeText} shadow-sm` : 'text-slate-400'}`}>方案明细</button>
-                <button onClick={() => logic.setCurrentResultTab(ResultTab.SIMULATION)} className={`px-3 h-7 rounded-sm text-[13px] font-bold transition-all ${logic.currentResultTab === ResultTab.SIMULATION ? `bg-white ${themeText} shadow-sm` : 'text-slate-400'}`}>逆向设计方案生成</button>
+                <button
+                  onClick={() => logic.setCurrentResultTab(ResultTab.SIMULATION)}
+                  disabled={!activeResult?.items?.some(isSimulationSpeakerItem)}
+                  title={!activeResult?.items?.some(isSimulationSpeakerItem) ? '当前方案中无可用于逆向设计的音箱设备' : '逆向设计方案生成'}
+                  className={`px-3 h-7 rounded-sm text-[13px] font-bold transition-all ${logic.currentResultTab === ResultTab.SIMULATION ? `bg-white ${themeText} shadow-sm` : 'text-slate-400'} ${!activeResult?.items?.some(isSimulationSpeakerItem) ? 'opacity-40 cursor-not-allowed' : ''}`}
+                >逆向设计方案生成</button>
               </div>
             </div>
 

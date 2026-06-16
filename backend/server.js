@@ -3146,6 +3146,7 @@ const getSimulationPythonCandidates = () => {
   const condaPrefix = process.env.CONDA_PREFIX || "";
   const candidates = uniqueNonEmpty([
     process.env.SIM_PYTHON_COMMAND,
+    "D:\\ProgramData\\anaconda3\\envs\\sound\\python.exe",
     // 优先: conda 环境（有科学计算包）
     condaPrefix ? `${condaPrefix}/bin/python` : "",
     `${home}/anaconda3/bin/python3`,

@@ -3251,6 +3251,23 @@ const App: React.FC = () => {
           >
             复制 Markdown
           </button>
+          <button
+            onClick={() => {
+            logic.setDesignState(prev => ({
+              ...prev,
+              projectName: `${item.projectName}_复件`,
+              scenario: item.scenario,
+              params: item.params,
+              results: item.results,
+              isDesigned: true
+            }));
+            logic.setCurrentPage(Page.SOLUTION);
+            logic.setPreviewHistoryItem(null);
+          }}
+          className={`${glassButtonClass} px-4 h-9 text-[13px] font-black uppercase`}
+        >
+          重新载入此设计
+        </button>
         </div>
 
         <div className="bg-slate-50 border border-slate-100 rounded-2xl p-5 mb-6">
@@ -3350,7 +3367,7 @@ const App: React.FC = () => {
             );
           })}
         </div>
-        <button
+        {/* <button
           onClick={() => {
             logic.setDesignState(prev => ({
               ...prev,
@@ -3366,7 +3383,7 @@ const App: React.FC = () => {
           className="px-6 py-3 bg-slate-900 text-white rounded-xl font-black text-[13px] uppercase tracking-widest mt-6"
         >
           重新载入此设计
-        </button>
+        </button> */}
           </div>
         </div>
       </div>

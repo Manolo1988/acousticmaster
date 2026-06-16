@@ -119,11 +119,20 @@ const rawApiBase = import.meta.env.VITE_API_BASE ?? '';
 const API_BASE = rawApiBase.replace(/\/+$/, '');
 const SIM_RESULT_CACHE_PREFIX = 'acoustic-sim-result:v5:';
 const SIM_RESULT_CACHE_LIMIT = 24;
-const SIMULATION_TARGETS = {
+const MEETING_TARGETS = {
   minSpl: 95,
   maxUniformity: 8,
   minHeadroom: 3,
 };
+
+const LECTURE_TARGETS = {
+  minSpl: 98,
+  maxUniformity: 8,
+  minHeadroom: 3,
+};
+
+const getSimulationTargets = (scenario: Scenario) =>
+  scenario === Scenario.LECTURE_HALL ? LECTURE_TARGETS : MEETING_TARGETS;
 const persistentSimulationResultCache = new Map<string, SimulationResult>();
 
 const normalizeText = (value: unknown) => String(value ?? '').trim();
@@ -140,7 +149,8 @@ const buildSimulationCacheSignatures = (
   scenario: Scenario,
   params: AcousticParams,
   items: EquipmentItem[],
-  layoutItems: SolutionLayoutItem[]
+  layoutItems: SolutionLayoutItem[],
+  targets: { minSpl: number; maxUniformity: number; minHeadroom: number }
 ) => {
   const normalizedItems = items
     .map((item) => ({
@@ -168,7 +178,7 @@ const buildSimulationCacheSignatures = (
       width: normalizeNumber(params.width, 2),
       height: normalizeNumber(params.height, 2),
     },
-    targets: SIMULATION_TARGETS,
+    targets,
     items: normalizedItems,
     layout: normalizedLayout,
   };
@@ -267,7 +277,13 @@ const postSimulationRun = async (
     params: AcousticParams;
     items: EquipmentItem[];
     layoutItems: SolutionLayoutItem[];
-    targets: typeof SIMULATION_TARGETS;
+    targets: { minSpl: number; maxUniformity: number; minHeadroom: number };
+    listener?: {
+      frontMargin?: number;
+      rearMargin?: number;
+      sideMargin?: number;
+      earHeight?: number;
+    };
   },
   signal: AbortSignal,
 ) => {
@@ -356,7 +372,7 @@ const buildDemoSpeakers = (
 ): DemoSpeaker[] => {
   const layoutDefaultZ = scenario === Scenario.MEETING_ROOM
     ? Math.min(room.height - 0.4, 4)
-    : Math.min(room.height - 0.4, 2.6);
+    : Math.min(room.height - 0.4, 7);
   const layoutSpeakers = layoutItems
     .filter((item) => `${item.function} ${item.name} ${item.model}`.includes('音箱'))
     .slice(0, 8)
@@ -389,7 +405,9 @@ const buildDemoSpeakers = (
   const firstSpeaker = items.find(isSimulationSpeakerItem);
   const model = firstSpeaker?.model || 'V8PRO';
   const speakerCount = Math.max(2, Math.min(4, Number(firstSpeaker?.quantity || 2)));
-  const mountHeight = scenario === Scenario.MEETING_ROOM ? 4 : Math.max(2.2, room.height * 0.36);
+  const mountHeight = scenario === Scenario.MEETING_ROOM
+    ? 4
+    : Math.max(4.5, room.height * 0.6);
   const z = Math.min(room.height - 0.35, mountHeight);
   const base: DemoSpeaker[] = [
     {
@@ -874,11 +892,12 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
   const [showCoverage, setShowCoverage] = useState(true);
   const showCoverageRef = useRef(showCoverage);
   const [isSceneFullscreen, setIsSceneFullscreen] = useState(false);
-  const requestSignatures = useMemo(
-    () => buildSimulationCacheSignatures(solutionId, scenario, params, items, layoutItems),
-    [items, layoutItems, params, scenario, solutionId],
-  );
   const speakerItems = useMemo(() => items.filter(isSimulationSpeakerItem), [items]);
+  const simulationTargets = useMemo(() => getSimulationTargets(scenario), [scenario]);
+  const requestSignatures = useMemo(
+    () => buildSimulationCacheSignatures(solutionId, scenario, params, items, layoutItems, simulationTargets),
+    [items, layoutItems, params, scenario, solutionId, simulationTargets],
+  );
 
   const fallbackRoom = useMemo(() => ({
     length: clampRoomValue(params.length, 20, 4, 80),
@@ -948,7 +967,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
       earHeight: Number(simulationData.config?.listener_area?.ear_height_m || 1.2),
     };
   }, [fallbackSplField, simulationData]);
-  const minSplTarget = Number(simulationData?.config?.targets?.min_spl_db || 95);
+  const minSplTarget = Number(simulationData?.config?.targets?.min_spl_db || simulationTargets.minSpl);
   const { cmin, cmax } = useMemo(() => {
     const lower = Math.min(splField.min, minSplTarget - 3);
     const upper = Math.max(splField.max, minSplTarget + 3);
@@ -964,8 +983,8 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
   }, [colorbarTargetBottomPercent]);
 
   const standardRows = useMemo(() => {
-    const uniformityTarget = Number(simulationData?.config?.targets?.max_nonuniformity_db ?? SIMULATION_TARGETS.maxUniformity);
-    const headroomTarget = Number(simulationData?.config?.targets?.min_headroom_db ?? SIMULATION_TARGETS.minHeadroom);
+    const uniformityTarget = Number(simulationData?.config?.targets?.max_nonuniformity_db ?? simulationTargets.maxUniformity);
+    const headroomTarget = Number(simulationData?.config?.targets?.min_headroom_db ?? simulationTargets.minHeadroom);
     const nonuniformity = Number(simulationData?.best?.nonuniformity || (splField.max - splField.min));
     const headroom = Number(simulationData?.best?.headroom ?? (splField.min - minSplTarget));
     return [
@@ -988,7 +1007,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
         pass: headroom >= headroomTarget,
       },
     ];
-  }, [minSplTarget, simulationData, splField.max, splField.min]);
+  }, [minSplTarget, simulationData, splField.max, splField.min, simulationTargets]);
 
   useEffect(() => {
     abortRef.current?.abort();
@@ -1107,7 +1126,15 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
         params,
         items,
         layoutItems,
-        targets: SIMULATION_TARGETS,
+        targets: simulationTargets,
+        listener: {
+          frontMargin: scenario === Scenario.LECTURE_HALL
+            ? Math.max(3, (Number(params.stageDepth) || 2) + (Number(params.stageToNearAudience) || 2))
+            : 1.2,
+          rearMargin: 0.8,
+          sideMargin: 0.7,
+          earHeight: 1.2,
+        },
       },
       controller.signal,
     )
@@ -1373,8 +1400,8 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
     const topImage = await captureSimulationSnapshot('top');
     const sideImage = await captureSimulationSnapshot('side');
 
-    const uniformityTarget = Number(simulationData?.config?.targets?.max_nonuniformity_db ?? SIMULATION_TARGETS.maxUniformity);
-    const headroomTarget = Number(simulationData?.config?.targets?.min_headroom_db ?? SIMULATION_TARGETS.minHeadroom);
+    const uniformityTarget = Number(simulationData?.config?.targets?.max_nonuniformity_db ?? simulationTargets.maxUniformity);
+    const headroomTarget = Number(simulationData?.config?.targets?.min_headroom_db ?? simulationTargets.minHeadroom);
     const nonuniformity = Number(simulationData?.best?.nonuniformity || (splField.max - splField.min));
     const headroom = Number(simulationData?.best?.headroom ?? (splField.min - minSplTarget));
 

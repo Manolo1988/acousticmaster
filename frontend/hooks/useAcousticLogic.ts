@@ -2782,8 +2782,8 @@ if (designState.scenario === Scenario.LECTURE_HALL) {
               ...item,
               name: item.name || detail.产品名称,        // item.name 优先
               model: item.model || detail.型号,          // item.model 优先
-
               brand: detail.品牌 || item.brand,
+
               unitPrice: Number(detail.市场价) || item.unitPrice || 0,
               inventoryMatched: true,
               inventoryMatchNote: ''

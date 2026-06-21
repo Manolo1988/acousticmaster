@@ -2140,6 +2140,16 @@ const App: React.FC = () => {
             <div className="flex items-center space-x-3">
               <div className="flex items-baseline space-x-2">
                 <h2 className="text-xl font-black text-slate-900 tracking-tighter uppercase leading-none shrink-0">设计看板</h2>
+                <button
+                  onClick={() => {
+                    if (confirm('确定要创建新项目吗？当前设计将被清空。')) {
+                      logic.handleNewProject();
+                    }
+                  }}
+                  className="ml-3 px-3 py-1 text-[12px] font-bold border border-slate-300 rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-700 hover:border-slate-400 transition-all uppercase tracking-wider"
+                >
+                  + 新项目
+                </button>
                 <div className="flex items-center group relative cursor-pointer" onClick={() => setIsEditingProjectName(true)}>
                   {isEditingProjectName ? (
                     <input

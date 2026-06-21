@@ -2607,6 +2607,23 @@ export const useAcousticLogic = () => {
     setDesignState(prev => ({ ...prev, projectName: name }));
   };
 
+  const handleNewProject = () => {
+    const newName = `声学项目_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}_01`;
+    const resetParams = buildParamsForScenarioReset(DEFAULT_PARAMS, Scenario.MEETING_ROOM);
+    setDesignState({
+      projectName: newName,
+      scenario: Scenario.MEETING_ROOM,
+      params: resetParams,
+      blueprint: null,
+      isDesigned: false,
+      chatHistory: [{ role: 'ai', text: '您好，协助您进行声学方案设计的专家已就绪，您可以自主选择在左方进行手动填写或向我提问，我将引导你进行补充。请描述您的场景是会议室还是报告厅（左上方可以进行场景切换便于显示参数）？', timestamp: new Date() }],
+      results: [],
+      activeResultIndex: 0
+    });
+    setCurrentResultTab(ResultTab.PLAN);
+    setAssistantScenario(Scenario.MEETING_ROOM);
+  };
+
   // --- 交互与设计逻辑 ---
   const handleSendMessage = async () => {
     if (!chatInputValue.trim() || isAssistantLoading) return;
@@ -3726,7 +3743,7 @@ const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
     removeMic,
     handleMicChange,
     handleParamChange,
-    handleUpdateProjectName, handleSendMessage, startDesign, saveEdit, handleLogout,
+    handleUpdateProjectName, handleNewProject, handleSendMessage, startDesign, saveEdit, handleLogout,
     fetchEquipmentDetail,
     analyzeAmplifierMatch,
     getCachedEquipmentDetail,

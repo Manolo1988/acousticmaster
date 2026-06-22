@@ -2067,13 +2067,32 @@ const App: React.FC = () => {
 
         <div className="bg-white p-2.5 rounded-lg shadow-sm border border-slate-100 space-y-1.5">
           <h3 className="text-[13px] font-black text-slate-400 border-b pb-1 uppercase tracking-widest">环境图纸</h3>
-          <label className="flex flex-col items-center justify-center w-full h-12 border-2 border-dashed border-slate-200 rounded-lg cursor-pointer hover:bg-slate-50 transition-all">
-            <div className="flex flex-col items-center justify-center">
-              <svg className="w-4 h-4 text-slate-400 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>
-              <p className="text-[13px] text-slate-500 font-bold uppercase">上传 CAD 图纸 (JPG/PNG)</p>
+          {!logic.isParsingCad ? (
+            <label className="flex flex-col items-center justify-center w-full h-12 border-2 border-dashed border-slate-200 rounded-lg cursor-pointer hover:bg-slate-50 transition-all">
+              <div className="flex flex-col items-center justify-center">
+                <svg className="w-4 h-4 text-slate-400 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>
+                <p className="text-[13px] text-slate-500 font-bold uppercase">上传 CAD 图纸 (JPG/PNG)</p>
+              </div>
+              <input type="file" className="hidden" accept="image/*" onChange={logic.handleBlueprintUpload} />
+            </label>
+          ) : (
+            <div className="flex flex-col items-center justify-center w-full py-3 px-3 rounded-lg bg-blue-50/70 border border-blue-100 space-y-2">
+              <div className="flex items-center gap-2 w-full">
+                <div className="w-3.5 h-3.5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin shrink-0"></div>
+                <span className="text-[12px] font-bold text-blue-700">{logic.cadParseMessage}</span>
+              </div>
+              <div className="w-full h-1.5 bg-blue-100 rounded-full overflow-hidden">
+                <div className="h-full bg-blue-500 rounded-full transition-all duration-300" style={{ width: `${logic.cadParseProgress}%` }}></div>
+              </div>
+              <span className="text-[10px] text-blue-400 font-bold">{logic.cadParseProgress}%</span>
             </div>
-            <input type="file" className="hidden" accept="image/*" onChange={logic.handleBlueprintUpload} />
-          </label>
+          )}
+          {logic.cadParsedData && !logic.isParsingCad && (
+            <div className="flex flex-col w-full px-2 py-1.5 rounded bg-emerald-50 border border-emerald-100">
+              <span className="text-[11px] font-black text-emerald-700">✓ 图纸解析完成</span>
+              <span className="text-[10px] text-emerald-500">房间 {logic.cadParsedData.room.length_m}×{logic.cadParsedData.room.width_m}×{logic.cadParsedData.room.height_m}m · {logic.cadParsedData.speakers.length}只音箱</span>
+            </div>
+          )}
         </div>
       </div>
       <div className="p-2.5 pt-0">
@@ -2096,6 +2115,20 @@ const App: React.FC = () => {
                   alt="CAD 预览"
                   className={`absolute inset-0 w-full h-full object-contain transition-all ${logic.isProcessingAi ? 'grayscale opacity-40' : 'opacity-90'}`}
                 />
+              )}
+              {logic.isParsingCad && (
+                <div className="absolute inset-0 bg-slate-900/80 flex flex-col items-center justify-center z-10">
+                  <div className="flex flex-col items-center gap-4 max-w-sm text-center">
+                    <div className="w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+                    <div className="space-y-2">
+                      <p className="text-[15px] font-black text-white">{logic.cadParseMessage}</p>
+                      <div className="w-64 h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                        <div className="h-full bg-blue-400 rounded-full transition-all duration-300" style={{ width: `${logic.cadParseProgress}%` }}></div>
+                      </div>
+                      <p className="text-[11px] text-slate-400 font-bold">{logic.cadParseProgress}%</p>
+                    </div>
+                  </div>
+                </div>
               )}
               {logic.isProcessingAi && (
                 <div className="absolute inset-0 bg-white/70 flex flex-col items-center justify-center">
@@ -2537,7 +2570,17 @@ const App: React.FC = () => {
                   params={logic.designState.params}
                   scenario={logic.designState.scenario}
                   items={activeResult?.items}
-                  layoutItems={activeResult?.layoutItems}
+                  layoutItems={activeResult?.layoutItems ?? logic.cadParsedData ? logic.cadParsedData.speakers.map((s, i) => ({
+                    id: `cad-${s.id}`,
+                    function: s.function,
+                    name: `${s.model} / ${s.function}`,
+                    model: s.model,
+                    x: s.position[0],
+                    y: s.position[1],
+                    z: s.position[2],
+                    pitch: 0,
+                    yaw: 0,
+                  })) : undefined}
                 />
               </div>
             )}

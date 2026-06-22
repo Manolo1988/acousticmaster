@@ -8,6 +8,7 @@ import {
 import { DEFAULT_PARAMS } from '../constants';
 import { v4 as uuidv4 } from 'uuid';
 import * as XLSX from 'xlsx';
+import { parseCadDrawing, cadResultToSimulationPayload, CadParsedResult } from '../utils/cadParser';
 
 // Type declaration for import.meta.env
 declare global {
@@ -1875,6 +1876,10 @@ export const useAcousticLogic = () => {
   const reportGenerationLockRef = useRef(false);
   const [editingItem, setEditingItem] = useState<{ resIdx: number, itemIdx: number, item: EquipmentItem } | null>(null);
   const [previewHistoryItem, setPreviewHistoryItem] = useState<HistoryRecord | null>(null);
+  const [isParsingCad, setIsParsingCad] = useState(false);
+  const [cadParseProgress, setCadParseProgress] = useState(0);
+  const [cadParseMessage, setCadParseMessage] = useState('');
+  const [cadParsedData, setCadParsedData] = useState<CadParsedResult | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [userRoleFilter, setUserRoleFilter] = useState<string>('ALL');  // --- 方案设计核心状态 ---
   const [userNameFilter, setUserNameFilter] = useState("");
@@ -3494,11 +3499,57 @@ const handleBlueprintUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
   if (file) {
     const reader = new FileReader();
     reader.onload = (upload) => {
-      setDesignState(prev => ({ ...prev, blueprint: upload.target?.result as string }));
+      const dataUrl = upload.target?.result as string;
+      setDesignState(prev => ({ ...prev, blueprint: dataUrl }));
+      parseCadBlueprint(designState.scenario === 'LECTURE_HALL');
     };
     reader.readAsDataURL(file);
   }
 };
+
+const parseCadBlueprint = async (isLectureHall?: boolean) => {
+  setIsParsingCad(true);
+  setCadParseProgress(0);
+  setCadParseMessage('正在启动 CAD 引擎...');
+
+  try {
+    const cadResult = await parseCadDrawing((percent, message) => {
+      setCadParseProgress(percent);
+      setCadParseMessage(message);
+    }, isLectureHall);
+
+    setCadParsedData(cadResult);
+
+    const payload = cadResultToSimulationPayload(cadResult);
+
+    setDesignState(prev => ({
+      ...prev,
+      params: {
+        ...prev.params,
+        ...payload.params,
+        scenarioConfirmed: true,
+        roomConfirmed: true,
+        stageConfirmed: true,
+      },
+    }));
+
+    setDesignState(prev => {
+      const results = [...prev.results];
+      if (results.length > 0 && prev.activeResultIndex >= 0 && prev.activeResultIndex < results.length) {
+        results[prev.activeResultIndex] = {
+          ...results[prev.activeResultIndex],
+          layoutItems: payload.layoutItems,
+        };
+      }
+      return { ...prev, results };
+    });
+  } catch (error) {
+    console.error('❌ CAD 图纸解析失败:', error);
+  } finally {
+    setIsParsingCad(false);
+  }
+};
+
 const handleSaveEquipment = async (table: TableType, item: Partial<DbInventoryItem>) => {
   try {
     const response = await fetch(`${API_BASE}/api/inventory/${encodeURIComponent(table)}`, {
@@ -3704,6 +3755,7 @@ const filteredInventory = useMemo(() => displayInventory, [displayInventory]);
     searchFilters, setSearchFilters,
     sortConfig, setSortConfig,
     handleBlueprintUpload,
+    isParsingCad, cadParseProgress, cadParseMessage, cadParsedData,
     currentPage, setCurrentPage,
     currentSolutionTab, setCurrentSolutionTab,
     currentResultTab, setCurrentResultTab,

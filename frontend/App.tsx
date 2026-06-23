@@ -2570,7 +2570,7 @@ const App: React.FC = () => {
                   params={logic.designState.params}
                   scenario={logic.designState.scenario}
                   items={activeResult?.items}
-                  layoutItems={activeResult?.layoutItems ?? logic.cadParsedData ? logic.cadParsedData.speakers.map((s, i) => ({
+                  layoutItems={activeResult?.layoutItems ?? (logic.cadParsedData?.speakers.map((s, i) => ({
                     id: `cad-${s.id}`,
                     function: s.function,
                     name: `${s.model} / ${s.function}`,
@@ -2580,7 +2580,7 @@ const App: React.FC = () => {
                     z: s.position[2],
                     pitch: 0,
                     yaw: 0,
-                  })) : undefined}
+                  })) ?? undefined)}
                 />
               </div>
             )}

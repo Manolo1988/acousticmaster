@@ -1612,7 +1612,14 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
       scene.add(floor);
 
       // Pure white matte wall material
-      const wallMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.9, metalness: 0 });
+      const wallMat = new THREE.MeshStandardMaterial({
+        color: '#ffffff',
+        roughness: 0.9,
+        metalness: 0,
+        transparent: true,
+        opacity: 0.15,
+        depthWrite: false,
+      });
       // Transparent glass (fully see-through)
       const glassMat = new THREE.MeshStandardMaterial({ color: '#dce8f4', roughness: 0.02, metalness: 0.02, transparent: true, opacity: 0.22, depthWrite: false });
       // Trim: slightly darker white for depth

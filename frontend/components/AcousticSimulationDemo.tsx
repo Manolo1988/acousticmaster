@@ -378,6 +378,8 @@ const postSimulationRunStream = async (
         body: JSON.stringify(payload),
       });
       if (!response.ok) {
+        const retryable404 = response.status === 404 && index < endpoints.length - 1;
+        if (retryable404) continue;
         const data = await response.json().catch(() => ({}));
         throw new Error(data.details || data.error || `逆向设计接口调用失败（${response.status}）`);
       }

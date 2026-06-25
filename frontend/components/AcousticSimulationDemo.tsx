@@ -38,6 +38,7 @@ interface DemoSpeaker {
 }
 
 interface SimulationResult {
+  isPreview?: boolean;
   config: {
     room: {
       length_m: number;
@@ -46,6 +47,14 @@ interface SimulationResult {
     };
     listener_area?: {
       ear_height_m?: number;
+      x_min_m?: number;
+      x_max_m?: number;
+      y_min_m?: number;
+      y_max_m?: number;
+      length_m?: number;
+      width_m?: number;
+      center_x_m?: number;
+      center_y_m?: number;
     };
     targets?: {
       min_spl_db?: number;
@@ -111,13 +120,29 @@ interface SimulationResult {
       reason?: string;
     };
   };
+  optimizationHistory?: Array<{
+    index: number;
+    label: string;
+    objective?: number;
+    metrics: {
+      feasible: boolean;
+      minSpl: number;
+      avgSpl: number;
+      maxSpl: number;
+      nonuniformity: number;
+      headroom: number;
+      reason?: string;
+    };
+    speakers: SimulationResult['best']['speakers'];
+    grid: SimulationResult['grid'];
+  }>;
 }
 
 type SimulationSnapshotView = 'top' | 'side';
 
 const rawApiBase = import.meta.env.VITE_API_BASE ?? '';
 const API_BASE = rawApiBase.replace(/\/+$/, '');
-const SIM_RESULT_CACHE_PREFIX = 'acoustic-sim-result:v5:';
+const SIM_RESULT_CACHE_PREFIX = 'acoustic-sim-result:v8:';
 const SIM_RESULT_CACHE_LIMIT = 24;
 const MEETING_TARGETS = {
   minSpl: 95,
@@ -272,6 +297,9 @@ const buildSimulationRunEndpoints = () => {
   return Array.from(new Set(endpoints));
 };
 
+const buildSimulationStreamEndpoints = () =>
+  buildSimulationRunEndpoints().map((endpoint) => endpoint.replace(/\/run$/, '/run-stream'));
+
 const postSimulationRun = async (
   payload: {
     params: AcousticParams;
@@ -333,12 +361,52 @@ const postSimulationRun = async (
   throw lastError || new Error('逆向设计接口调用失败');
 };
 
-const OPTIMIZATION_STEPS = [
-  '读取当前方案清单与房间参数',
-  '生成分散初始布点',
-  '迭代优化位置、指向与增益',
-  '国标指标复核与结果渲染',
-];
+const postSimulationRunStream = async (
+  payload: Parameters<typeof postSimulationRun>[0],
+  signal: AbortSignal,
+  onEvent: (event: any) => void,
+) => {
+  const endpoints = buildSimulationStreamEndpoints();
+  let lastError: Error | null = null;
+
+  for (let index = 0; index < endpoints.length; index += 1) {
+    try {
+      const response = await fetch(endpoints[index], {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal,
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.details || data.error || `逆向设计接口调用失败（${response.status}）`);
+      }
+      if (!response.body) throw new Error('浏览器不支持流式读取优化结果');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        lines.forEach((line) => {
+          if (!line.trim()) return;
+          onEvent(JSON.parse(line));
+        });
+      }
+      if (buffer.trim()) onEvent(JSON.parse(buffer));
+      return;
+    } catch (error) {
+      if ((error as { name?: string })?.name === 'AbortError') throw error;
+      lastError = error instanceof Error ? error : new Error('逆向设计流式接口调用失败');
+      if (!isNetworkFetchError(lastError) || index === endpoints.length - 1) throw lastError;
+    }
+  }
+  throw lastError || new Error('逆向设计流式接口调用失败');
+};
 
 const clampRoomValue = (value: number, fallback: number, min: number, max: number) => {
   const n = Number(value);
@@ -393,7 +461,7 @@ const buildDemoSpeakers = (
       aim: [
         clampRoomValue(item.x + room.length * 0.34, room.length * 0.58, 0.2, room.length - 0.2),
         room.width / 2,
-        1.2,
+        1,
       ] as [number, number, number],
       gainDb: 0,
       coverageH: 90,
@@ -420,7 +488,7 @@ const buildDemoSpeakers = (
       sourceUnitIndex: 1,
       sourceLabel: firstSpeaker ? `${items.indexOf(firstSpeaker) + 1}. ${firstSpeaker.type || '音箱'} / ${firstSpeaker.name || model} / ${model}` : `1. 音箱 / ${model} / ${model}`,
       position: [0.55, room.width * 0.28, z],
-      aim: [room.length * 0.62, room.width * 0.5, 1.2],
+      aim: [room.length * 0.62, room.width * 0.5, 1],
       gainDb: 0,
       coverageH: 90,
       coverageV: 60,
@@ -435,7 +503,7 @@ const buildDemoSpeakers = (
       sourceUnitIndex: 2,
       sourceLabel: firstSpeaker ? `${items.indexOf(firstSpeaker) + 1}. ${firstSpeaker.type || '音箱'} / ${firstSpeaker.name || model} / ${model}` : `1. 音箱 / ${model} / ${model}`,
       position: [0.55, room.width * 0.72, z],
-      aim: [room.length * 0.62, room.width * 0.5, 1.2],
+      aim: [room.length * 0.62, room.width * 0.5, 1],
       gainDb: 0,
       coverageH: 90,
       coverageV: 60,
@@ -450,7 +518,7 @@ const buildDemoSpeakers = (
       sourceUnitIndex: 3,
       sourceLabel: firstSpeaker ? `${items.indexOf(firstSpeaker) + 1}. ${firstSpeaker.type || '音箱'} / ${firstSpeaker.name || firstSpeaker.model} / ${firstSpeaker.model}` : '1. 音箱 / CXD-60B / CXD-60B',
       position: [room.length * 0.62, room.width * 0.18, Math.min(room.height - 0.35, z + 0.2)],
-      aim: [room.length * 0.72, room.width * 0.5, 1.2],
+      aim: [room.length * 0.72, room.width * 0.5, 1],
       gainDb: -2.5,
       coverageH: 100,
       coverageV: 70,
@@ -465,7 +533,7 @@ const buildDemoSpeakers = (
       sourceUnitIndex: 4,
       sourceLabel: firstSpeaker ? `${items.indexOf(firstSpeaker) + 1}. ${firstSpeaker.type || '音箱'} / ${firstSpeaker.name || firstSpeaker.model} / ${firstSpeaker.model}` : '1. 音箱 / CXD-60B / CXD-60B',
       position: [room.length * 0.62, room.width * 0.82, Math.min(room.height - 0.35, z + 0.2)],
-      aim: [room.length * 0.72, room.width * 0.5, 1.2],
+      aim: [room.length * 0.72, room.width * 0.5, 1],
       gainDb: -2.5,
       coverageH: 100,
       coverageV: 70,
@@ -544,9 +612,9 @@ const coverageTrace = (speaker: DemoSpeaker, color: string, room: { length: numb
 };
 
 const buildSplField = (room: { length: number; width: number; height: number }, speakers: DemoSpeaker[]) => {
-  const xs = linspace(1.2, Math.max(1.8, room.length - 0.9), 28);
-  const ys = linspace(0.8, Math.max(1.4, room.width - 0.8), 18);
-  const earHeight = 1.2;
+  const xs = linspace(room.length * 0.1, room.length * 0.9, 28);
+  const ys = linspace(room.width * 0.1, room.width * 0.9, 18);
+  const earHeight = 1;
 
   const field = ys.map((y) => xs.map((x) => {
     const energy = speakers.reduce((sum, speaker) => {
@@ -692,9 +760,9 @@ const addDimensionAnnotations = (scene: THREE.Scene, room: RoomModel, wallHeight
   }
 };
 
-const addSplFloorMesh = (
+const addSplListeningPlane = (
   scene: THREE.Scene,
-  room: RoomModel,
+  splField: SplFieldModel,
   sampleSpl: (x: number, y: number) => number,
   targetSpl: number,
   cmin: number,
@@ -702,21 +770,55 @@ const addSplFloorMesh = (
 ) => {
   const segX = 40;
   const segY = 28;
-  const geometry = new THREE.PlaneGeometry(room.length - 0.12, room.width - 0.12, segX, segY);
+  const xMin = splField.xs[0];
+  const xMax = splField.xs[splField.xs.length - 1];
+  const yMin = splField.ys[0];
+  const yMax = splField.ys[splField.ys.length - 1];
+  const planeLength = Math.max(0.1, xMax - xMin);
+  const planeWidth = Math.max(0.1, yMax - yMin);
+  const geometry = new THREE.PlaneGeometry(planeLength, planeWidth, segX, segY);
   const colors: number[] = [];
   const positions = geometry.attributes.position;
   for (let index = 0; index < positions.count; index += 1) {
-    const vx = positions.getX(index) + room.length / 2;
-    const vy = positions.getY(index) + room.width / 2;
+    const vx = positions.getX(index) + (xMin + xMax) / 2;
+    const vy = positions.getY(index) + (yMin + yMax) / 2;
     const spl = sampleSpl(vx, vy);
     const color = splToRequirementColor(spl, targetSpl, cmin, cmax);
     colors.push(color.r, color.g, color.b);
   }
   geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-  const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0, transparent: true, opacity: 0.85 });
+  const material = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 0.5,
+    metalness: 0,
+    transparent: true,
+    opacity: 0.82,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
   const mesh = new THREE.Mesh(geometry, material);
-  mesh.position.set(room.length / 2, room.width / 2, 0.03);
+  mesh.position.set((xMin + xMax) / 2, (yMin + yMax) / 2, splField.earHeight);
+  mesh.renderOrder = 4;
   scene.add(mesh);
+
+  const border = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.PlaneGeometry(planeLength, planeWidth)),
+    new THREE.LineBasicMaterial({ color: '#0f172a', transparent: true, opacity: 0.65 }),
+  );
+  border.position.copy(mesh.position);
+  border.position.z += 0.012;
+  border.renderOrder = 5;
+  scene.add(border);
+
+  const label = makeTextSprite(
+    `听音平面 ${planeLength.toFixed(1)} x ${planeWidth.toFixed(1)} m · H=${splField.earHeight.toFixed(1)} m`,
+    { color: '#0f172a', background: 'rgba(255,255,255,0.94)', fontSize: 30 },
+  );
+  if (label) {
+    label.position.set((xMin + xMax) / 2, yMin, splField.earHeight + 0.12);
+    label.renderOrder = 6;
+    scene.add(label);
+  }
 };
 
 const getWallOccludedConeLength = (
@@ -877,6 +979,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
   const plotRef = useRef<HTMLDivElement | null>(null);
   const scenePanelRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const previewAbortRef = useRef<AbortController | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.OrthographicCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -886,9 +989,10 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
   const [simulationData, setSimulationData] = useState<SimulationResult | null>(null);
   const [simulationError, setSimulationError] = useState('');
   const [isSimulating, setIsSimulating] = useState(false);
-  const [optimizationStep, setOptimizationStep] = useState(0);
   const [optimizationRound, setOptimizationRound] = useState(0);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [playbackIndex, setPlaybackIndex] = useState(0);
+  const [isPlaybackRunning, setIsPlaybackRunning] = useState(false);
   const [showCoverage, setShowCoverage] = useState(true);
   const showCoverageRef = useRef(showCoverage);
   const [isSceneFullscreen, setIsSceneFullscreen] = useState(false);
@@ -927,9 +1031,15 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
     return map;
   }, [simulationData]);
 
+  const optimizationHistory = simulationData?.optimizationHistory || [];
+  const activeOptimizationFrame = optimizationHistory.length > 0
+    ? optimizationHistory[Math.min(playbackIndex, optimizationHistory.length - 1)]
+    : null;
+  const isReviewingOptimization = optimizationHistory.length > 1;
+
   const fallbackSpeakers = useMemo(() => buildDemoSpeakers(fallbackRoom, items, layoutItems, scenario), [items, layoutItems, fallbackRoom, scenario]);
   const speakers = useMemo(() => {
-    const simSpeakers = simulationData?.best?.speakers || [];
+    const simSpeakers = activeOptimizationFrame?.speakers || simulationData?.best?.speakers || [];
     if (simSpeakers.length === 0) return fallbackSpeakers;
     return simSpeakers.map((speaker) => {
       const coverage = productCoverageByModel.get(speaker.model);
@@ -949,25 +1059,101 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
         sourceLabel: speaker.sourceLabel,
       };
     });
-  }, [fallbackSpeakers, productCoverageByModel, simulationData]);
+  }, [activeOptimizationFrame, fallbackSpeakers, productCoverageByModel, simulationData]);
 
   const fallbackSplField = useMemo(() => buildSplField(fallbackRoom, fallbackSpeakers), [fallbackRoom, fallbackSpeakers]);
+  const previewData = useMemo<SimulationResult>(() => {
+    const nonuniformity = fallbackSplField.max - fallbackSplField.min;
+    const headroom = fallbackSplField.min - simulationTargets.minSpl;
+    const feasible = fallbackSplField.min >= simulationTargets.minSpl
+      && nonuniformity <= simulationTargets.maxUniformity
+      && headroom >= simulationTargets.minHeadroom;
+    const previewSpeakers = fallbackSpeakers.map((speaker) => ({
+      role: speaker.role,
+      model: speaker.model,
+      position: speaker.position,
+      aim: speaker.aim,
+      gainDb: speaker.gainDb,
+      sourceItemId: speaker.sourceItemId,
+      sourceRowIndex: speaker.sourceRowIndex,
+      sourceName: speaker.sourceName,
+      sourceType: speaker.sourceType,
+      sourceUnitIndex: speaker.sourceUnitIndex,
+      sourceLabel: speaker.sourceLabel,
+    }));
+    return {
+      isPreview: true,
+      config: {
+        room: {
+          length_m: fallbackRoom.length,
+          width_m: fallbackRoom.width,
+          height_m: fallbackRoom.height,
+        },
+        listener_area: {
+          x_min_m: fallbackRoom.length * 0.1,
+          x_max_m: fallbackRoom.length * 0.9,
+          y_min_m: fallbackRoom.width * 0.1,
+          y_max_m: fallbackRoom.width * 0.9,
+          length_m: fallbackRoom.length * 0.8,
+          width_m: fallbackRoom.width * 0.8,
+          center_x_m: fallbackRoom.length * 0.5,
+          center_y_m: fallbackRoom.width * 0.5,
+          ear_height_m: 1,
+        },
+        targets: {
+          min_spl_db: simulationTargets.minSpl,
+          max_nonuniformity_db: simulationTargets.maxUniformity,
+          min_headroom_db: simulationTargets.minHeadroom,
+        },
+      },
+      receivers: [],
+      grid: fallbackSplField,
+      best: {
+        feasible,
+        reason: feasible ? '初始布点满足指标' : '初始布点尚未满足全部指标',
+        minSpl: fallbackSplField.min,
+        avgSpl: fallbackSplField.avg,
+        maxSpl: fallbackSplField.max,
+        nonuniformity,
+        headroom,
+        speakers: previewSpeakers,
+      },
+      optimizationHistory: [{
+        index: 0,
+        label: '初始布点预览',
+        metrics: {
+          feasible,
+          minSpl: fallbackSplField.min,
+          avgSpl: fallbackSplField.avg,
+          maxSpl: fallbackSplField.max,
+          nonuniformity,
+          headroom,
+          reason: feasible ? '初始布点满足指标' : '初始布点尚未满足全部指标',
+        },
+        speakers: previewSpeakers,
+        grid: fallbackSplField,
+      }],
+    };
+  }, [fallbackRoom, fallbackSpeakers, fallbackSplField, simulationTargets]);
+  const displaySimulationData = simulationData || previewData;
   const splField = useMemo(() => {
-    if (!simulationData?.grid?.xs?.length || !simulationData?.grid?.ys?.length || !simulationData?.grid?.field?.length) {
+    const displayGrid = activeOptimizationFrame?.grid || displaySimulationData.grid;
+    const displayMetrics = activeOptimizationFrame?.metrics || displaySimulationData.best;
+    if (!displayGrid?.xs?.length || !displayGrid?.ys?.length || !displayGrid?.field?.length) {
       return fallbackSplField;
     }
-    const flat = simulationData.grid.field.flat().filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+    const flat = displayGrid.field.flat().filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
     return {
-      xs: simulationData.grid.xs,
-      ys: simulationData.grid.ys,
-      field: simulationData.grid.field,
-      min: Number(simulationData.best?.minSpl || Math.min(...flat)),
-      avg: Number(simulationData.best?.avgSpl || flat.reduce((sum, value) => sum + value, 0) / Math.max(1, flat.length)),
-      max: Number(simulationData.best?.maxSpl || Math.max(...flat)),
-      earHeight: Number(simulationData.config?.listener_area?.ear_height_m || 1.2),
+      xs: displayGrid.xs,
+      ys: displayGrid.ys,
+      field: displayGrid.field,
+      min: Number(displayMetrics?.minSpl ?? Math.min(...flat)),
+      avg: Number(displayMetrics?.avgSpl ?? flat.reduce((sum, value) => sum + value, 0) / Math.max(1, flat.length)),
+      max: Number(displayMetrics?.maxSpl ?? Math.max(...flat)),
+      earHeight: Number(displaySimulationData.config?.listener_area?.ear_height_m || 1),
     };
-  }, [fallbackSplField, simulationData]);
-  const minSplTarget = Number(simulationData?.config?.targets?.min_spl_db || simulationTargets.minSpl);
+  }, [activeOptimizationFrame, displaySimulationData, fallbackSplField]);
+  const minSplTarget = Number(displaySimulationData.config?.targets?.min_spl_db || simulationTargets.minSpl);
   const { cmin, cmax } = useMemo(() => {
     const lower = Math.min(splField.min, minSplTarget - 3);
     const upper = Math.max(splField.max, minSplTarget + 3);
@@ -983,10 +1169,11 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
   }, [colorbarTargetBottomPercent]);
 
   const standardRows = useMemo(() => {
-    const uniformityTarget = Number(simulationData?.config?.targets?.max_nonuniformity_db ?? simulationTargets.maxUniformity);
-    const headroomTarget = Number(simulationData?.config?.targets?.min_headroom_db ?? simulationTargets.minHeadroom);
-    const nonuniformity = Number(simulationData?.best?.nonuniformity || (splField.max - splField.min));
-    const headroom = Number(simulationData?.best?.headroom ?? (splField.min - minSplTarget));
+    const uniformityTarget = Number(displaySimulationData.config?.targets?.max_nonuniformity_db ?? simulationTargets.maxUniformity);
+    const headroomTarget = Number(displaySimulationData.config?.targets?.min_headroom_db ?? simulationTargets.minHeadroom);
+    const displayMetrics = activeOptimizationFrame?.metrics || displaySimulationData.best;
+    const nonuniformity = Number(displayMetrics?.nonuniformity ?? (splField.max - splField.min));
+    const headroom = Number(displayMetrics?.headroom ?? (splField.min - minSplTarget));
     return [
       {
         name: '服务区最低声压级',
@@ -1007,18 +1194,20 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
         pass: headroom >= headroomTarget,
       },
     ];
-  }, [minSplTarget, simulationData, splField.max, splField.min, simulationTargets]);
+  }, [activeOptimizationFrame, displaySimulationData, minSplTarget, splField.max, splField.min, simulationTargets]);
 
   useEffect(() => {
     abortRef.current?.abort();
+    previewAbortRef.current?.abort();
     const cached = readSimulationResultCache(requestSignatures);
     setSimulationError('');
     // 仅在命中缓存时恢复仿真数据；未命中时保留当前仿真结果不消失
     // 用户点击“启动方案设计”后组件卸载，仿真结果自然清除
     if (cached) {
       setSimulationData(cached);
+      setPlaybackIndex(Math.max(0, (cached.optimizationHistory?.length || 1) - 1));
+      setIsPlaybackRunning(false);
       setIsSimulating(false);
-      setOptimizationStep(0);
       setOptimizationRound(0);
       setElapsedSeconds(0);
       // 从缓存恢复后立即持久化到 window（不依赖 Three.js 渲染）
@@ -1057,8 +1246,52 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
         };
         console.log('[SIM_PERSIST] ✅ 从缓存恢复后已持久化到 window');
       } catch (e) { console.warn('[SIM_PERSIST] 缓存恢复持久化失败:', e); }
+      return;
     }
-  }, [requestSignatures]);
+
+    if (speakerItems.length === 0) return;
+    const controller = new AbortController();
+    previewAbortRef.current = controller;
+    let streamSetup: any = null;
+    let streamSource: any = null;
+    postSimulationRunStream(
+      {
+        params,
+        items,
+        layoutItems,
+        targets: simulationTargets,
+        listener: {
+          frontMargin: Number(params.length || 20) * 0.1,
+          rearMargin: Number(params.length || 20) * 0.1,
+          sideMargin: Number(params.width || 10) * 0.1,
+          earHeight: 1,
+        },
+      },
+      controller.signal,
+      (event) => {
+        if (event.type === 'source') streamSource = event.source;
+        if (event.type === 'setup') streamSetup = event;
+        if (event.type !== 'frame' || !event.frame) return;
+        const frame = event.frame;
+        setSimulationData({
+          isPreview: true,
+          config: streamSetup?.config || previewData.config,
+          receivers: streamSetup?.receivers || [],
+          grid: frame.grid,
+          best: { ...frame.metrics, speakers: frame.speakers },
+          source: streamSource,
+          optimizationHistory: [frame],
+        });
+        setPlaybackIndex(0);
+        controller.abort();
+      },
+    ).catch((error) => {
+      if ((error as { name?: string })?.name !== 'AbortError') {
+        console.warn('Initial simulation preview failed:', error);
+      }
+    });
+    return () => controller.abort();
+  }, [items, layoutItems, params, previewData.config, requestSignatures, scenario, simulationTargets, solutionId, speakerItems.length]);
 
   useEffect(() => {
     showCoverageRef.current = showCoverage;
@@ -1094,16 +1327,23 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
     const timer = window.setInterval(() => {
       const seconds = Math.floor((Date.now() - started) / 1000);
       setElapsedSeconds(seconds);
-      if (seconds < 2) setOptimizationStep(0);
-      else if (seconds < 5) setOptimizationStep(1);
-      else {
-        const round = Math.min(20, Math.max(1, Math.floor((seconds - 5) / 2) + 1));
-        setOptimizationStep(round >= 20 ? 3 : 2);
-        setOptimizationRound(round);
-      }
     }, 350);
     return () => window.clearInterval(timer);
   }, [isSimulating]);
+
+  useEffect(() => {
+    if (!isPlaybackRunning || optimizationHistory.length <= 1) return;
+    const timer = window.setInterval(() => {
+      setPlaybackIndex((current) => {
+        if (current >= optimizationHistory.length - 1) {
+          setIsPlaybackRunning(false);
+          return current;
+        }
+        return current + 1;
+      });
+    }, 1250);
+    return () => window.clearInterval(timer);
+  }, [isPlaybackRunning, optimizationHistory.length]);
 
   const runInverseDesign = () => {
     if (speakerItems.length === 0) {
@@ -1112,37 +1352,79 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
       return;
     }
 
+    previewAbortRef.current?.abort();
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     setIsSimulating(true);
-    setOptimizationStep(0);
     setOptimizationRound(0);
     setElapsedSeconds(0);
-    setSimulationData(null);
+    setPlaybackIndex(0);
+    setIsPlaybackRunning(false);
     setSimulationError('');
-    postSimulationRun(
+    let streamSetup: any = null;
+    let streamSource: any = null;
+    let finalData: SimulationResult | null = null;
+    const streamedFrames: NonNullable<SimulationResult['optimizationHistory']> = [];
+    postSimulationRunStream(
       {
         params,
         items,
         layoutItems,
         targets: simulationTargets,
         listener: {
-          frontMargin: scenario === Scenario.LECTURE_HALL
-            ? Math.max(3, (Number(params.stageDepth) || 2) + (Number(params.stageToNearAudience) || 2))
-            : 1.2,
-          rearMargin: 0.8,
-          sideMargin: 0.7,
-          earHeight: 1.2,
+          frontMargin: Number(params.length || 20) * 0.1,
+          rearMargin: Number(params.length || 20) * 0.1,
+          sideMargin: Number(params.width || 10) * 0.1,
+          earHeight: 1,
         },
       },
       controller.signal,
+      (event) => {
+        if (event.type === 'error') throw new Error(event.error || '逆向设计流式计算失败');
+        if (event.type === 'source') {
+          streamSource = event.source;
+          return;
+        }
+        if (event.type === 'setup') {
+          streamSetup = event;
+          return;
+        }
+        if (event.type === 'frame' && event.frame) {
+          streamedFrames.push(event.frame);
+          const frame = event.frame;
+          const liveData: SimulationResult = {
+            config: streamSetup?.config || previewData.config,
+            receivers: streamSetup?.receivers || [],
+            grid: frame.grid,
+            best: {
+              ...frame.metrics,
+              speakers: frame.speakers,
+            },
+            source: streamSource,
+            optimizationHistory: [...streamedFrames],
+          };
+          setSimulationData(liveData);
+          setPlaybackIndex(streamedFrames.length - 1);
+          setOptimizationRound(streamedFrames.length);
+          return;
+        }
+        if (event.type === 'result' && event.result) {
+          finalData = event.result as SimulationResult;
+          setSimulationData(finalData);
+          setPlaybackIndex(Math.max(0, (finalData.optimizationHistory?.length || 1) - 1));
+          setOptimizationRound(finalData.optimizationHistory?.length || streamedFrames.length);
+        }
+      },
     )
-      .then((data) => {
+      .then(() => {
         if (controller.signal.aborted) return;
+        const data = finalData;
+        if (!data) throw new Error('逆向设计未返回最终结果');
         writeSimulationResultCache(requestSignatures, data);
         setSimulationData(data);
-        setOptimizationStep(3);
+        setPlaybackIndex(Math.max(0, (data.optimizationHistory?.length || 1) - 1));
+        setIsPlaybackRunning(false);
         // 立即持久化仿真数据到 window（不依赖 Three.js 渲染）
         try {
           const best = (data?.best || {}) as any;
@@ -1450,9 +1732,11 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
   }, [cmax, cmin, colorbarTargetBottomPercent, minSplTarget, room.height, room.length, room.width, scenario, simulationData, speakers, splField.avg, splField.max, splField.min, standardRows]);
 
   const standardsPass = useMemo(
-    () => Boolean(simulationData) && standardRows.every((row) => row.pass),
+    () => Boolean(simulationData && !simulationData.isPreview) && standardRows.every((row) => row.pass),
     [simulationData, standardRows],
   );
+  const displayedMetrics = activeOptimizationFrame?.metrics || displaySimulationData.best;
+  const listenerArea = displaySimulationData.config?.listener_area;
 
   useEffect(() => {
     window.__acousticSimulationDownloadPng = exportTopViewPng;
@@ -1467,7 +1751,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
   // 触发时机: 1) 新仿真完成 (step=3)  2) 从缓存恢复旧仿真 (mount 时 setSimulationData)
   const lastPersistedDataRef = useRef<any>(null);
   useEffect(() => {
-    if (!simulationData) return;
+    if (!simulationData || simulationData.isPreview) return;
     // 避免对同一份数据重复持久化
     const dataFingerprint = JSON.stringify(simulationData.best || {}).slice(0, 100);
     if (dataFingerprint === lastPersistedDataRef.current) return;
@@ -1533,15 +1817,6 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
     mount.innerHTML = '';
     setPlotError('');
     setPlotReady(false);
-
-    if (!simulationData) {
-      sceneRef.current = null;
-      cameraRef.current = null;
-      rendererRef.current = null;
-      controlsRef.current = null;
-      setPlotReady(true);
-      return;
-    }
 
     try {
       const width = Math.max(320, mount.clientWidth || 320);
@@ -1631,7 +1906,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
       };
 
       const sampleSpl = buildSplSampler(splField);
-      addSplFloorMesh(scene, room, sampleSpl, minSplTarget, cmin, cmax);
+      addSplListeningPlane(scene, splField, sampleSpl, minSplTarget, cmin, cmax);
 
       const wSill = Math.min(1.0, room.height * 0.28);
       const wTop = Math.min(2.2, wallHeight - 0.5);
@@ -1961,7 +2236,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
     params.stageWidth,
     room,
     scenario,
-    simulationData,
+    displaySimulationData,
     speakers,
     splField,
   ]);
@@ -1972,7 +2247,15 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
         <div className="min-w-0 flex items-center gap-3">
           <h3 className="text-sm font-black text-slate-900 truncate">逆向设计方案生成</h3>
           <span className={`px-2 py-0.5 rounded-sm text-[11px] font-black border ${standardsPass ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : isSimulating ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
-            {isSimulating ? `迭代中 ${elapsedSeconds}s` : simulationData ? standardsPass ? '指标满足' : '需调整清单' : '待生成'}
+            {isSimulating
+              ? optimizationRound > 0 ? `实时优化 第 ${optimizationRound} 步` : '准备初始方案'
+              : simulationData?.isPreview
+                ? '初始布点'
+                : isPlaybackRunning
+                ? `优化回放 ${playbackIndex + 1}/${optimizationHistory.length}`
+                : simulationData
+                  ? standardsPass ? '指标满足' : '需调整清单'
+                  : '初始布点'}
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -1982,7 +2265,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
             disabled={isSimulating || speakerItems.length === 0}
             className={`h-8 px-3 rounded border text-[12px] font-black transition-all ${isSimulating || speakerItems.length === 0 ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed' : 'border-blue-200 bg-blue-600 text-white hover:bg-blue-700 shadow-sm'}`}
           >
-            {simulationData ? '重新生成' : '开始逆向优化'}
+            {simulationData && !simulationData.isPreview ? '重新生成' : '开始逆向优化'}
           </button>
           <button
             type="button"
@@ -2008,22 +2291,22 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
         </div>
         <div className="px-4 py-3 bg-white border-r border-slate-200">
           <div className="text-[11px] text-slate-400 font-black uppercase">SPL min/avg/max</div>
-          <div className="mt-1 text-sm font-black text-slate-900 tabular-nums">{simulationData ? `${splField.min.toFixed(1)} / ${splField.avg.toFixed(1)} / ${splField.max.toFixed(1)}` : '--'}</div>
+          <div className="mt-1 text-sm font-black text-slate-900 tabular-nums">{`${splField.min.toFixed(1)} / ${splField.avg.toFixed(1)} / ${splField.max.toFixed(1)}`}</div>
         </div>
         <div className="px-4 py-3 bg-white border-r border-slate-200">
           <div className="text-[11px] text-slate-400 font-black uppercase">不均匀度</div>
-          <div className="mt-1 text-sm font-black text-slate-900 tabular-nums">{simulationData ? `${Number(simulationData?.best?.nonuniformity || (splField.max - splField.min)).toFixed(1)} dB` : '--'}</div>
+          <div className="mt-1 text-sm font-black text-slate-900 tabular-nums">{`${Number(displayedMetrics?.nonuniformity ?? (splField.max - splField.min)).toFixed(1)} dB`}</div>
         </div>
         <div className="px-4 py-3 bg-white">
           <div className="text-[11px] text-slate-400 font-black uppercase">音箱数量</div>
-          <div className="mt-1 text-sm font-black text-slate-900 tabular-nums">{simulationData ? speakers.length : speakerItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0)}</div>
+          <div className="mt-1 text-sm font-black text-slate-900 tabular-nums">{speakers.length}</div>
         </div>
       </div>
 
       <div className="grid grid-cols-[minmax(0,1fr)_360px] min-h-0 flex-1">
         <div ref={scenePanelRef} className="relative min-h-[420px] bg-white border-r border-slate-200">
-          <div ref={plotRef} className={`absolute inset-0 bg-white ${simulationData ? '' : 'hidden'}`} />
-          {simulationData && !plotError && (
+          <div ref={plotRef} className="absolute inset-0 bg-white" />
+          {!plotError && (
             <div className="absolute left-3 top-5 z-10 rounded border border-slate-200/90 bg-white/90 px-2 py-2 shadow-sm backdrop-blur-[1px]">
               <div className="text-[10px] font-black text-slate-500">SPL dB</div>
               <div className="relative mt-1 h-56 w-[72px]">
@@ -2042,65 +2325,73 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
               </div>
             </div>
           )}
+          {simulationData && isReviewingOptimization && (
+            <div className="absolute left-1/2 bottom-4 z-20 w-[min(620px,calc(100%-32px))] -translate-x-1/2 rounded border border-slate-200 bg-white/95 px-3 py-3 shadow-lg backdrop-blur-sm">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  title={isPlaybackRunning ? '暂停优化回放' : '播放优化过程'}
+                  onClick={() => {
+                    if (!isPlaybackRunning && playbackIndex >= optimizationHistory.length - 1) {
+                      setPlaybackIndex(0);
+                    }
+                    setIsPlaybackRunning((value) => !value);
+                  }}
+                  className="h-8 w-8 shrink-0 rounded border border-slate-200 bg-white text-sm font-black text-slate-700 hover:bg-slate-50"
+                >
+                  {isPlaybackRunning ? 'Ⅱ' : '▶'}
+                </button>
+                <button
+                  type="button"
+                  title="上一步"
+                  onClick={() => {
+                    setIsPlaybackRunning(false);
+                    setPlaybackIndex((value) => Math.max(0, value - 1));
+                  }}
+                  className="h-8 w-8 shrink-0 rounded border border-slate-200 bg-white text-sm font-black text-slate-700 hover:bg-slate-50"
+                >
+                  ‹
+                </button>
+                <input
+                  aria-label="优化过程进度"
+                  type="range"
+                  min={0}
+                  max={Math.max(0, optimizationHistory.length - 1)}
+                  value={playbackIndex}
+                  onChange={(event) => {
+                    setIsPlaybackRunning(false);
+                    setPlaybackIndex(Number(event.target.value));
+                  }}
+                  className="min-w-0 flex-1 accent-blue-600"
+                />
+                <button
+                  type="button"
+                  title="下一步"
+                  onClick={() => {
+                    setIsPlaybackRunning(false);
+                    setPlaybackIndex((value) => Math.min(optimizationHistory.length - 1, value + 1));
+                  }}
+                  className="h-8 w-8 shrink-0 rounded border border-slate-200 bg-white text-sm font-black text-slate-700 hover:bg-slate-50"
+                >
+                  ›
+                </button>
+                <div className="w-32 shrink-0 text-right">
+                  <div className="truncate text-[11px] font-black text-slate-700">{activeOptimizationFrame?.label || '优化过程'}</div>
+                  <div className={`mt-0.5 text-[10px] font-black ${activeOptimizationFrame?.metrics.feasible ? 'text-emerald-600' : 'text-rose-600'}`}>
+                    {playbackIndex + 1}/{optimizationHistory.length} · {activeOptimizationFrame?.metrics.feasible ? '满足指标' : '尚未满足'}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+          {listenerArea && (
+            <div className="absolute right-3 top-3 z-10 rounded border border-slate-200 bg-white/90 px-3 py-2 text-[11px] font-bold text-slate-600 shadow-sm">
+              听音平面：房间中心 · {Number(listenerArea.length_m || room.length * 0.8).toFixed(1)} × {Number(listenerArea.width_m || room.width * 0.8).toFixed(1)} m · 高 1.0 m
+            </div>
+          )}
           {!plotReady && !plotError && (
             <div className="absolute inset-0 flex items-center justify-center text-[13px] font-bold text-slate-400 bg-white">
               {isSimulating ? '正在迭代优化位置、指向与增益...' : '正在加载三维逆向设计视图...'}
-            </div>
-          )}
-          {!isSimulating && !simulationData && plotReady && (
-            <div className="absolute inset-0 flex items-center justify-center bg-white/82 backdrop-blur-[1px]">
-              <div className="w-[360px] rounded border border-blue-100 bg-white shadow-lg p-5 text-center">
-                <div className="text-[13px] font-black text-slate-900">当前方案尚未生成逆向设计</div>
-                <div className="mt-2 text-[12px] leading-relaxed text-slate-500">
-                  点击右上角“开始逆向优化”，系统会以当前方案清单为输入，独立求解本方案的位置、指向和增益。
-                </div>
-                <button
-                  type="button"
-                  onClick={runInverseDesign}
-                  disabled={speakerItems.length === 0}
-                  className={`mt-4 h-9 px-4 rounded text-[12px] font-black ${speakerItems.length === 0 ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
-                >
-                  开始逆向优化
-                </button>
-              </div>
-            </div>
-          )}
-          {isSimulating && (
-            <div className="absolute inset-0 flex items-center justify-center bg-white/86 backdrop-blur-[1px]">
-              <div className="w-[460px] rounded border border-blue-100 bg-white shadow-xl p-5">
-                <div className="flex items-center justify-between">
-                  <div className="text-[13px] font-black text-slate-900">正在求解当前方案</div>
-                  <div className="text-[12px] font-mono font-black text-blue-600">
-                    {optimizationRound > 0 ? `第 ${optimizationRound}/20 轮` : `${elapsedSeconds}s`}
-                  </div>
-                </div>
-                <div className="mt-4 space-y-2">
-                  {OPTIMIZATION_STEPS.map((step, index) => {
-                    const active = index === optimizationStep;
-                    const done = index < optimizationStep;
-                    const label = index === 2 && optimizationRound > 0 ? `第 ${optimizationRound}/20 轮：优化位置、指向与增益` : step;
-                    return (
-                      <div key={step} className={`flex items-center gap-3 rounded border px-3 py-2 ${active ? 'border-blue-200 bg-blue-50' : done ? 'border-emerald-100 bg-emerald-50' : 'border-slate-100 bg-slate-50'}`}>
-                        <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-black ${active ? 'bg-blue-600 text-white animate-pulse' : done ? 'bg-emerald-500 text-white' : 'bg-slate-200 text-slate-500'}`}>
-                          {done ? '✓' : index + 1}
-                        </div>
-                        <div className={`text-[12px] font-bold ${active ? 'text-blue-700' : done ? 'text-emerald-700' : 'text-slate-400'}`}>
-                          {label}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="mt-4 h-2 rounded-full bg-slate-100 overflow-hidden">
-                  <div
-                    className="h-full bg-blue-600 transition-all duration-500"
-                    style={{ width: `${isSimulating ? Math.min(96, Math.max(8, (optimizationRound / 20) * 100)) : 100}%` }}
-                  />
-                </div>
-                <div className="mt-2 text-[11px] text-slate-400 font-bold">
-                  若提前满足国标约束，求解会直接结束。
-                </div>
-              </div>
             </div>
           )}
           {simulationError && plotReady && (
@@ -2117,6 +2408,39 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
 
         <aside className="min-h-0 overflow-auto bg-white">
           <div className="p-4 space-y-4">
+            {activeOptimizationFrame && (
+              <section>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-[12px] font-black text-slate-500">优化过程</div>
+                  <div className="text-[11px] font-mono font-black text-slate-400">
+                    {playbackIndex + 1}/{optimizationHistory.length}
+                  </div>
+                </div>
+                <div className={`rounded border px-3 py-3 ${activeOptimizationFrame.metrics.feasible ? 'border-emerald-200 bg-emerald-50' : 'border-rose-200 bg-rose-50'}`}>
+                  <div className={`text-[12px] font-black ${activeOptimizationFrame.metrics.feasible ? 'text-emerald-800' : 'text-rose-800'}`}>
+                    {activeOptimizationFrame.label}
+                  </div>
+                  <div className="mt-2 grid grid-cols-3 gap-2 text-center">
+                    <div>
+                      <div className="text-[10px] font-black text-slate-400">最低 SPL</div>
+                      <div className="mt-0.5 text-[12px] font-mono font-black text-slate-700">{activeOptimizationFrame.metrics.minSpl.toFixed(1)}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-black text-slate-400">不均匀度</div>
+                      <div className="mt-0.5 text-[12px] font-mono font-black text-slate-700">{activeOptimizationFrame.metrics.nonuniformity.toFixed(1)}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-black text-slate-400">余量</div>
+                      <div className="mt-0.5 text-[12px] font-mono font-black text-slate-700">{activeOptimizationFrame.metrics.headroom.toFixed(1)}</div>
+                    </div>
+                  </div>
+                  <div className={`mt-2 text-[11px] font-bold ${activeOptimizationFrame.metrics.feasible ? 'text-emerald-700' : 'text-rose-700'}`}>
+                    {activeOptimizationFrame.metrics.feasible ? '当前步骤已满足全部对标指标' : activeOptimizationFrame.metrics.reason || '当前步骤尚未满足全部对标指标'}
+                  </div>
+                </div>
+              </section>
+            )}
+
             <section>
               <div className="text-[12px] font-black text-slate-500 mb-2">音箱位置与指向</div>
               <div className="max-h-[300px] overflow-auto rounded border border-slate-200">
@@ -2129,7 +2453,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {simulationData && speakers.map((speaker, index) => (
+                    {speakers.map((speaker, index) => (
                       <tr key={`${speaker.role}-${index}`} className="text-slate-600">
                         <td className="px-2 py-2 font-bold">
                           <div className="text-slate-700">{speaker.sourceLabel || speaker.role}</div>
@@ -2139,13 +2463,6 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
                         <td className="px-2 py-2 font-mono text-[11px]">{formatVec(speaker.position)}</td>
                       </tr>
                     ))}
-                    {!simulationData && (
-                      <tr>
-                        <td colSpan={3} className="px-2 py-6 text-center text-slate-400 font-bold">
-                          当前方案尚未生成，请点击“开始逆向优化”。
-                        </td>
-                      </tr>
-                    )}
                   </tbody>
                 </table>
               </div>
@@ -2198,7 +2515,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {simulationData ? standardRows.map((row) => (
+                    {standardRows.map((row) => (
                       <tr key={row.name}>
                         <td className="px-2 py-2 font-bold text-slate-600">{row.name}</td>
                         <td className="px-2 py-2 font-mono text-slate-500">{row.standard}</td>
@@ -2207,13 +2524,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
                           {row.pass ? '满足' : '不满足'}
                         </td>
                       </tr>
-                    )) : (
-                      <tr>
-                        <td colSpan={4} className="px-2 py-6 text-center text-slate-400 font-bold">
-                          生成后显示国标指标对比。
-                        </td>
-                      </tr>
-                    )}
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -2225,7 +2536,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
             <section>
               <div className="text-[12px] font-black text-slate-500 mb-2">说明</div>
               <div className="rounded border border-blue-100 bg-blue-50 px-3 py-3 text-[12px] leading-relaxed text-blue-800">
-                当前不做设备选型，只按照方案清单中的音箱型号和数量，迭代优化摆放位置、安装高度、指向角和增益，使服务区声压级与声场不均匀度尽量满足对标指标。
+                当前不做设备选型，只按照方案清单中的音箱型号和数量，针对房间中心、长宽各 80%、高度 1 米的听音平面，迭代优化摆放位置、安装高度、指向角和增益。三维视图中的彩色平面即为唯一声学计算与国标对标区域。
               </div>
             </section>
           </div>

@@ -34,6 +34,12 @@ class OptimizationTimeBudgetExceeded(Exception):
     pass
 
 
+class FeasibleSolutionFound(Exception):
+    def __init__(self, vector: np.ndarray):
+        super().__init__("feasible solution found")
+        self.vector = np.asarray(vector, dtype=float).copy()
+
+
 def build_config(payload: dict) -> dict:
     room = payload["room"]
     listener = payload["listener"]
@@ -46,9 +52,10 @@ def build_config(payload: dict) -> dict:
     else:
         length = float(room["length"])
         width = float(room["width"])
-    front_margin = min(float(listener["frontMargin"]), length * 0.4)
-    rear_margin = min(float(listener["rearMargin"]), length * 0.35)
-    side_margin = min(float(listener["sideMargin"]), width * 0.35)
+    plane_length = length * 0.8
+    plane_width = width * 0.8
+    plane_x_min = (length - plane_length) / 2.0
+    plane_y_min = (width - plane_width) / 2.0
     bbox_area = length * width
     room_area = polygon_area(geometry["polygon"]) if geometry else bbox_area
     if geometry and bbox_area > 250:
@@ -72,13 +79,17 @@ def build_config(payload: dict) -> dict:
             "area_m2": round(float(room_area), 3),
         },
         "listener_area": {
-            "x_min_m": front_margin,
-            "x_max_m": max(front_margin + 0.5, length - rear_margin),
-            "y_min_m": side_margin,
-            "y_max_m": max(side_margin + 0.5, width - side_margin),
-            "ear_height_m": float(listener["earHeight"]),
-            "grid_x": max(7, round(length / 1.2)),
-            "grid_y": max(5, round(width / 1.2)),
+            "x_min_m": plane_x_min,
+            "x_max_m": plane_x_min + plane_length,
+            "y_min_m": plane_y_min,
+            "y_max_m": plane_y_min + plane_width,
+            "ear_height_m": 1.0,
+            "length_m": plane_length,
+            "width_m": plane_width,
+            "center_x_m": length / 2.0,
+            "center_y_m": width / 2.0,
+            "grid_x": max(9, round(plane_length / 0.8) + 1),
+            "grid_y": max(7, round(plane_width / 0.8) + 1),
         },
         "targets": {
             "min_spl_db": float(targets["minSpl"]),
@@ -103,13 +114,10 @@ def build_receiver_grid(config: dict) -> tuple[list[float], list[float], np.ndar
     area = config["listener_area"]
     xs = np.linspace(area["x_min_m"], min(area["x_max_m"], room["length_m"] - 0.5), area["grid_x"])
     ys = np.linspace(area["y_min_m"], min(area["y_max_m"], room["width_m"] - 0.5), area["grid_y"])
-    polygon = config.get("geometry", {}).get("polygon")
     receivers = []
     indices = []
     for x_idx, x in enumerate(xs):
         for y_idx, y in enumerate(ys):
-            if polygon and not point_in_polygon(float(x), float(y), polygon):
-                continue
             receivers.append((float(x), float(y), area["ear_height_m"]))
             indices.append((x_idx, y_idx))
     if not receivers:
@@ -292,9 +300,9 @@ def to_product(item: dict) -> Product:
     )
 
 
-def optimize(payload: dict) -> dict:
+def optimize(payload: dict, progress_callback=None) -> dict:
     if payload.get("planSpeakers"):
-        return optimize_fixed_plan(payload)
+        return optimize_fixed_plan(payload, progress_callback)
 
     started = time.perf_counter()
     config = build_config(payload)
@@ -382,7 +390,7 @@ def optimize(payload: dict) -> dict:
     return response
 
 
-def optimize_fixed_plan(payload: dict) -> dict:
+def optimize_fixed_plan(payload: dict, progress_callback=None) -> dict:
     started = time.perf_counter()
     config = build_config(payload)
     catalog_items = load_catalog(payload)
@@ -409,6 +417,13 @@ def optimize_fixed_plan(payload: dict) -> dict:
         raise ValueError("当前方案中没有可用于固定布点仿真的音箱型号")
 
     xs, ys, receivers, grid_indices = build_receiver_grid(config)
+    if progress_callback:
+        progress_callback({
+            "type": "setup",
+            "config": config,
+            "receivers": receivers.round(6).tolist(),
+            "grid": {"xs": xs, "ys": ys},
+        })
     candidates = generate_fixed_plan_candidates(units, product_map, config)
     if not candidates:
         raise ValueError("当前方案音箱数量无法生成固定布点方案")
@@ -419,15 +434,63 @@ def optimize_fixed_plan(payload: dict) -> dict:
         preliminary.append((result, layout_name_candidate, speakers))
 
     preliminary.sort(key=lambda item: fixed_plan_order_key(item[0], config))
-    refine_targets = preliminary[: min(2, len(preliminary))]
+    symmetric_preliminary = [
+        item for item in preliminary
+        if item[1].startswith("fixed_xy_symmetric_xy_symmetric_")
+    ]
+    refine_pool = symmetric_preliminary or preliminary
+    refine_targets = refine_pool[:1] if refine_pool[0][0].feasible else refine_pool[: min(2, len(refine_pool))]
 
     results: list[CandidateResult] = []
     fields = {}
-    for _preliminary_result, layout_name_candidate, speakers in refine_targets:
-        speakers = refine_fixed_plan_layout(layout_name_candidate, speakers, product_map, config, receivers)
-        result, field = evaluate_mixed_layout(layout_name_candidate, speakers, product_map, config, receivers)
+    histories = {}
+    for preliminary_result, layout_name_candidate, speakers in refine_targets:
+        should_stream = progress_callback if not results else None
+        if preliminary_result.feasible:
+            result, field = evaluate_mixed_layout(layout_name_candidate, speakers, product_map, config, receivers)
+            history = [
+                build_optimization_frame(
+                    result,
+                    field,
+                    xs,
+                    ys,
+                    grid_indices,
+                    "初始布点已满足指标",
+                    0,
+                )
+            ]
+            if should_stream:
+                should_stream({"type": "frame", "frame": history[0]})
+        else:
+            speakers, history = refine_fixed_plan_layout(
+                layout_name_candidate,
+                speakers,
+                product_map,
+                config,
+                receivers,
+                xs,
+                ys,
+                grid_indices,
+                should_stream,
+            )
+            result, field = evaluate_mixed_layout(layout_name_candidate, speakers, product_map, config, receivers)
         results.append(result)
         fields[(result.model, result.layout)] = field
+        if not history or not history[-1]["metrics"]["feasible"]:
+            history.append(
+                build_optimization_frame(
+                    result,
+                    field,
+                    xs,
+                    ys,
+                    grid_indices,
+                    "精调完成",
+                    len(history),
+                )
+            )
+        histories[(result.model, result.layout)] = history
+        if result.feasible:
+            break
 
     boosted_results: list[CandidateResult] = []
     boosted_fields = dict(fields)
@@ -441,6 +504,24 @@ def optimize_fixed_plan(payload: dict) -> dict:
     best = boosted_results[0]
     best_field = boosted_fields[(best.model, best.layout)]
     candidate_results = boosted_results[: min(8, len(boosted_results))]
+    first_refined_key = next(iter(histories), None)
+    optimization_history = list(histories.get(first_refined_key, []))
+    if not optimization_history or (
+        abs(float(optimization_history[-1]["metrics"]["minSpl"]) - best.min_spl_db) > 1.0e-6
+        or abs(float(optimization_history[-1]["metrics"]["nonuniformity"]) - best.nonuniformity_db) > 1.0e-6
+    ):
+        final_frame = build_optimization_frame(
+            best,
+            best_field,
+            xs,
+            ys,
+            grid_indices,
+            "全局最佳方案",
+            len(optimization_history),
+        )
+        optimization_history.append(final_frame)
+        if progress_callback:
+            progress_callback({"type": "frame", "frame": final_frame})
 
     response = {
         "config": config,
@@ -460,6 +541,7 @@ def optimize_fixed_plan(payload: dict) -> dict:
             for item in candidate_results
         ],
         "mode": "fixed_plan",
+        "optimizationHistory": optimization_history,
     }
     if not best.feasible:
         adjustment = build_fixed_plan_adjustment(
@@ -636,8 +718,11 @@ def layout_quality_penalty(speakers: list[Speaker], config: dict) -> float:
             dist_y = 0.0
         if abs(point[0] - center_x) <= lx * 0.06:
             dist_x = 0.0
-        mirrored.append(min(dist_y / max(ly, 0.1), dist_x / max(lx, 0.1)))
-    symmetry_penalty = float(np.mean(mirrored)) * 8.0
+        mirrored.append(
+            dist_y / max(ly, 0.1)
+            + dist_x / max(lx, 0.1)
+        )
+    symmetry_penalty = float(np.mean(mirrored)) * 36.0
 
     center_distances = np.linalg.norm(xy - np.asarray([center_x, center_y]), axis=1)
     central_ratio = float(np.mean(center_distances < min(lx, ly) * 0.18))
@@ -770,7 +855,11 @@ def refine_fixed_plan_layout(
     product_map: dict[str, Product],
     config: dict,
     receivers: np.ndarray,
-) -> list[Speaker]:
+    xs: list[float],
+    ys: list[float],
+    grid_indices: list[tuple[int, int]],
+    progress_callback=None,
+) -> tuple[list[Speaker], list[dict]]:
     room = config["room"]
     area = config["listener_area"]
     lx, ly, lz = room["length_m"], room["width_m"], room["height_m"]
@@ -800,6 +889,49 @@ def refine_fixed_plan_layout(
     def is_ceiling_speaker(speaker: Speaker) -> bool:
         product = product_map[speaker.model]
         return speaker.layout_role.startswith("ceiling") or (product.coverage_v_deg >= 95 and product.continuous_spl_db <= 110)
+
+    xy_symmetry_orbits: list[list[int]] = []
+    if "xy_symmetric" in layout_name_candidate:
+        symmetry_groups = [
+            [idx for idx, speaker in enumerate(initial_speakers) if not is_ceiling_speaker(speaker)],
+            [idx for idx, speaker in enumerate(initial_speakers) if is_ceiling_speaker(speaker)],
+        ]
+        for group in symmetry_groups:
+            cursor = 0
+            while cursor < len(group):
+                remaining = len(group) - cursor
+                orbit_size = 4 if remaining >= 4 else 2 if remaining >= 2 else 1
+                xy_symmetry_orbits.append(group[cursor:cursor + orbit_size])
+                cursor += orbit_size
+
+    def project_xy_symmetry(speakers: list[Speaker]) -> list[Speaker]:
+        if not xy_symmetry_orbits:
+            return speakers
+        projected = list(speakers)
+        center_x = lx / 2.0
+        center_y = ly / 2.0
+        for orbit in xy_symmetry_orbits:
+            if len(orbit) == 1:
+                idx = orbit[0]
+                projected[idx] = clone_speaker(
+                    projected[idx],
+                    position=(center_x, center_y, projected[idx].position[2]),
+                    aim=(center_x, center_y, area["ear_height_m"]),
+                )
+                continue
+            dx = float(np.mean([abs(projected[idx].position[0] - center_x) for idx in orbit]))
+            dy = float(np.mean([abs(projected[idx].position[1] - center_y) for idx in orbit]))
+            z = float(np.mean([projected[idx].position[2] for idx in orbit]))
+            for idx in orbit:
+                initial = initial_speakers[idx]
+                sign_x = -1.0 if initial.position[0] < center_x else 1.0
+                sign_y = 0.0 if abs(initial.position[1] - center_y) < 1.0e-6 else (-1.0 if initial.position[1] < center_y else 1.0)
+                projected[idx] = clone_speaker(
+                    projected[idx],
+                    position=(center_x + sign_x * dx, center_y + sign_y * dy, z),
+                    aim=(center_x, center_y, area["ear_height_m"]),
+                )
+        return projected
 
     for idx, speaker in enumerate(initial_speakers):
         if idx in used_pair_indices or idx in centerline_indices:
@@ -916,7 +1048,7 @@ def refine_fixed_plan_layout(
                 position = (float(values[0]), float(values[1]), float(values[2]))
                 aim = (position[0], position[1], area["ear_height_m"]) if is_ceiling_speaker(speaker) else (float(values[3]), float(values[4]), area["ear_height_m"])
                 speakers[idx] = clone_speaker(speaker, position=position, aim=aim)
-        return [speaker for speaker in speakers if speaker is not None]
+        return project_xy_symmetry([speaker for speaker in speakers if speaker is not None])
 
     def spl_field_for(vector: np.ndarray) -> tuple[np.ndarray, list[Speaker]]:
         speakers = unpack(vector)
@@ -947,6 +1079,10 @@ def refine_fixed_plan_layout(
             else:
                 gains[idx] = gain
             cursor += 6
+        for orbit in xy_symmetry_orbits:
+            orbit_gain = float(np.mean([gains[idx] for idx in orbit]))
+            for idx in orbit:
+                gains[idx] = orbit_gain
         return gains
 
     def engineering_penalty(speakers: list[Speaker]) -> float:
@@ -985,6 +1121,71 @@ def refine_fixed_plan_layout(
             + mean_error * 0.2
             + engineering_penalty(speakers)
         )
+
+    def vector_is_feasible(vector: np.ndarray) -> bool:
+        field, _speakers = spl_field_for(vector)
+        min_spl = float(np.min(field))
+        nonuniformity = float(np.max(field) - min_spl)
+        headroom = min_spl - targets["min_spl_db"]
+        return (
+            min_spl >= targets["min_spl_db"]
+            and nonuniformity <= targets["max_nonuniformity_db"]
+            and headroom >= targets["min_headroom_db"]
+        )
+
+    optimization_history: list[dict] = []
+    best_recorded_value = float("inf")
+
+    def record_frame(vector: np.ndarray, label: str, force: bool = False) -> None:
+        nonlocal best_recorded_value, deadline
+        if not progress_callback:
+            return
+        observer_started = time.perf_counter()
+        clipped = clipped_vector(vector)
+        try:
+            value = objective(clipped)
+        except OptimizationTimeBudgetExceeded:
+            deadline += time.perf_counter() - observer_started
+            return
+        if not force and value >= best_recorded_value - 1.0e-5:
+            deadline += time.perf_counter() - observer_started
+            return
+        field, unpacked_speakers = spl_field_for(clipped)
+        gains = unpack_gains(clipped)
+        speakers_with_gain = [
+            clone_speaker(speaker, gain_db=float(gains[idx]))
+            for idx, speaker in enumerate(unpacked_speakers)
+        ]
+        min_spl = float(np.min(field))
+        max_spl = float(np.max(field))
+        avg_spl = float(10.0 * np.log10(np.mean(10.0 ** (field / 10.0)) + EPS))
+        nonuniformity = max_spl - min_spl
+        headroom = min_spl - targets["min_spl_db"]
+        failures = build_candidate_failures(min_spl, nonuniformity, headroom, targets)
+        frame = {
+                "index": len(optimization_history),
+                "label": label,
+                "objective": round(float(value), 6),
+                "metrics": {
+                    "feasible": not failures,
+                    "minSpl": round(min_spl, 6),
+                    "avgSpl": round(avg_spl, 6),
+                    "maxSpl": round(max_spl, 6),
+                    "nonuniformity": round(nonuniformity, 6),
+                    "headroom": round(headroom, 6),
+                    "reason": "达标" if not failures else "；".join(failures),
+                },
+                "speakers": serialize_speakers(speakers_with_gain),
+                "grid": {
+                    "xs": xs,
+                    "ys": ys,
+                    "field": field_to_grid(field, xs, ys, grid_indices),
+                },
+            }
+        optimization_history.append(frame)
+        progress_callback({"type": "frame", "frame": frame})
+        best_recorded_value = min(best_recorded_value, float(value))
+        deadline += time.perf_counter() - observer_started
 
     def constraint_min_spl(vector: np.ndarray) -> float:
         field, _speakers = spl_field_for(vector)
@@ -1095,23 +1296,62 @@ def refine_fixed_plan_layout(
     initial = pack(initial_speakers)
     best_vector = clipped_vector(initial)
     best_value = objective(best_vector)
+    record_frame(best_vector, "初始布点", force=True)
+    if vector_is_feasible(best_vector):
+        optimized = unpack(best_vector)
+        optimized_gains = unpack_gains(best_vector)
+        return [
+            Speaker(
+                speaker.model,
+                speaker.position,
+                speaker.aim,
+                speaker.layout_role,
+                float(optimized_gains[idx]),
+                source_item_id=speaker.source_item_id,
+                source_row_index=speaker.source_row_index,
+                source_name=speaker.source_name,
+                source_type=speaker.source_type,
+                source_unit_index=speaker.source_unit_index,
+                source_label=speaker.source_label,
+            )
+            for idx, speaker in enumerate(optimized)
+        ], optimization_history
+
+    feasible_vector = None
     for start_vector in spread_start_vectors(initial):
         try:
+            def local_callback(vector: np.ndarray) -> None:
+                record_frame(vector, f"局部优化 {len(optimization_history)}")
+                if vector_is_feasible(vector):
+                    raise FeasibleSolutionFound(clipped_vector(vector))
+
             local = minimize(
                 objective,
                 start_vector,
                 method="SLSQP",
                 bounds=bounds,
                 constraints=constraints,
+                callback=local_callback,
                 options={"maxiter": max_steps, "ftol": 1.0e-5, "disp": False},
             )
             candidate_vector = local.x if local.success or np.isfinite(local.fun) else start_vector
             candidate_value = objective(candidate_vector)
+            if vector_is_feasible(candidate_vector):
+                feasible_vector = clipped_vector(candidate_vector)
+                record_frame(feasible_vector, "达到国标，停止优化", force=True)
+                break
+        except FeasibleSolutionFound as found:
+            feasible_vector = clipped_vector(found.vector)
+            record_frame(feasible_vector, "达到国标，停止优化", force=True)
+            break
         except OptimizationTimeBudgetExceeded:
             break
         if np.isfinite(candidate_value) and candidate_value < best_value:
             best_vector = clipped_vector(candidate_vector)
             best_value = candidate_value
+
+    if feasible_vector is not None:
+        best_vector = feasible_vector
 
     field, _speakers = spl_field_for(best_vector)
     constraints_met = (
@@ -1122,6 +1362,12 @@ def refine_fixed_plan_layout(
     variable_count = len(bounds) // 6
     if not constraints_met and variable_count <= 5 and max_steps >= 6 and time.perf_counter() < deadline:
         try:
+            def global_callback(vector: np.ndarray, _convergence: float) -> bool:
+                record_frame(vector, f"全局优化 {len(optimization_history)}")
+                if vector_is_feasible(vector):
+                    raise FeasibleSolutionFound(clipped_vector(vector))
+                return False
+
             global_result = differential_evolution(
                 objective,
                 bounds=bounds,
@@ -1133,15 +1379,22 @@ def refine_fixed_plan_layout(
                 seed=17,
                 workers=1,
                 updating="immediate",
+                callback=global_callback,
             )
-            if np.isfinite(global_result.fun) and global_result.fun < best_value:
+            if vector_is_feasible(global_result.x):
                 best_vector = clipped_vector(global_result.x)
+                record_frame(best_vector, "达到国标，停止优化", force=True)
+            elif np.isfinite(global_result.fun) and global_result.fun < best_value:
+                best_vector = clipped_vector(global_result.x)
+        except FeasibleSolutionFound as found:
+            best_vector = clipped_vector(found.vector)
+            record_frame(best_vector, "达到国标，停止优化", force=True)
         except OptimizationTimeBudgetExceeded:
             pass
     optimized_vector = best_vector
     optimized = unpack(optimized_vector)
     optimized_gains = unpack_gains(optimized_vector)
-    return [
+    optimized_speakers = [
         Speaker(
             speaker.model,
             speaker.position,
@@ -1157,6 +1410,9 @@ def refine_fixed_plan_layout(
         )
         for idx, speaker in enumerate(optimized)
     ]
+    if not optimization_history or not optimization_history[-1]["metrics"]["feasible"]:
+        record_frame(optimized_vector, "位置与指向优化完成", force=True)
+    return optimized_speakers, optimization_history
 
 
 def generate_fixed_plan_candidates(units: list[dict], product_map: dict[str, Product], config: dict) -> list[tuple[str, list[Speaker]]]:
@@ -1175,8 +1431,8 @@ def generate_fixed_plan_candidates(units: list[dict], product_map: dict[str, Pro
     ceiling_ids = {id(unit) for unit in ceiling_units}
     wall_units = [unit for unit in units if id(unit) not in ceiling_ids]
     candidates: list[tuple[str, list[Speaker]]] = []
-    wall_modes = ("front_distributed", "uniform", "side_distributed_mid", "side_distributed_rear")
-    ceiling_modes = ("balanced", "uniform", "mid", "rear", "front")
+    wall_modes = ("xy_symmetric", "front_distributed", "uniform", "side_distributed_mid", "side_distributed_rear")
+    ceiling_modes = ("xy_symmetric", "balanced", "uniform", "mid", "rear", "front")
     seen = set()
     for wall_mode in wall_modes:
         wall_speakers = fixed_wall_speakers(wall_units, wall_mode, lx, ly, z_wall, area)
@@ -1241,6 +1497,40 @@ def group_units_for_symmetry(units: list[dict]) -> list[dict]:
     return ordered
 
 
+def xy_symmetric_slots(count: int, lx: float, ly: float, area: dict) -> list[tuple[float, float]]:
+    if count <= 0:
+        return []
+    center_x = lx / 2.0
+    center_y = ly / 2.0
+    max_dx = max(0.5, min(center_x - 0.5, (area["x_max_m"] - area["x_min_m"]) * 0.36))
+    max_dy = max(0.5, min(center_y - 0.5, (area["y_max_m"] - area["y_min_m"]) * 0.36))
+    slots: list[tuple[float, float]] = []
+    remaining = count
+    orbit_index = 0
+    while remaining >= 4:
+        scale = max(0.45, 1.0 - orbit_index * 0.22)
+        dx = max_dx * scale
+        dy = max_dy * scale
+        slots.extend([
+            (center_x - dx, center_y - dy),
+            (center_x - dx, center_y + dy),
+            (center_x + dx, center_y - dy),
+            (center_x + dx, center_y + dy),
+        ])
+        remaining -= 4
+        orbit_index += 1
+    if remaining >= 2:
+        dx = max_dx * max(0.4, 0.72 - orbit_index * 0.18)
+        slots.extend([
+            (center_x - dx, center_y),
+            (center_x + dx, center_y),
+        ])
+        remaining -= 2
+    if remaining == 1:
+        slots.append((center_x, center_y))
+    return slots[:count]
+
+
 def fixed_wall_speakers(units: list[dict], mode: str, lx: float, ly: float, z: float, area: dict) -> list[Speaker]:
     if not units:
         return []
@@ -1250,6 +1540,14 @@ def fixed_wall_speakers(units: list[dict], mode: str, lx: float, ly: float, z: f
     indoor_target = ((area["x_min_m"] + area["x_max_m"]) / 2, ly / 2, ear)
     rear_target = (0.72 * lx, ly / 2, ear)
     center_target = (0.55 * lx, ly / 2, ear)
+
+    if mode == "xy_symmetric":
+        slots = xy_symmetric_slots(len(units), lx, ly, area)
+        target = (lx / 2, ly / 2, ear)
+        return [
+            make_fixed_speaker(unit, (float(x), float(y), z), target, f"xy_symmetric_{idx}")
+            for idx, (unit, (x, y)) in enumerate(zip(units, slots), 1)
+        ]
 
     if mode == "uniform":
         paired_units = list(units)
@@ -1327,6 +1625,21 @@ def fixed_ceiling_speakers(units: list[dict], z: float, lx: float, ly: float, ar
     y_min = min(ly / 2, y_margin)
     y_max = max(ly / 2, ly - y_margin)
     center_y = ly / 2
+    if mode == "xy_symmetric":
+        slots = xy_symmetric_slots(count, lx, ly, area)
+        speakers: list[Speaker] = []
+        for idx, (unit, slot) in enumerate(zip(units, slots), 1):
+            x, y = float(slot[0]), float(slot[1])
+            speakers.append(
+                make_fixed_speaker(
+                    unit,
+                    (x, y, z),
+                    (x, y, area["ear_height_m"]),
+                    f"ceiling_zone_{idx}",
+                )
+            )
+        return speakers
+
     if mode == "uniform":
         pair_count = count // 2
         x_start = min(lx - 0.8, max(0.8, area["x_min_m"]))
@@ -1985,6 +2298,57 @@ def result_order_key(result) -> tuple[int, int, float, float, float]:
     )
 
 
+def serialize_speakers(speakers: list[Speaker]) -> list[dict]:
+    return [
+        {
+            "model": speaker.model,
+            "position": speaker.position,
+            "aim": speaker.aim,
+            "role": speaker.layout_role,
+            "gainDb": speaker.gain_db,
+            "yawDeg": speaker_angles(speaker)[0],
+            "pitchDeg": speaker_angles(speaker)[1],
+            "sourceItemId": speaker.source_item_id,
+            "sourceRowIndex": speaker.source_row_index,
+            "sourceName": speaker.source_name,
+            "sourceType": speaker.source_type,
+            "sourceUnitIndex": speaker.source_unit_index,
+            "sourceLabel": speaker.source_label,
+        }
+        for speaker in speakers
+    ]
+
+
+def build_optimization_frame(
+    result: CandidateResult,
+    field: np.ndarray,
+    xs: list[float],
+    ys: list[float],
+    grid_indices: list[tuple[int, int]],
+    label: str,
+    index: int,
+) -> dict:
+    return {
+        "index": index,
+        "label": label,
+        "metrics": {
+            "feasible": result.feasible,
+            "minSpl": result.min_spl_db,
+            "avgSpl": result.avg_spl_db,
+            "maxSpl": result.max_spl_db,
+            "nonuniformity": result.nonuniformity_db,
+            "headroom": result.headroom_db,
+            "reason": result.reason,
+        },
+        "speakers": serialize_speakers(result.speakers),
+        "grid": {
+            "xs": xs,
+            "ys": ys,
+            "field": field_to_grid(field, xs, ys, grid_indices),
+        },
+    }
+
+
 def serialize_result(result, include_speakers: bool = True, field: list[list[float]] | None = None) -> dict:
     data = {
         "feasible": result.feasible,
@@ -2003,24 +2367,7 @@ def serialize_result(result, include_speakers: bool = True, field: list[list[flo
         "reason": result.reason,
     }
     if include_speakers:
-        data["speakers"] = [
-            {
-                "model": speaker.model,
-                "position": speaker.position,
-                "aim": speaker.aim,
-                "role": speaker.layout_role,
-                "gainDb": speaker.gain_db,
-                "yawDeg": speaker_angles(speaker)[0],
-                "pitchDeg": speaker_angles(speaker)[1],
-                "sourceItemId": speaker.source_item_id,
-                "sourceRowIndex": speaker.source_row_index,
-                "sourceName": speaker.source_name,
-                "sourceType": speaker.source_type,
-                "sourceUnitIndex": speaker.source_unit_index,
-                "sourceLabel": speaker.source_label,
-            }
-            for speaker in result.speakers
-        ]
+        data["speakers"] = serialize_speakers(result.speakers)
     if field is not None:
         data["field"] = field
     return data

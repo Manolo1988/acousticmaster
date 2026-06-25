@@ -3240,7 +3240,7 @@ const runPythonSimulation = async (payload) => {
   throw new Error(`${lastError?.message || "Python 启动失败"}; tried=${candidates.join(", ")}`);
 };
 
-app.post("/api/simulation/run", async (req, res) => {
+const prepareSimulationRequest = async (req) => {
   const params = req.body?.params || {};
   const items = Array.isArray(req.body?.items) ? req.body.items : [];
   const speakerItems = items
@@ -3248,100 +3248,205 @@ app.post("/api/simulation/run", async (req, res) => {
     .filter(isSimulationSpeakerItem);
 
   if (speakerItems.length === 0) {
-    return res.status(400).json({ error: "当前方案中未找到可用于仿真的音箱设备" });
+    const error = new Error("当前方案中未找到可用于仿真的音箱设备");
+    error.statusCode = 400;
+    throw error;
   }
 
-  try {
-    const catalogByModel = new Map();
-    const missing = [];
-    const planSpeakers = [];
-    for (const item of speakerItems) {
-      const model = String(item.model || "").trim();
-      const quantity = Math.max(1, Math.floor(Number(item.quantity || 1)));
-      if (model) {
-        planSpeakers.push({
-          itemId: String(item.id || "").trim(),
-          rowIndex: item.__sourceRowIndex,
-          model,
-          name: String(item.name || model).trim(),
-          type: String(item.type || "").trim(),
-          quantity,
-          label: `${item.__sourceRowIndex}. ${item.type || "音箱"} / ${item.name || model} / ${model}`
-        });
-      }
-
-      const record = await resolveSimulationSpeakerRecord(item);
-      if (!record?.row) {
-        missing.push(`${item.name || ""} ${item.model || ""}`.trim());
-        const estimated = buildEstimatedSimulationCatalogItem(item);
-        if (estimated.model && !catalogByModel.has(estimated.model)) {
-          catalogByModel.set(estimated.model, estimated);
-        }
-        continue;
-      }
-      const catalogItem = buildSimulationCatalogItem(record.row, item);
-      if (catalogItem.error) {
-        missing.push(`${item.name || ""} ${item.model || ""}: ${catalogItem.error}`);
-        const estimated = buildEstimatedSimulationCatalogItem(item);
-        if (estimated.model && !catalogByModel.has(estimated.model)) {
-          catalogByModel.set(estimated.model, estimated);
-        }
-        continue;
-      }
-      if (!catalogByModel.has(catalogItem.model)) {
-        catalogByModel.set(catalogItem.model, catalogItem);
-      }
-    }
-
-    const catalog = Array.from(catalogByModel.values());
-    if (catalog.length === 0) {
-      return res.status(422).json({
-        error: "没有从数据库解析到可用的音箱声学参数",
-        missing
+  const catalogByModel = new Map();
+  const missing = [];
+  const planSpeakers = [];
+  for (const item of speakerItems) {
+    const model = String(item.model || "").trim();
+    const quantity = Math.max(1, Math.floor(Number(item.quantity || 1)));
+    if (model) {
+      planSpeakers.push({
+        itemId: String(item.id || "").trim(),
+        rowIndex: item.__sourceRowIndex,
+        model,
+        name: String(item.name || model).trim(),
+        type: String(item.type || "").trim(),
+        quantity,
+        label: `${item.__sourceRowIndex}. ${item.type || "音箱"} / ${item.name || model} / ${model}`
       });
     }
 
-    const payload = {
-      room: {
-        length: Number(params.length || 20),
-        width: Number(params.width || 10),
-        height: Number(params.height || 8)
-      },
-      listener: {
-        frontMargin: Number(req.body?.listener?.frontMargin || 1.2),
-        rearMargin: Number(req.body?.listener?.rearMargin || 0.8),
-        sideMargin: Number(req.body?.listener?.sideMargin || 0.7),
-        earHeight: Number(req.body?.listener?.earHeight || 1.2)
-      },
-      targets: {
-        minSpl: Number(req.body?.targets?.minSpl || 95),
-        maxUniformity: Number(req.body?.targets?.maxUniformity || 8),
-        minHeadroom: Number(req.body?.targets?.minHeadroom ?? 3)
-      },
-      optimizer: {
-        maxSteps: 20
-      },
-      models: catalog.map((entry) => entry.model),
-      planSpeakers,
-      catalog,
-      geometry: req.body?.geometry || null
-    };
+    const record = await resolveSimulationSpeakerRecord(item);
+    if (!record?.row) {
+      missing.push(`${item.name || ""} ${item.model || ""}`.trim());
+      const estimated = buildEstimatedSimulationCatalogItem(item);
+      if (estimated.model && !catalogByModel.has(estimated.model)) {
+        catalogByModel.set(estimated.model, estimated);
+      }
+      continue;
+    }
+    const catalogItem = buildSimulationCatalogItem(record.row, item);
+    if (catalogItem.error) {
+      missing.push(`${item.name || ""} ${item.model || ""}: ${catalogItem.error}`);
+      const estimated = buildEstimatedSimulationCatalogItem(item);
+      if (estimated.model && !catalogByModel.has(estimated.model)) {
+        catalogByModel.set(estimated.model, estimated);
+      }
+      continue;
+    }
+    if (!catalogByModel.has(catalogItem.model)) {
+      catalogByModel.set(catalogItem.model, catalogItem);
+    }
+  }
 
+  const catalog = Array.from(catalogByModel.values());
+  if (catalog.length === 0) {
+    const error = new Error("没有从数据库解析到可用的音箱声学参数");
+    error.statusCode = 422;
+    error.missing = missing;
+    throw error;
+  }
+
+  const payload = {
+    room: {
+      length: Number(params.length || 20),
+      width: Number(params.width || 10),
+      height: Number(params.height || 8)
+    },
+    listener: {
+      frontMargin: Number(req.body?.listener?.frontMargin || 1.2),
+      rearMargin: Number(req.body?.listener?.rearMargin || 0.8),
+      sideMargin: Number(req.body?.listener?.sideMargin || 0.7),
+      earHeight: Number(req.body?.listener?.earHeight || 1)
+    },
+    targets: {
+      minSpl: Number(req.body?.targets?.minSpl || 95),
+      maxUniformity: Number(req.body?.targets?.maxUniformity || 8),
+      minHeadroom: Number(req.body?.targets?.minHeadroom ?? 3)
+    },
+    optimizer: {
+      maxSteps: 20
+    },
+    models: catalog.map((entry) => entry.model),
+    planSpeakers,
+    catalog,
+    geometry: req.body?.geometry || null
+  };
+
+  return {
+    payload,
+    source: { speakerItems, catalog, missing }
+  };
+};
+
+app.post("/api/simulation/run", async (req, res) => {
+  try {
+    const { payload, source } = await prepareSimulationRequest(req);
     const result = await runPythonSimulation(payload);
     res.json({
       ...result,
-      source: {
-        speakerItems,
-        catalog,
-        missing
-      }
+      source
     });
   } catch (error) {
     console.error("❌ Simulation failed:", error.message);
-    res.status(500).json({
+    res.status(error.statusCode || 500).json({
       error: "Failed to run acoustic simulation",
-      details: error.message
+      details: error.message,
+      missing: error.missing
     });
+  }
+});
+
+app.post("/api/simulation/run-stream", async (req, res) => {
+  let child = null;
+  let timer = null;
+  const sendEvent = (event) => {
+    if (!res.writableEnded) res.write(`${JSON.stringify(event)}\n`);
+  };
+
+  try {
+    const { payload, source } = await prepareSimulationRequest(req);
+    const pythonCommand = getSimulationPythonCandidates()[0];
+    if (!pythonCommand) {
+      throw new Error("未找到可用 Python 解释器，请安装 conda 环境 sound，或设置 SIM_PYTHON_COMMAND");
+    }
+
+    res.status(200);
+    res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders();
+    sendEvent({ type: "source", source });
+
+    const projectRoot = fileURLToPath(new URL("../", import.meta.url));
+    const scriptPath = fileURLToPath(new URL("../sim/run_simulation.py", import.meta.url));
+    const timeoutMs = Number(process.env.SIMULATION_TIMEOUT_MS || 90000);
+    child = spawn(pythonCommand, [scriptPath, "--stream"], {
+      cwd: projectRoot,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+
+    let stdoutBuffer = "";
+    let stderr = "";
+    timer = setTimeout(() => {
+      child?.kill("SIGKILL");
+      sendEvent({
+        type: "error",
+        error: `逆向设计求解超过 ${Math.round(timeoutMs / 1000)} 秒，请减少音箱数量或放宽约束后重试`
+      });
+      res.end();
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => {
+      stdoutBuffer += chunk.toString();
+      const lines = stdoutBuffer.split("\n");
+      stdoutBuffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const event = JSON.parse(line);
+          if (event.type === "result" && event.result) {
+            event.result.source = source;
+          }
+          sendEvent(event);
+        } catch (error) {
+          sendEvent({ type: "error", error: `仿真流解析失败: ${error.message}` });
+        }
+      }
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (error) => {
+      sendEvent({ type: "error", error: `${error.message} (${pythonCommand})` });
+      res.end();
+    });
+    child.on("close", (code) => {
+      if (timer) clearTimeout(timer);
+      if (stdoutBuffer.trim()) {
+        try {
+          const event = JSON.parse(stdoutBuffer);
+          if (event.type === "result" && event.result) event.result.source = source;
+          sendEvent(event);
+        } catch {
+          // A complete stream event is normally newline-terminated.
+        }
+      }
+      if (code !== 0 && !res.writableEnded) {
+        sendEvent({ type: "error", error: stderr || `仿真进程退出码 ${code}` });
+      }
+      if (!res.writableEnded) res.end();
+    });
+    res.on("close", () => {
+      if (!res.writableEnded) child?.kill("SIGTERM");
+    });
+    child.stdin.end(JSON.stringify(payload));
+  } catch (error) {
+    if (timer) clearTimeout(timer);
+    if (!res.headersSent) {
+      return res.status(error.statusCode || 500).json({
+        error: "Failed to run acoustic simulation",
+        details: error.message,
+        missing: error.missing
+      });
+    }
+    sendEvent({ type: "error", error: error.message });
+    res.end();
   }
 });
 

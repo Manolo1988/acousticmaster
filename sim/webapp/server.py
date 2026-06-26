@@ -890,6 +890,11 @@ def refine_fixed_plan_layout(
         product = product_map[speaker.model]
         return speaker.layout_role.startswith("ceiling") or (product.coverage_v_deg >= 95 and product.continuous_spl_db <= 110)
 
+    def aim_for_speaker(speaker: Speaker, position: tuple[float, float, float], fallback_aim: tuple[float, float, float]) -> tuple[float, float, float]:
+        if is_ceiling_speaker(speaker):
+            return (position[0], position[1], area["ear_height_m"])
+        return fallback_aim
+
     xy_symmetry_orbits: list[list[int]] = []
     if "xy_symmetric" in layout_name_candidate:
         symmetry_groups = [
@@ -916,7 +921,11 @@ def refine_fixed_plan_layout(
                 projected[idx] = clone_speaker(
                     projected[idx],
                     position=(center_x, center_y, projected[idx].position[2]),
-                    aim=(center_x, center_y, area["ear_height_m"]),
+                    aim=aim_for_speaker(
+                        projected[idx],
+                        (center_x, center_y, projected[idx].position[2]),
+                        (center_x, center_y, area["ear_height_m"]),
+                    ),
                 )
                 continue
             dx = float(np.mean([abs(projected[idx].position[0] - center_x) for idx in orbit]))
@@ -929,7 +938,11 @@ def refine_fixed_plan_layout(
                 projected[idx] = clone_speaker(
                     projected[idx],
                     position=(center_x + sign_x * dx, center_y + sign_y * dy, z),
-                    aim=(center_x, center_y, area["ear_height_m"]),
+                    aim=aim_for_speaker(
+                        projected[idx],
+                        (center_x + sign_x * dx, center_y + sign_y * dy, z),
+                        (center_x, center_y, area["ear_height_m"]),
+                    ),
                 )
         return projected
 
@@ -1135,9 +1148,60 @@ def refine_fixed_plan_layout(
 
     optimization_history: list[dict] = []
     best_recorded_value = float("inf")
+    last_recorded_vector: np.ndarray | None = None
+
+    def display_step_count(previous: np.ndarray | None, current: np.ndarray) -> int:
+        if previous is None or len(previous) != len(current):
+            return 1
+        max_steps_needed = 1
+        limits = (0.35, 0.35, 0.28, 0.45, 0.45, 1.2)
+        variable_count = max(1, len(current) // 6)
+        for group_idx in range(variable_count):
+            offset = group_idx * 6
+            for local_idx, limit in enumerate(limits):
+                value_idx = offset + local_idx
+                if value_idx >= len(current):
+                    continue
+                delta = abs(float(current[value_idx] - previous[value_idx]))
+                max_steps_needed = max(max_steps_needed, int(math.ceil(delta / limit)))
+        return max(1, min(10, max_steps_needed))
+
+    def build_frame(vector: np.ndarray, value: float, label: str) -> dict:
+        field, unpacked_speakers = spl_field_for(vector)
+        gains = unpack_gains(vector)
+        speakers_with_gain = [
+            clone_speaker(speaker, gain_db=float(gains[idx]))
+            for idx, speaker in enumerate(unpacked_speakers)
+        ]
+        min_spl = float(np.min(field))
+        max_spl = float(np.max(field))
+        avg_spl = float(10.0 * np.log10(np.mean(10.0 ** (field / 10.0)) + EPS))
+        nonuniformity = max_spl - min_spl
+        headroom = min_spl - targets["min_spl_db"]
+        failures = build_candidate_failures(min_spl, nonuniformity, headroom, targets)
+        return {
+            "index": len(optimization_history),
+            "label": label,
+            "objective": round(float(value), 6),
+            "metrics": {
+                "feasible": not failures,
+                "minSpl": round(min_spl, 6),
+                "avgSpl": round(avg_spl, 6),
+                "maxSpl": round(max_spl, 6),
+                "nonuniformity": round(nonuniformity, 6),
+                "headroom": round(headroom, 6),
+                "reason": "达标" if not failures else "；".join(failures),
+            },
+            "speakers": serialize_speakers(speakers_with_gain),
+            "grid": {
+                "xs": xs,
+                "ys": ys,
+                "field": field_to_grid(field, xs, ys, grid_indices),
+            },
+        }
 
     def record_frame(vector: np.ndarray, label: str, force: bool = False) -> None:
-        nonlocal best_recorded_value, deadline
+        nonlocal best_recorded_value, deadline, last_recorded_vector
         if not progress_callback:
             return
         observer_started = time.perf_counter()
@@ -1150,40 +1214,17 @@ def refine_fixed_plan_layout(
         if not force and value >= best_recorded_value - 1.0e-5:
             deadline += time.perf_counter() - observer_started
             return
-        field, unpacked_speakers = spl_field_for(clipped)
-        gains = unpack_gains(clipped)
-        speakers_with_gain = [
-            clone_speaker(speaker, gain_db=float(gains[idx]))
-            for idx, speaker in enumerate(unpacked_speakers)
-        ]
-        min_spl = float(np.min(field))
-        max_spl = float(np.max(field))
-        avg_spl = float(10.0 * np.log10(np.mean(10.0 ** (field / 10.0)) + EPS))
-        nonuniformity = max_spl - min_spl
-        headroom = min_spl - targets["min_spl_db"]
-        failures = build_candidate_failures(min_spl, nonuniformity, headroom, targets)
-        frame = {
-                "index": len(optimization_history),
-                "label": label,
-                "objective": round(float(value), 6),
-                "metrics": {
-                    "feasible": not failures,
-                    "minSpl": round(min_spl, 6),
-                    "avgSpl": round(avg_spl, 6),
-                    "maxSpl": round(max_spl, 6),
-                    "nonuniformity": round(nonuniformity, 6),
-                    "headroom": round(headroom, 6),
-                    "reason": "达标" if not failures else "；".join(failures),
-                },
-                "speakers": serialize_speakers(speakers_with_gain),
-                "grid": {
-                    "xs": xs,
-                    "ys": ys,
-                    "field": field_to_grid(field, xs, ys, grid_indices),
-                },
-            }
-        optimization_history.append(frame)
-        progress_callback({"type": "frame", "frame": frame})
+        step_count = display_step_count(last_recorded_vector, clipped)
+        start_vector = last_recorded_vector.copy() if last_recorded_vector is not None and len(last_recorded_vector) == len(clipped) else clipped
+        for step_idx in range(1, step_count + 1):
+            ratio = step_idx / step_count
+            display_vector = clipped_vector(start_vector + (clipped - start_vector) * ratio)
+            display_label = label if step_count == 1 else f"{label} · {step_idx}/{step_count}"
+            display_value = value if step_idx == step_count else objective(display_vector)
+            frame = build_frame(display_vector, display_value, display_label)
+            optimization_history.append(frame)
+            progress_callback({"type": "frame", "frame": frame})
+        last_recorded_vector = clipped.copy()
         best_recorded_value = min(best_recorded_value, float(value))
         deadline += time.perf_counter() - observer_started
 

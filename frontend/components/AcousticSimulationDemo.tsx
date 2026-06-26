@@ -986,6 +986,13 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
   const cameraRef = useRef<THREE.OrthographicCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+  const cameraViewRef = useRef<{
+    position: THREE.Vector3;
+    quaternion: THREE.Quaternion;
+    up: THREE.Vector3;
+    zoom: number;
+    target: THREE.Vector3;
+  } | null>(null);
   const [plotError, setPlotError] = useState('');
   const [plotReady, setPlotReady] = useState(false);
   const [simulationData, setSimulationData] = useState<SimulationResult | null>(null);
@@ -1343,7 +1350,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
         }
         return current + 1;
       });
-    }, 1250);
+    }, 550);
     return () => window.clearInterval(timer);
   }, [isPlaybackRunning, optimizationHistory.length]);
 
@@ -1362,7 +1369,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
     setOptimizationRound(0);
     setElapsedSeconds(0);
     setPlaybackIndex(0);
-    setIsPlaybackRunning(false);
+    setIsPlaybackRunning(true);
     setSimulationError('');
     let streamSetup: any = null;
     let streamSource: any = null;
@@ -1407,14 +1414,14 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
             optimizationHistory: [...streamedFrames],
           };
           setSimulationData(liveData);
-          setPlaybackIndex(streamedFrames.length - 1);
+          if (streamedFrames.length === 1) setPlaybackIndex(0);
+          if (streamedFrames.length > 1) setIsPlaybackRunning(true);
           setOptimizationRound(streamedFrames.length);
           return;
         }
         if (event.type === 'result' && event.result) {
           finalData = event.result as SimulationResult;
           setSimulationData(finalData);
-          setPlaybackIndex(Math.max(0, (finalData.optimizationHistory?.length || 1) - 1));
           setOptimizationRound(finalData.optimizationHistory?.length || streamedFrames.length);
         }
       },
@@ -1425,8 +1432,10 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
         if (!data) throw new Error('逆向设计未返回最终结果');
         writeSimulationResultCache(requestSignatures, data);
         setSimulationData(data);
-        setPlaybackIndex(Math.max(0, (data.optimizationHistory?.length || 1) - 1));
-        setIsPlaybackRunning(false);
+        if ((data.optimizationHistory?.length || streamedFrames.length) <= 1) {
+          setPlaybackIndex(0);
+          setIsPlaybackRunning(false);
+        }
         // 立即持久化仿真数据到 window（不依赖 Three.js 渲染）
         try {
           const best = (data?.best || {}) as any;
@@ -1833,7 +1842,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
         -frustum * aspect, frustum * aspect, frustum, -frustum, 0.1, 600,
       );
       camera.up.set(0, 0, 1);
-      camera.position.set(room.length * 1.22, -room.width * 1.3, room.height * 1.22);
+      camera.position.set(room.length * 1.05, -room.width * 1.05, Math.max(room.height * 1.35, maxDim * 0.78));
       camera.lookAt(room.length * 0.5, room.width * 0.5, room.height * 0.48);
 
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -1851,6 +1860,17 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
       controls.target.set(room.length * 0.5, room.width * 0.52, room.height * 0.45);
       controls.minZoom = 0.42;
       controls.maxZoom = 4.5;
+
+      const savedView = cameraViewRef.current;
+      if (savedView) {
+        camera.position.copy(savedView.position);
+        camera.quaternion.copy(savedView.quaternion);
+        camera.up.copy(savedView.up);
+        camera.zoom = savedView.zoom;
+        controls.target.copy(savedView.target);
+        camera.updateProjectionMatrix();
+        controls.update();
+      }
 
       sceneRef.current = scene;
       cameraRef.current = camera;
@@ -2203,6 +2223,13 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
       animate();
 
       return () => {
+        cameraViewRef.current = {
+          position: camera.position.clone(),
+          quaternion: camera.quaternion.clone(),
+          up: camera.up.clone(),
+          zoom: camera.zoom,
+          target: controls?.target.clone() || new THREE.Vector3(room.length * 0.5, room.width * 0.52, room.height * 0.45),
+        };
         window.cancelAnimationFrame(frameId);
         if (resizeObserver) resizeObserver.disconnect();
         if (controls) controls.dispose();
@@ -2247,7 +2274,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
     <div className="h-full min-h-[560px] bg-white text-slate-700 flex flex-col overflow-hidden">
       <div className="h-12 px-4 border-b border-slate-200 flex items-center justify-between gap-4 shrink-0">
         <div className="min-w-0 flex items-center gap-3">
-          <h3 className="text-sm font-black text-slate-900 truncate">逆向设计方案生成</h3>
+          <h3 className="text-sm font-black text-slate-900 truncate">国标方案生成</h3>
           <span className={`px-2 py-0.5 rounded-sm text-[11px] font-black border ${standardsPass ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : isSimulating ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
             {isSimulating
               ? optimizationRound > 0 ? `实时优化 第 ${optimizationRound} 步` : '准备初始方案'

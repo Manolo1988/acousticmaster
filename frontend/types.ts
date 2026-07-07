@@ -124,6 +124,7 @@ export interface SolutionResult {
   simulationImage?: string;
   simulationContext?: Record<string, any>;
   lastReportSignature?: string;
+  editedPositions?: SolutionLayoutItem[];
 }
 
 export interface ChatMessage {

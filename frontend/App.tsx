@@ -2538,6 +2538,15 @@ const App: React.FC = () => {
                   scenario={logic.designState.scenario}
                   items={activeResult?.items}
                   layoutItems={activeResult?.layoutItems}
+                  onApplyLayout={(editedLayout) => {
+                    logic.setDesignState((prev) => {
+                      const results = [...prev.results];
+                      const idx = prev.activeResultIndex;
+                      if (!results[idx]) return prev;
+                      results[idx] = { ...results[idx], layoutItems: editedLayout, editedPositions: editedLayout };
+                      return { ...prev, results };
+                    });
+                  }}
                 />
               </div>
             )}

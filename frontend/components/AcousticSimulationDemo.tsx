@@ -19,6 +19,7 @@ interface AcousticSimulationDemoProps {
   items?: EquipmentItem[];
   layoutItems?: SolutionLayoutItem[];
   solutionId?: string;
+  onApplyLayout?: (layoutItems: SolutionLayoutItem[]) => void;
 }
 
 interface DemoSpeaker {
@@ -699,7 +700,7 @@ const addSplFloorMesh = (
   targetSpl: number,
   cmin: number,
   cmax: number,
-) => {
+): THREE.Mesh => {
   const segX = 40;
   const segY = 28;
   const geometry = new THREE.PlaneGeometry(room.length - 0.12, room.width - 0.12, segX, segY);
@@ -717,6 +718,7 @@ const addSplFloorMesh = (
   const mesh = new THREE.Mesh(geometry, material);
   mesh.position.set(room.length / 2, room.width / 2, 0.03);
   scene.add(mesh);
+  return mesh;
 };
 
 const getWallOccludedConeLength = (
@@ -873,7 +875,7 @@ const disposeSceneResources = (scene: THREE.Scene) => {
   });
 };
 
-const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params, scenario, items = [], layoutItems = [], solutionId }) => {
+const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params, scenario, items = [], layoutItems = [], solutionId, onApplyLayout }) => {
   const plotRef = useRef<HTMLDivElement | null>(null);
   const scenePanelRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -881,6 +883,11 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
   const cameraRef = useRef<THREE.OrthographicCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+  const dragHandlesRef = useRef<THREE.Object3D[]>([]);
+  const speakerMeshesRef = useRef<THREE.Object3D[]>([]);
+  const splFloorRef = useRef<THREE.Mesh | null>(null);
+  const speakerLabelsRef = useRef<THREE.Sprite[]>([]);
+  const coverageMeshesRef = useRef<THREE.Mesh[]>([]);
   const [plotError, setPlotError] = useState('');
   const [plotReady, setPlotReady] = useState(false);
   const [simulationData, setSimulationData] = useState<SimulationResult | null>(null);
@@ -892,6 +899,10 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
   const [showCoverage, setShowCoverage] = useState(true);
   const showCoverageRef = useRef(showCoverage);
   const [isSceneFullscreen, setIsSceneFullscreen] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const editModeRef = useRef(false);
+  const [selectedSpeakerIndex, setSelectedSpeakerIndex] = useState<number | null>(null);
+  const [editedSpeakers, setEditedSpeakers] = useState<DemoSpeaker[] | null>(null);
   const speakerItems = useMemo(() => items.filter(isSimulationSpeakerItem), [items]);
   const simulationTargets = useMemo(() => getSimulationTargets(scenario), [scenario]);
   const requestSignatures = useMemo(
@@ -928,7 +939,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
   }, [simulationData]);
 
   const fallbackSpeakers = useMemo(() => buildDemoSpeakers(fallbackRoom, items, layoutItems, scenario), [items, layoutItems, fallbackRoom, scenario]);
-  const speakers = useMemo(() => {
+  const baseSpeakers = useMemo(() => {
     const simSpeakers = simulationData?.best?.speakers || [];
     if (simSpeakers.length === 0) return fallbackSpeakers;
     return simSpeakers.map((speaker) => {
@@ -950,9 +961,19 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
       };
     });
   }, [fallbackSpeakers, productCoverageByModel, simulationData]);
+  // 如果用户拖拽编辑过，用 editedSpeakers 覆盖原始位置
+  const speakers = useMemo(() => {
+    if (editedSpeakers && editedSpeakers.length > 0) return editedSpeakers;
+    return baseSpeakers;
+  }, [baseSpeakers, editedSpeakers]);
 
   const fallbackSplField = useMemo(() => buildSplField(fallbackRoom, fallbackSpeakers), [fallbackRoom, fallbackSpeakers]);
+  const editedSplField = useMemo(() => {
+    if (!editedSpeakers || editedSpeakers.length === 0) return null;
+    return buildSplField(room, editedSpeakers);
+  }, [room, editedSpeakers]);
   const splField = useMemo(() => {
+    if (editedSplField) return editedSplField;
     if (!simulationData?.grid?.xs?.length || !simulationData?.grid?.ys?.length || !simulationData?.grid?.field?.length) {
       return fallbackSplField;
     }
@@ -966,7 +987,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
       max: Number(simulationData.best?.maxSpl || Math.max(...flat)),
       earHeight: Number(simulationData.config?.listener_area?.ear_height_m || 1.2),
     };
-  }, [fallbackSplField, simulationData]);
+  }, [editedSplField, fallbackSplField, simulationData]);
   const minSplTarget = Number(simulationData?.config?.targets?.min_spl_db || simulationTargets.minSpl);
   const { cmin, cmax } = useMemo(() => {
     const lower = Math.min(splField.min, minSplTarget - 3);
@@ -1044,14 +1065,21 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
               headroomTarget: Number((cfg.targets?.min_headroom_db || 3).toFixed(2)),
             },
             standards: [
-              { name: '最大声压级', standard: `≥${cfg.targets?.min_spl_db || 95}dB`, value: `${(best.maxSpl || 0).toFixed(1)}dB`, pass: (best.maxSpl || 0) >= (cfg.targets?.min_spl_db || 95) },
-              { name: '声场不均匀度', standard: `≤${cfg.targets?.max_nonuniformity_db || 8}dB`, value: `${(best.nonuniformity || 0).toFixed(1)}dB`, pass: (best.nonuniformity || 99) <= (cfg.targets?.max_nonuniformity_db || 8) },
+              { name: '最大声压级', standard: `≥${cfg.targets?.min_spl_db || 95}dB (GB 50371-2006一级)`, value: `${(best.maxSpl || 0).toFixed(1)}dB`, pass: (best.maxSpl || 0) >= (cfg.targets?.min_spl_db || 95) },
+              { name: '声场不均匀度', standard: `≤${cfg.targets?.max_nonuniformity_db || 8}dB (GB 50371-2006一级)`, value: `${(best.nonuniformity || 0).toFixed(1)}dB`, pass: (best.nonuniformity || 99) <= (cfg.targets?.max_nonuniformity_db || 8) },
               { name: '最低点声压余量', standard: `≥${cfg.targets?.min_headroom_db || 3}dB`, value: `${(best.headroom || 0).toFixed(1)}dB`, pass: (best.headroom || 0) >= (cfg.targets?.min_headroom_db || 3) },
             ],
             speakers: (best.speakers || []).map((s: any, i: number) => ({
-              index: i + 1, label: s.sourceLabel || s.sourceName || `${s.model || '音箱'} #${i + 1}`, model: s.model || '', role: s.role || '',
-              position: s.position || [], pitch: Number(s.aim?.[0] || 0), yaw: Number(s.aim?.[1] || 0),
-              gainDb: Number(s.gainDb || 0), coverageH: Number(s.coverageH || 0), coverageV: Number(s.coverageV || 0),
+              index: i + 1,
+              label: s.sourceLabel || s.sourceName || `${s.model || '音箱'} #${i + 1}`,
+              model: s.model || '',
+              role: s.role || '',
+              position: s.position || [],
+              pitch: Number(s.aim?.[0] || 0),
+              yaw: Number(s.aim?.[1] || 0),
+              gainDb: Number(s.gainDb || 0),
+              coverageH: Number(s.coverageH || 0),
+              coverageV: Number(s.coverageV || 0),
             })),
           }
         };
@@ -1063,6 +1091,67 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
   useEffect(() => {
     showCoverageRef.current = showCoverage;
   }, [showCoverage]);
+
+  // Sync edit mode state
+  useEffect(() => {
+    editModeRef.current = editMode;
+    if (!editMode) setSelectedSpeakerIndex(null);
+  }, [editMode]);
+
+  // Sync speakers/splField changes to existing 3D scene objects (no full rebuild)
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+    const currentSpeakers = editedSpeakers ?? baseSpeakers;
+
+    // Update speaker group positions and label positions
+    const meshes = speakerMeshesRef.current;
+    const labels = speakerLabelsRef.current;
+    const handles = dragHandlesRef.current;
+    currentSpeakers.forEach((speaker, i) => {
+      const g = meshes[i];
+      if (g) g.position.set(speaker.position[0], speaker.position[1], speaker.position[2]);
+      const l = labels[i];
+      if (l) l.position.set(speaker.position[0], speaker.position[1], speaker.position[2] + 0.45);
+      const h = handles[i];
+      if (h) h.position.set(speaker.position[0], speaker.position[1], speaker.position[2]);
+    });
+
+    // Update SPL floor vertex colors
+    const floorMesh = splFloorRef.current;
+    if (floorMesh && simulationData) {
+      const sampleSpl = buildSplSampler(splField);
+      const geometry = floorMesh.geometry;
+      const positions = geometry.attributes.position;
+      const colors: number[] = [];
+      for (let i = 0; i < positions.count; i += 1) {
+        const vx = positions.getX(i) + room.length / 2;
+        const vy = positions.getY(i) + room.width / 2;
+        const spl = sampleSpl(vx, vy);
+        const color = splToRequirementColor(spl, minSplTarget, cmin, cmax);
+        colors.push(color.r, color.g, color.b);
+      }
+      geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+      geometry.attributes.color.needsUpdate = true;
+    }
+  }, [baseSpeakers, editedSpeakers, speakers, splField, minSplTarget, cmin, cmax, room, simulationData]);
+
+  const handleApplyLayout = useCallback(() => {
+    if (!onApplyLayout) return;
+    const currentSpeakers = editedSpeakers ?? speakers;
+    const applied: SolutionLayoutItem[] = currentSpeakers.map((s) => ({
+      id: s.sourceItemId || '',
+      function: s.role,
+      name: s.sourceName || '',
+      model: s.model,
+      x: s.position[0],
+      y: s.position[1],
+      z: s.position[2],
+      pitch: s.aim[0],
+      yaw: s.aim[1],
+    }));
+    onApplyLayout(applied);
+  }, [editedSpeakers, onApplyLayout, speakers]);
 
   useEffect(() => {
     const onFullscreenChange = () => {
@@ -1590,6 +1679,8 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
       scene.add(key);
 
       const coverageMeshes: THREE.Mesh[] = [];
+      const savedSpeakerMeshes: THREE.Object3D[] = [];
+      const savedSpeakerLabels: THREE.Sprite[] = [];
       const wallThickness = 0.14;
       const wallHeight = room.height + Math.max(0.45, room.height * 0.08);
 
@@ -1624,7 +1715,9 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
       };
 
       const sampleSpl = buildSplSampler(splField);
-      addSplFloorMesh(scene, room, sampleSpl, minSplTarget, cmin, cmax);
+      // 存储 SPL 地板引用，用于后续更新色温
+      const splFloor = addSplFloorMesh(scene, room, sampleSpl, minSplTarget, cmin, cmax);
+      splFloorRef.current = splFloor;
 
       const wSill = Math.min(1.0, room.height * 0.28);
       const wTop = Math.min(2.2, wallHeight - 0.5);
@@ -1849,6 +1942,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
         const speakerSpl = sampleSpl(speaker.position[0], speaker.position[1]);
         const grilleColor = splToRequirementColor(speakerSpl, minSplTarget, cmin, cmax);
         const speakerGroup = createSpeakerWhiteModel(speaker, 1, grilleColor);
+        speakerGroup.userData = { type: 'speaker', speakerIndex: index };
         speakerGroup.position.set(speaker.position[0], speaker.position[1], speaker.position[2]);
         const forward = new THREE.Vector3(
           speaker.aim[0] - speaker.position[0],
@@ -1857,6 +1951,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
         ).normalize();
         speakerGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), forward);
         scene.add(speakerGroup);
+        savedSpeakerMeshes.push(speakerGroup);
 
         const label = makeTextSprite(
           `${speaker.sourceRowIndex ? `#${speaker.sourceRowIndex}` : '#'}${speaker.sourceUnitIndex ? `-${speaker.sourceUnitIndex}` : index + 1}`,
@@ -1865,6 +1960,7 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
         if (label) {
           label.position.set(speaker.position[0], speaker.position[1], speaker.position[2] + 0.45);
           scene.add(label);
+          savedSpeakerLabels.push(label);
         }
 
         {
@@ -1915,13 +2011,146 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
         frameId = window.requestAnimationFrame(animate);
       };
 
+      // Raycaster for click-to-select in edit mode
+      const raycaster = new THREE.Raycaster();
+      const pointer = new THREE.Vector2();
+      const onClickHandler = (event: MouseEvent) => {
+        if (!editModeRef.current) return;
+        const rect = renderer!.domElement.getBoundingClientRect();
+        pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(pointer, camera);
+        const intersects = raycaster.intersectObjects(savedSpeakerMeshes, true);
+        if (intersects.length > 0) {
+          let obj: THREE.Object3D | null = intersects[0].object;
+          while (obj && obj.userData?.type !== 'speaker') obj = obj.parent;
+          if (obj && obj.userData?.speakerIndex !== undefined) {
+            setSelectedSpeakerIndex(obj.userData.speakerIndex);
+            return;
+          }
+        }
+        setSelectedSpeakerIndex(null);
+      };
+      renderer!.domElement.addEventListener('click', onClickHandler);
+
+      speakerMeshesRef.current = savedSpeakerMeshes;
+      speakerLabelsRef.current = savedSpeakerLabels;
+      coverageMeshesRef.current = coverageMeshes;
+      dragHandlesRef.current = [];
+
+      // Create invisible drag handles for custom pointer drag
+      const dragHandles = savedSpeakerMeshes.map((group, index) => {
+        const boxSize = 1.2;
+        const handleGeo = new THREE.BoxGeometry(boxSize, boxSize * 0.6, boxSize * 0.8);
+        const handleMat = new THREE.MeshBasicMaterial({
+          visible: false,
+          transparent: true,
+          opacity: 0,
+          depthWrite: false,
+        });
+        const handle = new THREE.Mesh(handleGeo, handleMat);
+        handle.position.copy(group.position);
+        handle.userData = { type: 'speaker', speakerIndex: index };
+        scene.add(handle);
+        return handle;
+      });
+      dragHandlesRef.current = dragHandles;
+
+      // Track drag positions in ref to avoid React re-render during drag
+      const dragPositions: [number, number, number][] = savedSpeakerMeshes.map((m) => [
+        m.position.x, m.position.y, m.position.z,
+      ]);
+
+      // ---- Custom pointer-based drag (replaces DragControls) ----
+      const dragPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+      const dragOffset = new THREE.Vector3();
+      const dragRaycaster2 = new THREE.Raycaster();
+      let dragIndex: number | null = null;
+
+      const onPointerDown = (event: PointerEvent) => {
+        if (!editModeRef.current || isSimulating) return;
+        const rect = renderer!.domElement.getBoundingClientRect();
+        const mx = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        const my = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+        dragRaycaster2.setFromCamera(new THREE.Vector2(mx, my), camera);
+        const hits = dragRaycaster2.intersectObjects(dragHandles, false);
+        if (hits.length === 0) return;
+
+        const hit = hits[0].object;
+        const idx = hit.userData.speakerIndex;
+        if (idx === undefined) return;
+
+        dragIndex = idx;
+        controls!.enabled = false;
+        setSelectedSpeakerIndex(idx);
+
+        const spokePos = savedSpeakerMeshes[idx].position;
+        dragPlane.constant = -spokePos.z;
+        dragRaycaster2.ray.intersectPlane(dragPlane, dragOffset);
+        if (dragOffset) dragOffset.sub(spokePos);
+
+        event.preventDefault();
+        event.stopPropagation();
+      };
+
+      const onPointerMove = (event: PointerEvent) => {
+        if (dragIndex === null) return;
+        const rect = renderer!.domElement.getBoundingClientRect();
+        const mx = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        const my = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+        dragRaycaster2.setFromCamera(new THREE.Vector2(mx, my), camera);
+        const pt = new THREE.Vector3();
+        if (!dragRaycaster2.ray.intersectPlane(dragPlane, pt)) return;
+
+        pt.sub(dragOffset);
+        pt.x = Math.max(0.2, Math.min(room.length - 0.2, pt.x));
+        pt.y = Math.max(0.2, Math.min(room.width - 0.2, pt.y));
+        pt.z = Math.max(0.4, Math.min(room.height - 0.2, pt.z));
+
+        dragPositions[dragIndex] = [pt.x, pt.y, pt.z];
+        savedSpeakerMeshes[dragIndex].position.copy(pt);
+        if (dragHandles[dragIndex]) dragHandles[dragIndex].position.copy(pt);
+        if (savedSpeakerLabels[dragIndex])
+          savedSpeakerLabels[dragIndex].position.set(pt.x, pt.y, pt.z + 0.45);
+
+        event.preventDefault();
+      };
+
+      const onPointerUp = () => {
+        if (dragIndex === null) return;
+        controls!.enabled = true;
+        setEditedSpeakers((prev) => {
+          const base = prev ?? speakers;
+          return base.map((s, i) => ({
+            ...s,
+            position: dragPositions[i] ?? s.position,
+          }));
+        });
+        dragIndex = null;
+      };
+
+      renderer.domElement.addEventListener('pointerdown', onPointerDown);
+      renderer.domElement.addEventListener('pointermove', onPointerMove);
+      renderer.domElement.addEventListener('pointerup', onPointerUp);
+      const teardownPointerDrag = () => {
+        renderer!.domElement.removeEventListener('pointerdown', onPointerDown);
+        renderer!.domElement.removeEventListener('pointermove', onPointerMove);
+        renderer!.domElement.removeEventListener('pointerup', onPointerUp);
+      };
+
       setPlotReady(true);
       animate();
 
       return () => {
         window.cancelAnimationFrame(frameId);
         if (resizeObserver) resizeObserver.disconnect();
+        teardownPointerDrag();
         if (controls) controls.dispose();
+        renderer!.domElement.removeEventListener('click', onClickHandler);
+        speakerMeshesRef.current = [];
+        dragHandlesRef.current = [];
         disposeSceneResources(scene);
         if (renderer) renderer.dispose();
         if (sceneRef.current === scene) sceneRef.current = null;
@@ -1955,8 +2184,6 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
     room,
     scenario,
     simulationData,
-    speakers,
-    splField,
   ]);
 
   return (
@@ -1991,6 +2218,24 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
           >
             {isSceneFullscreen ? '退出全屏' : '全屏查看'}
           </button>
+          <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-100 p-0.5">
+            <button
+              type="button"
+              onClick={() => setEditMode(false)}
+              disabled={!simulationData}
+              className={`h-7 px-3 rounded-md text-[12px] font-bold transition-all ${!simulationData ? 'text-slate-400' : !editMode ? 'bg-white text-slate-800 shadow-sm border border-slate-200' : 'text-slate-500 hover:text-slate-700'}`}
+            >
+              👁 查看
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditMode(true)}
+              disabled={!simulationData}
+              className={`h-7 px-3 rounded-md text-[12px] font-bold transition-all ${!simulationData ? 'text-slate-400' : editMode ? 'bg-white text-blue-700 shadow-sm border border-blue-200' : 'text-slate-500 hover:text-slate-700'}`}
+            >
+              ✋ 编辑
+            </button>
+          </div>
         </div>
       </div>
 
@@ -2033,6 +2278,69 @@ const AcousticSimulationDemo: React.FC<AcousticSimulationDemoProps> = ({ params,
                 <div className="absolute left-6 top-0 -translate-y-1/2 text-[9px] font-black text-slate-700">{cmax.toFixed(0)}</div>
                 <div className="absolute left-6 bottom-0 translate-y-1/2 text-[9px] font-black text-slate-700">{cmin.toFixed(0)}</div>
               </div>
+            </div>
+          )}
+          {editMode && selectedSpeakerIndex !== null && simulationData && (
+            <div className="absolute right-3 top-5 z-10 w-64 rounded border border-blue-200 bg-white/95 shadow-lg backdrop-blur-[1px] p-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[12px] font-black text-slate-800">音箱 #{selectedSpeakerIndex + 1}</span>
+                <button type="button" onClick={() => setEditedSpeakers(null)} className="text-[11px] text-slate-400 hover:text-slate-600 underline">还原</button>
+              </div>
+              <div className="text-[11px] text-slate-500 font-bold mb-2">{speakers[selectedSpeakerIndex]?.model} · {speakers[selectedSpeakerIndex]?.role}</div>
+              <div className="space-y-1.5">
+                {(['X', 'Y', 'Z'] as const).map((label, ai) => {
+                  const val = speakers[selectedSpeakerIndex]?.position[ai] ?? 0;
+                  return (
+                    <div key={label} className="flex items-center gap-2">
+                      <span className="text-[11px] font-bold text-slate-500 w-4">{label}</span>
+                      <input
+                        type="number" step="0.1"
+                        value={Number(val).toFixed(2)}
+                        onChange={(e) => {
+                          const v = parseFloat(e.target.value) || 0;
+                          setEditedSpeakers((prev) => {
+                            const base = prev ?? speakers;
+                            const next = [...base];
+                            const pos = [...next[selectedSpeakerIndex].position] as [number, number, number];
+                            pos[ai] = Math.max(0.2, Math.min(ai === 2 ? 18 : 50, v));
+                            next[selectedSpeakerIndex] = { ...next[selectedSpeakerIndex], position: pos };
+                            return next;
+                          });
+                        }}
+                        className="w-20 h-7 rounded border border-slate-200 px-2 text-[12px] font-mono text-slate-700 focus:border-blue-400 focus:outline-none"
+                      />
+                      <span className="text-[10px] text-slate-400">m</span>
+                    </div>
+                  );
+                })}
+                <div className="flex items-center gap-2 pt-1">
+                  <span className="text-[11px] font-bold text-slate-500">增益</span>
+                  <input
+                    type="number" step="0.5"
+                    value={speakers[selectedSpeakerIndex]?.gainDb.toFixed(1) ?? '0.0'}
+                    onChange={(e) => {
+                      const v = parseFloat(e.target.value) || 0;
+                      setEditedSpeakers((prev) => {
+                        const base = prev ?? speakers;
+                        const next = [...base];
+                        next[selectedSpeakerIndex] = { ...next[selectedSpeakerIndex], gainDb: Math.max(-20, Math.min(20, v)) };
+                        return next;
+                      });
+                    }}
+                    className="w-20 h-7 rounded border border-slate-200 px-2 text-[12px] font-mono text-slate-700 focus:border-blue-400 focus:outline-none"
+                  />
+                  <span className="text-[10px] text-slate-400">dB</span>
+                </div>
+              </div>
+              {onApplyLayout && (
+                <button
+                  type="button"
+                  onClick={handleApplyLayout}
+                  className="mt-3 w-full h-8 rounded bg-blue-600 text-white text-[12px] font-black hover:bg-blue-700 transition-colors"
+                >
+                  应用到方案
+                </button>
+              )}
             </div>
           )}
           {!plotReady && !plotError && (

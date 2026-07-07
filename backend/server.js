@@ -17,8 +17,8 @@ import {
 
 dotenv.config({ path: fileURLToPath(new URL("./.env", import.meta.url)) });
 
-const app = express();
-const defaultCorsOrigins = [
+const app = express();  
+const defaultCorsOrigins = [    
   "http://115.231.236.153:8100",
   "http://localhost:3000",
   "http://127.0.0.1:3000"
@@ -46,11 +46,18 @@ const DB_CONFIG = {
   user: process.env.DB_USER || "user1",
   password: process.env.DB_PASSWORD || "UasbecrD1!1",
   database: process.env.DB_NAME || "longdata_new",
-  charset: "utf8mb4",
-  connectionLimit: 10
+  charset: "utf8mb4", 
+  connectionLimit: 10,  
+  enableKeepAlive: true,           // ← 新增：TCP 层心跳
+  keepAliveInitialDelay: 10000,   // ← 新增：10 秒后开始心跳
 };
 
-const pool = mysql.createPool(DB_CONFIG);
+const pool = mysql.createPool(DB_CONFIG);   
+// 池级错误处理：避免因单个连接被远端关闭导致进程崩溃
+pool.on('error', (err) => {
+  console.error('[DB Pool] 连接池异常（已自动回收）:', err.message);
+});
+
 const isProduction = process.env.NODE_ENV === 'production';
 const LINE_ARRAY_SUPPORT_TABLE = "线阵列配套";
 const SUBSYSTEM_TABLE = "子系统";
@@ -59,7 +66,7 @@ const INVENTORY_TABLES = [
   "音箱",
   LINE_ARRAY_SUPPORT_TABLE,
   "定阻功放",
-  "周边设备",
+  "周边设备",   
   SUBSYSTEM_TABLE
 ];
 const LEGACY_IMAGE_RESOURCE_TABLE = "图片资源管理";
@@ -74,7 +81,7 @@ const PLAN_CHAPTER_TITLE_CANDIDATES = [
   "设计依据和目标",
   "方案设计",
   "设备介绍",
-  "装修建议",
+  "装修建议",   
   "环境要求"
 ];
 
@@ -145,7 +152,7 @@ const inferResourceTypeFromContent = (content) => {
   if (text.includes("<table") || (hasPipeRow && hasTableDivider)) {
     return RESOURCE_TYPE_TABLE;
   }
-  return RESOURCE_TYPE_TEXT;
+  return RESOURCE_TYPE_TEXT;  
 };
 
 const normalizeSpeakerFunctionValue = (value) => {

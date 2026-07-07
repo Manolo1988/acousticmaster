@@ -42,3 +42,6 @@ docker/nginx/html/
 # Backend local secrets
 backend/.env
 backend/generated_docs/
+
+# 忽略 local 文件夹及其所有子内容
+/local/**
